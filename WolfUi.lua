@@ -1,5 +1,5 @@
 -- =============================================================================
--- WolfLib v2.0.2 — UI library for Roblox (один файл, без зависимостей)
+-- WolfLib v2.1.0 — UI library for Roblox (один файл, без зависимостей)
 --
 -- ЭТО БИБЛИОТЕКА. Сама она меню не рисует: последняя строка файла — return
 -- Library. Меню появляется только когда твой скрипт вызовет CreateWindow.
@@ -10,10 +10,9 @@
 -- строке. Блочных комментариев в файле нет намеренно: если при заливке на
 -- GitHub потеряется начало файла, остаток всё равно останется валидным Lua.
 --
--- Геометрия и палитра 1:1 с оригинальным меню Wolf (590x350, сайдбар 70,
--- правая полоса 30, карточки palette[2] r5). Отличия от растрового
--- оригинала только там, где просили: иконки Lucide и настоящие TextLabel
--- (работает кириллица).
+-- Дизайн интерфейса зафиксирован и менять его нельзя. Геометрия и палитра
+-- 1:1 с оригинальным меню Wolf (590x350, сайдбар 70, правая полоса 30,
+-- карточки palette[2] r5).
 --
 -- -----------------------------------------------------------------------------
 -- БЫСТРЫЙ СТАРТ
@@ -21,8 +20,12 @@
 --   local url = "https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"
 --   local Library = loadstring(game:HttpGet(url))()
 --
---   local Window = Library:CreateWindow({ Name = "Wolf", Icon = "dog" })
---   local Tab    = Window:CreateTab({ Name = "ASSIST", Icon = "crosshair" })
+--   local Window = Library:CreateWindow({
+--       Name = "Wolf",
+--       Icon = "dog",
+--       Folder = "MyScript",   -- папка скрипта: WolfUi/MyScript/
+--   })
+--   local Tab = Window:CreateTab({ Name = "ASSIST", Icon = "crosshair" })
 --
 --   Tab:AddToggle({
 --       Name = "Enable aimbot", Description = "Главный выключатель",
@@ -31,6 +34,37 @@
 --       ColorPicker = { Flag = "aim_color" }, -- палитра прямо на тумблере
 --       Callback = function(value) print(value) end,
 --   })
+--
+-- -----------------------------------------------------------------------------
+-- ГДЕ ЖИВЁТ МЕНЮ
+-- -----------------------------------------------------------------------------
+-- ScreenGui создаётся в gethui() / CoreGui, поэтому меню рисуется поверх
+-- всего игрового интерфейса. Если исполнитель не даёт туда писать, идёт
+-- фоллбэк в PlayerGui (меню всё равно работает).
+-- События для совместимости всегда лежат в PlayerGui.WolfUI (папка):
+--   PlayerGui.WolfUI.Changed.Event -> (flag, value)
+--   PlayerGui.WolfUI.TabChanged.Event -> (tab)
+--   PlayerGui.WolfUI.ButtonPressed.Event -> (name)
+-- Проверить, куда попало меню: Window.Host, Window.Protected.
+--
+-- -----------------------------------------------------------------------------
+-- ФАЙЛЫ В ПАМЯТИ ИСПОЛНИТЕЛЯ
+-- -----------------------------------------------------------------------------
+-- Всё, что пишет библиотека, лежит в одной корневой папке WolfUi, внутри —
+-- по папке на каждый скрипт, который её использует:
+--   WolfUi/
+--     MyScript/
+--       configs/default.json
+--     AnotherScript/
+--       configs/pvp.json
+-- Имя папки скрипта берётся из CreateWindow{ Folder = "..." }, иначе из Name.
+--   Library:GetFolder()            -- "WolfUi/MyScript"
+--   Library:GetConfigFolder()      -- "WolfUi/MyScript/configs"
+--   Library:SetScriptName("Name")  -- сменить папку скрипта вручную
+--   Library:WriteFile("data.json", text) / Library:ReadFile("data.json")
+--   Library:ListFiles()            -- файлы своей папки
+--   Library:DeleteFile("data.json")
+-- Старые конфиги из плоской папки WolfLib переносятся автоматически.
 --
 -- -----------------------------------------------------------------------------
 -- ЭЛЕМЕНТЫ (все принимают Width = 1 / 0.5 / 0.33 / 0.25)
@@ -42,7 +76,7 @@
 --   Tab:AddToggle({ Name, Description, Default, Flag, Keybind, ColorPicker, Callback })
 --   Tab:AddSlider({ Name, Description, Min, Max, Default, Decimals, Suffix, Flag, Callback })
 --   Tab:AddDropdown({ Name, Description, Options, Default, Multiple, MaxRows, Flag, Callback })
---   Tab:AddColorPicker({ Name, Description, Default, Alpha, UseAlpha, Flag, Callback })
+--   Tab:AddColorPicker({ Name, Description, Default, Alpha, UseAlpha, Presets, Flag, Callback })
 --   Tab:AddKeybind({ Name, Description, Default, Flag, Callback })
 --   Tab:AddTextBox({ Name, Placeholder, Default, MaxLength, ShowName, OnEnter, Flag, Callback })
 --   Tab:AddButton({ Name, Text, Icon, Compact, Description, Callback })
@@ -50,10 +84,13 @@
 -- Любой элемент возвращает api: api:Get(), api:Set(value), api:SetName(text),
 -- api:SetVisible(bool). Дропдаун ещё api:SetOptions(list).
 --
+-- Палитра цвета: SV-квадрат, полосы hue и alpha, превью, поле HEX и быстрые
+-- цвета (свой набор — Presets = { Color3, ... }).
+--
 -- -----------------------------------------------------------------------------
 -- БИБЛИОТЕКА
 -- -----------------------------------------------------------------------------
---   Library.Version                      -- "2.0.2"
+--   Library.Version                      -- "2.1.0"
 --   Library:Demo()                       -- готовое меню одной строкой (проверка)
 --   Library.Flags[flag]                  -- текущее значение любого элемента
 --   Library:SetFlag(flag, value) / Library:GetFlag(flag)
@@ -66,9 +103,6 @@
 --   Library:Unload()
 --   Window:SelectTab("ASSIST")  Window:SetVisible(bool)  Window:SetScale(100|75|50)
 --   Window:AddRailButton({ Icon, Fallback, Callback })
---
--- События (совместимость со старым скриптом), внутри PlayerGui.WolfUI:
---   Changed.Event -> (flag, value) | TabChanged.Event -> (tab) | ButtonPressed.Event -> (name)
 --
 -- Масштаб меню: только 100 / 75 / 50 (при загрузке 100, больше 100 не бывает).
 -- Бинды: RightShift — скрыть/показать, F1/F2 — переключение масштаба.
@@ -86,6 +120,35 @@ while not player do
     player = Players.LocalPlayer
 end
 local playerGui = player:WaitForChild("PlayerGui")
+
+----------------------------------------------------------------------
+-- Куда парентить меню: gethui() / CoreGui, чтобы быть поверх всего.
+-- Если исполнитель туда не даёт писать — фоллбэк в PlayerGui.
+----------------------------------------------------------------------
+local function guiHost()
+    local getters = {}
+    if type(gethui) == "function" then
+        getters[#getters + 1] = gethui
+    end
+    if type(get_hidden_gui) == "function" then
+        getters[#getters + 1] = get_hidden_gui
+    end
+    getters[#getters + 1] = function() return game:GetService("CoreGui") end
+
+    for _, getter in ipairs(getters) do
+        local ok, host = pcall(getter)
+        if ok and typeof(host) == "Instance" then
+            local writable = pcall(function()
+                local probe = Instance.new("Folder")
+                probe.Name = "WolfUiProbe"
+                probe.Parent = host
+                probe:Destroy()
+            end)
+            if writable then return host, true end
+        end
+    end
+    return playerGui, false
+end
 
 ----------------------------------------------------------------------
 -- 1. Иконки Lucide
@@ -362,7 +425,7 @@ local GAP = 10
 local TAB_SLOT = 70
 
 local Library = {
-    Version = "2.0.2",
+    Version = "2.1.0",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -397,7 +460,11 @@ local function fireChange(flag, value)
     local window = Library.Window
     if window then
         if type(value) ~= "table" and typeof(value) ~= "EnumItem" then
-            pcall(function() window.Gui:SetAttribute(attributeName(flag), value) end)
+            local key = attributeName(flag)
+            pcall(function() window.Gui:SetAttribute(key, value) end)
+            if window.Events then
+                pcall(function() window.Events:SetAttribute(key, value) end)
+            end
         end
         window.Changed:Fire(flag, value)
     end
@@ -542,6 +609,7 @@ function Library:CreateWindow(opts)
     end
 
     Runtime.Connections, Runtime.Updates, Runtime.Alive = {}, {}, true
+    Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
 
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
@@ -572,17 +640,36 @@ function Library:CreateWindow(opts)
     }, Window)
     Library.Window = window
 
-    local gui = new("ScreenGui", playerGui, {
-        Name = opts.GuiName or "WolfUI",
-        ResetOnSpawn = false,
-        IgnoreGuiInset = true,
-        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        DisplayOrder = opts.DisplayOrder or 50,
-    })
+    local host, protected = guiHost()
+    if host ~= playerGui then
+        local stale = host:FindFirstChild(opts.GuiName or "WolfUI")
+        if stale then stale:Destroy() end
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = opts.GuiName or "WolfUI"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = opts.DisplayOrder or 10000
+    -- часть исполнителей требует защитить gui ДО парентинга
+    if type(syn) == "table" and type(syn.protect_gui) == "function" then
+        pcall(function() syn.protect_gui(gui) end)
+    elseif type(protectgui) == "function" then
+        pcall(function() protectgui(gui) end)
+    end
+    gui.Parent = host
+
     window.Gui = gui
-    window.Changed = new("BindableEvent", gui, {Name = "Changed"})
-    window.TabChanged = new("BindableEvent", gui, {Name = "TabChanged"})
-    window.ButtonPressed = new("BindableEvent", gui, {Name = "ButtonPressed"})
+    window.Host = host
+    window.Protected = protected
+
+    -- события остаются в PlayerGui.WolfUI (совместимость со старыми скриптами)
+    local events = new("Folder", playerGui, {Name = opts.GuiName or "WolfUI"})
+    window.Events = events
+    window.Changed = new("BindableEvent", events, {Name = "Changed"})
+    window.TabChanged = new("BindableEvent", events, {Name = "TabChanged"})
+    window.ButtonPressed = new("BindableEvent", events, {Name = "ButtonPressed"})
 
     local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5), 1)
     frame.Name = "Window"
@@ -1238,6 +1325,35 @@ end
 ----------------------------------------------------------------------
 -- 9. Палитра цвета (используется и как элемент, и как аддон тумблера)
 ----------------------------------------------------------------------
+local function toHex(color)
+    return string.format("%02X%02X%02X",
+        math.floor(color.R * 255 + 0.5),
+        math.floor(color.G * 255 + 0.5),
+        math.floor(color.B * 255 + 0.5))
+end
+
+local function fromHex(value)
+    if type(value) ~= "string" then return nil end
+    local hex = string.gsub(value, "[^%x]", "")
+    if #hex == 3 then
+        hex = string.gsub(hex, "(%x)", "%1%1")
+    end
+    if #hex ~= 6 then return nil end
+    local r = tonumber(string.sub(hex, 1, 2), 16)
+    local g = tonumber(string.sub(hex, 3, 4), 16)
+    local b = tonumber(string.sub(hex, 5, 6), 16)
+    if not r or not g or not b then return nil end
+    return Color3.fromRGB(r, g, b)
+end
+
+local DEFAULT_PRESETS = {
+    Color3.fromRGB(255, 255, 255),
+    Color3.fromRGB(255, 64, 64),
+    Color3.fromRGB(255, 200, 0),
+    Color3.fromRGB(0, 225, 120),
+    Color3.fromRGB(0, 150, 255),
+}
+
 local function attachColorPicker(tab, parent, x, y, size, opts)
     opts = opts or {}
     local window = tab.Window
@@ -1250,16 +1366,28 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     anchor.ZIndex = 3
     local dot = rect(anchor, 0, 0, size, size, color, math.floor(size / 2), nil)
     dot.ZIndex = 3
+    new("UIStroke", dot, {Color = palette[5], Thickness = 1, Transparency = 0.35})
 
-    -- геометрия оригинала: 180x140, SV 140x100, hue 10x100, alpha 160x10
-    local pop = createPopup(window, anchor, 180, useAlpha and 140 or 120, false)
+    -- геометрия палитры
+    local PW = 200
+    local INNER = PW - 20
+    local SV_H = 110
+    local BAR_H = 8
+    local SV_TOP = 10
+    local HUE_TOP = SV_TOP + SV_H + 10
+    local ALPHA_TOP = HUE_TOP + BAR_H + 8
+    local ROW_TOP = (useAlpha and (ALPHA_TOP + BAR_H) or (HUE_TOP + BAR_H)) + 12
+    local POP_H = ROW_TOP + 20 + 10
+
+    local pop = createPopup(window, anchor, PW, POP_H, false)
     local host = pop.Object
 
     local hue, saturation, value = color:ToHSV()
 
-    local sv = rect(host, 10, 10, 140, 100, white, 3, "TextButton")
+    -- квадрат насыщенности/яркости
+    local sv = rect(host, 10, SV_TOP, INNER, SV_H, white, 4, "TextButton")
     local svGradient = new("UIGradient", sv, {Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))})
-    local shade = rect(sv, 0, 0, 140, 100, black, 3)
+    local shade = rect(sv, 0, 0, INNER, SV_H, black, 4)
     new("UIGradient", shade, {
         Rotation = 90,
         Transparency = NumberSequence.new({
@@ -1267,28 +1395,55 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
             NumberSequenceKeypoint.new(1, 0),
         }),
     })
-    local svDot = transparent(sv, 0, 0, 6, 6)
+    local svDot = rect(sv, 0, 0, 10, 10, color, 5)
     svDot.ZIndex = 3
-    new("UICorner", svDot, {CornerRadius = UDim.new(1, 0)})
     new("UIStroke", svDot, {Color = white, Thickness = 2})
 
-    local hueBar = rect(host, 160, 10, 10, 100, white, 3, "TextButton")
+    -- полоса оттенка (горизонтальная, тонкая)
+    local hueBar = rect(host, 10, HUE_TOP, INNER, BAR_H, white, 4, "TextButton")
     local stops = {}
     for i = 0, 6 do
         stops[#stops + 1] = ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(i / 6, 1, 1))
     end
-    new("UIGradient", hueBar, {Rotation = 90, Color = ColorSequence.new(stops)})
-    local hueThumb = rect(hueBar, 0, 0, 10, 10, white, 3)
+    new("UIGradient", hueBar, {Color = ColorSequence.new(stops)})
+    local hueThumb = rect(hueBar, 0, -3, 6, BAR_H + 6, white, 3)
     hueThumb.ZIndex = 3
+    new("UIStroke", hueThumb, {Color = palette[1], Thickness = 1})
 
-    local alphaBar, alphaGradient, alphaThumb
+    -- полоса прозрачности
+    local alphaBar, alphaThumb
     if useAlpha then
-        alphaBar = rect(host, 10, 120, 160, 10, white, 3, "TextButton")
-        alphaGradient = new("UIGradient", alphaBar,
-            {Color = ColorSequence.new(black, Color3.fromHSV(hue, 1, 1))})
-        alphaThumb = rect(alphaBar, 0, 0, 10, 10, white, 3)
+        alphaBar = rect(host, 10, ALPHA_TOP, INNER, BAR_H, color, 4, "TextButton")
+        new("UIGradient", alphaBar, {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(1, 0),
+            }),
+        })
+        alphaThumb = rect(alphaBar, 0, -3, 6, BAR_H + 6, white, 3)
         alphaThumb.ZIndex = 3
+        new("UIStroke", alphaThumb, {Color = palette[1], Thickness = 1})
     end
+
+    -- нижняя строка: превью, HEX, быстрые цвета
+    local preview = rect(host, 10, ROW_TOP, 22, 20, color, 3)
+    new("UIStroke", preview, {Color = palette[5], Thickness = 1, Transparency = 0.35})
+
+    local hexBox = new("TextBox", host, {
+        Position = UDim2.fromOffset(38, ROW_TOP),
+        Size = UDim2.fromOffset(72, 20),
+        BackgroundColor3 = palette[4],
+        BorderSizePixel = 0,
+        Text = "#" .. toHex(color),
+        PlaceholderText = "#RRGGBB",
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = white,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false,
+        ZIndex = 2,
+    })
+    new("UICorner", hexBox, {CornerRadius = UDim.new(0, 3)})
 
     local api = {Flag = flag, Anchor = anchor, Popup = pop}
 
@@ -1319,6 +1474,32 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         push()
     end
 
+    local presets = type(opts.Presets) == "table" and opts.Presets or DEFAULT_PRESETS
+    for index = 1, math.min(5, #presets) do
+        local swatch = presets[index]
+        if typeof(swatch) == "Color3" then
+            local button = rect(host, 118 + (index - 1) * 15, ROW_TOP + 4, 12, 12, swatch, 3, "TextButton")
+            button.ZIndex = 2
+            new("UIStroke", button, {Color = palette[5], Thickness = 1, Transparency = 0.5})
+            connect(button.Activated, function()
+                hue, saturation, value = swatch:ToHSV()
+                push()
+            end)
+        end
+    end
+
+    local editing = false
+    connect(hexBox.Focused, function() editing = true end)
+    connect(hexBox.FocusLost, function()
+        editing = false
+        local parsed = fromHex(hexBox.Text)
+        if parsed then
+            hue, saturation, value = parsed:ToHSV()
+            push()
+        end
+        hexBox.Text = "#" .. toHex(Color3.fromHSV(hue, saturation, value))
+    end)
+
     connect(anchor.Activated, function() pop:Toggle(anchor) end)
 
     window.Draggable(sv, function(point)
@@ -1327,7 +1508,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         push()
     end)
     window.Draggable(hueBar, function(point)
-        hue = math.clamp((point.Y - hueBar.AbsolutePosition.Y) / math.max(1, hueBar.AbsoluteSize.Y), 0, 1)
+        hue = math.clamp((point.X - hueBar.AbsolutePosition.X) / math.max(1, hueBar.AbsoluteSize.X), 0, 1)
         push()
     end)
     if useAlpha then
@@ -1338,30 +1519,35 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         end)
     end
 
-    local svX, svY = 140 * saturation, 100 * (1 - value)
-    local hueY, alphaX = 100 * hue, 160 * alphaValue
+    local svX, svY = INNER * saturation, SV_H * (1 - value)
+    local hueX, alphaX = INNER * hue, INNER * alphaValue
     local lastHue = nil
 
     step(function(dt, k)
-        svX = approach(svX, math.clamp(140 * saturation, 4, 136), k)
-        svY = approach(svY, math.clamp(100 * (1 - value), 4, 96), k)
-        hueY = approach(hueY, math.clamp(100 * hue, 0, 90), k)
-        svDot.Position = UDim2.fromOffset(svX - 3, svY - 3)
-        hueThumb.Position = UDim2.fromOffset(0, hueY)
+        svX = approach(svX, math.clamp(INNER * saturation, 5, INNER - 5), k)
+        svY = approach(svY, math.clamp(SV_H * (1 - value), 5, SV_H - 5), k)
+        hueX = approach(hueX, math.clamp(INNER * hue, 0, INNER - 6), k)
+        svDot.Position = UDim2.fromOffset(svX - 5, svY - 5)
+        hueThumb.Position = UDim2.fromOffset(hueX, -3)
         if useAlpha then
-            alphaX = approach(alphaX, math.clamp(160 * alphaValue, 0, 150), k)
-            alphaThumb.Position = UDim2.fromOffset(alphaX, 0)
+            alphaX = approach(alphaX, math.clamp(INNER * alphaValue, 0, INNER - 6), k)
+            alphaThumb.Position = UDim2.fromOffset(alphaX, -3)
         end
         if hue ~= lastHue then
             svGradient.Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))
-            if alphaGradient then
-                alphaGradient.Color = ColorSequence.new(black, Color3.fromHSV(hue, 1, 1))
-            end
             lastHue = hue
         end
         local current = Color3.fromHSV(hue, saturation, value)
         dot.BackgroundColor3 = current
         dot.BackgroundTransparency = useAlpha and (1 - alphaValue) or 0
+        svDot.BackgroundColor3 = current
+        preview.BackgroundColor3 = current
+        hexBox.BackgroundColor3 = palette[4]
+        if alphaBar then alphaBar.BackgroundColor3 = current end
+        if not editing then
+            local hexText = "#" .. toHex(current)
+            if hexBox.Text ~= hexText then hexBox.Text = hexText end
+        end
     end)
 
     Library.Flags[flag] = color
@@ -2069,28 +2255,135 @@ function Library:LoadConfig(config)
     return true
 end
 
-local FOLDER = "WolfLib"
+-- Файлы в памяти исполнителя: одна корневая папка WolfUi, внутри —
+-- по папке на каждый скрипт, который использует библиотеку:
+--   WolfUi/
+--     MyScript/
+--       configs/default.json
+local ROOT = "WolfUi"
+local LEGACY_ROOT = "WolfLib"
+local scriptFolder = "Default"
+
+local function safeName(value)
+    local name = string.gsub(tostring(value or ""), "[^%w%-%. ]", "_")
+    name = string.gsub(name, "^ +", "")
+    name = string.gsub(name, " +$", "")
+    if name == "" then name = "Default" end
+    return string.sub(name, 1, 40)
+end
 
 local function fileSupport()
     return type(writefile) == "function" and type(readfile) == "function"
 end
 
+local function folderSupport()
+    return type(isfolder) == "function" and type(makefolder) == "function"
+end
+
+-- makefolder в части исполнителей не создаёт вложенные пути сам,
+-- поэтому создаём папки по одной сверху вниз
+local function ensureFolder(path)
+    if not folderSupport() then return false end
+    local built = nil
+    for part in string.gmatch(path, "[^/]+") do
+        built = built and (built .. "/" .. part) or part
+        local ok, exists = pcall(isfolder, built)
+        if not ok then return false end
+        if not exists then
+            if not pcall(makefolder, built) then return false end
+        end
+    end
+    return true
+end
+
+local function migrateLegacy(target)
+    if not fileSupport() or type(listfiles) ~= "function" then return end
+    pcall(function()
+        if folderSupport() and not isfolder(LEGACY_ROOT) then return end
+        for _, path in ipairs(listfiles(LEGACY_ROOT)) do
+            local name = string.match(path, "([^/\\]+%.json)$")
+            if name then
+                local destination = target .. "/" .. name
+                local exists = type(isfile) == "function" and isfile(destination)
+                if not exists then
+                    writefile(destination, readfile(path))
+                end
+            end
+        end
+    end)
+end
+
+function Library:SetScriptName(value)
+    scriptFolder = safeName(value)
+    self.ScriptName = scriptFolder
+    self.Folder = ROOT .. "/" .. scriptFolder
+    self.ConfigFolder = self.Folder .. "/configs"
+    if ensureFolder(self.ConfigFolder) then
+        migrateLegacy(self.ConfigFolder)
+    end
+    return self.Folder
+end
+
+function Library:GetFolder()
+    return ROOT .. "/" .. scriptFolder
+end
+
+function Library:GetConfigFolder()
+    return ROOT .. "/" .. scriptFolder .. "/configs"
+end
+
+local function resolvePath(path)
+    local clean = string.gsub(tostring(path or ""), "^/+", "")
+    return ROOT .. "/" .. scriptFolder .. "/" .. clean
+end
+
+function Library:WriteFile(path, content)
+    if not fileSupport() then return false, "executor has no file API" end
+    local full = resolvePath(path)
+    local folder = string.match(full, "^(.*)/[^/]+$")
+    if folder then ensureFolder(folder) end
+    return pcall(writefile, full, tostring(content))
+end
+
+function Library:ReadFile(path)
+    if not fileSupport() then return nil, "executor has no file API" end
+    local ok, result = pcall(readfile, resolvePath(path))
+    if not ok then return nil, result end
+    return result
+end
+
+function Library:DeleteFile(path)
+    if type(delfile) ~= "function" then return false, "executor has no delfile" end
+    return pcall(delfile, resolvePath(path))
+end
+
+function Library:ListFiles(subFolder)
+    local names = {}
+    if type(listfiles) ~= "function" then return names end
+    local folder = subFolder and resolvePath(subFolder) or self:GetFolder()
+    pcall(function()
+        for _, path in ipairs(listfiles(folder)) do
+            names[#names + 1] = string.match(path, "([^/\\]+)$") or path
+        end
+    end)
+    table.sort(names)
+    return names
+end
+
 function Library:SaveConfigFile(name)
     if not fileSupport() then return false, "executor has no file API" end
-    name = tostring(name or "default")
+    local folder = self:GetConfigFolder()
     local ok, err = pcall(function()
-        if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(FOLDER) then
-            makefolder(FOLDER)
-        end
-        writefile(FOLDER .. "/" .. name .. ".json", HttpService:JSONEncode(self:GetConfig()))
+        ensureFolder(folder)
+        writefile(folder .. "/" .. safeName(name or "default") .. ".json",
+            HttpService:JSONEncode(self:GetConfig()))
     end)
     return ok, err
 end
 
 function Library:LoadConfigFile(name)
     if not fileSupport() then return false, "executor has no file API" end
-    name = tostring(name or "default")
-    local path = FOLDER .. "/" .. name .. ".json"
+    local path = self:GetConfigFolder() .. "/" .. safeName(name or "default") .. ".json"
     local ok, result = pcall(function()
         return HttpService:JSONDecode(readfile(path))
     end)
@@ -2102,7 +2395,7 @@ function Library:ListConfigs()
     local names = {}
     if type(listfiles) ~= "function" then return names end
     pcall(function()
-        for _, path in ipairs(listfiles(FOLDER)) do
+        for _, path in ipairs(listfiles(self:GetConfigFolder())) do
             local name = string.match(path, "([^/\\]+)%.json$")
             if name then names[#names + 1] = name end
         end
@@ -2113,7 +2406,8 @@ end
 
 function Library:DeleteConfigFile(name)
     if type(delfile) ~= "function" then return false, "executor has no delfile" end
-    return pcall(function() delfile(FOLDER .. "/" .. tostring(name) .. ".json") end)
+    return pcall(delfile,
+        self:GetConfigFolder() .. "/" .. safeName(name or "default") .. ".json")
 end
 
 ----------------------------------------------------------------------
@@ -2127,6 +2421,9 @@ function Library:Unload()
     Runtime.Connections, Runtime.Updates = {}, {}
     if self.Window and self.Window.Gui then
         pcall(function() self.Window.Gui:Destroy() end)
+    end
+    if self.Window and self.Window.Events then
+        pcall(function() self.Window.Events:Destroy() end)
     end
     self.Window = nil
     self.Elements = {}
