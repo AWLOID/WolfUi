@@ -305,7 +305,7 @@ local GAP = 10
 local TAB_SLOT = 70
 
 local Library = {
-    Version = "2.2.0",
+    Version = "3.0.0",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -518,6 +518,9 @@ function Library:CreateWindow(opts)
         Position = Vector2.new(0, 0),
         Viewport = Vector2.new(1280, 720),
         Initialized = false,
+        BoundToScreen = opts.BoundToScreen == true,
+        SettingsPanels = {},
+        SettingsStack = {},
     }, Window)
     Library.Window = window
 
@@ -531,7 +534,7 @@ function Library:CreateWindow(opts)
     gui.Name = opts.GuiName or "WolfUI"
     gui.ResetOnSpawn = false
     gui.IgnoreGuiInset = true
-    pcall(function() gui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets end)
+    pcall(function() gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets end)
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.DisplayOrder = opts.DisplayOrder or 10000
     
@@ -584,12 +587,15 @@ function Library:CreateWindow(opts)
             window.Position = (viewport - Vector2.new(WINDOW_W * s, WINDOW_H * s)) / 2
             window.Initialized = true
         end
-        window.Position = Vector2.new(
-            math.clamp(window.Position.X, 0, math.max(0, viewport.X - WINDOW_W * s)),
-            math.clamp(window.Position.Y, 0, math.max(0, viewport.Y - WINDOW_H * s))
-        )
+        if window.BoundToScreen then
+            window.Position = Vector2.new(
+                math.clamp(window.Position.X, 0, math.max(0, viewport.X - WINDOW_W * s)),
+                math.clamp(window.Position.Y, 0, math.max(0, viewport.Y - WINDOW_H * s))
+            )
+        end
         frame.Position = UDim2.fromOffset(window.Position.X, window.Position.Y)
         popupLayer.Position = frame.Position
+        if window.LayoutAccess then window:LayoutAccess() end
     end
     window.Layout = layout
     layout()
@@ -607,14 +613,16 @@ function Library:CreateWindow(opts)
         for scroll, enabled in pairs(drag.Scrolls) do
             if scroll.Parent then scroll.ScrollingEnabled = enabled end
         end
-        if drag.Finish then task.spawn(drag.Finish, cancelled == true) end
+        if drag.Finish then task.spawn(drag.Finish, cancelled == true, drag) end
     end
     window.CancelDrag = function() finishDrag(true) end
 
-    local function draggable(object, onMove, onEnd)
+    local function draggable(object, onMove, onEnd, options)
+        options = options or {}
         object.Active = true
-        connect(object.InputBegan, function(input)
-            if not primary(input) or window.Drag or not frame.Visible then return end
+        local began = connect(object.InputBegan, function(input)
+            if not primary(input) or window.Drag or (not frame.Visible and not options.Always) then return end
+            if options.CanStart and not options.CanStart(input) then return end
             local scrolls = {}
             local parent = object.Parent
             while parent and parent ~= gui do
@@ -632,9 +640,10 @@ function Library:CreateWindow(opts)
             end)
             onMove(Vector2.new(input.Position.X, input.Position.Y), true)
         end)
-        connect(object.Destroying, function()
+        local destroyed = connect(object.Destroying, function()
             if window.Drag and window.Drag.Object == object then finishDrag(true) end
         end)
+        return {began, destroyed}
     end
     window.Draggable = draggable
 
@@ -797,21 +806,7 @@ function Library:CreateWindow(opts)
     end
     connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
 
-    local reopen = rect(gui, 8, 8, 32, 32, palette[2], 5, "TextButton")
-    reopen.Name = "Reopen"
-    reopen.Visible = false
-    local reopenIcon = iconLabel(reopen, opts.Icon or {"dog", "paw-print", "moon"}, 5, 5, 22, accent,
-        string.sub(opts.Name or "W", 1, 1))
-    window.Reopen = reopen
-    connect(reopen.Activated, function() window:SetVisible(true) end)
-
-    local watermark = paint(rect(gui, 8, 8, 160, 22, palette[2], 5), 2)
-    watermark.Name = "Watermark"
-    watermark.Visible = false
-    local watermarkText = text(watermark, "", 8, 0, 144, 22, 11, white)
-    window.Watermark = watermark
-    window.WatermarkText = watermarkText
-    window.WatermarkConfig = {Enabled = false, Text = opts.Name or "Wolf", ShowFPS = false}
+    window:InitializeAccess(opts)
 
     local notifyHolder = transparent(gui, 0, 0, 250, WINDOW_H)
     notifyHolder.Name = "Notifications"
@@ -841,6 +836,12 @@ function Library:CreateWindow(opts)
         end
 
         if processed or UIS:GetFocusedTextBox() then return end
+
+        if input.KeyCode == Enum.KeyCode.Escape then
+            if window.Opened then window.Opened = nil; return end
+            local panel = window.SettingsStack[#window.SettingsStack]
+            if panel then panel:Close(); return end
+        end
 
         local hit = input.KeyCode ~= Enum.KeyCode.Unknown and input.KeyCode or input.UserInputType
         for _, bind in ipairs(window.Keybinds) do
@@ -905,17 +906,7 @@ function Library:CreateWindow(opts)
             layout()
         end
 
-        local wm = window.WatermarkConfig
-        watermark.Visible = wm.Enabled and frame.Visible
-        if watermark.Visible then
-            local caption = wm.Text
-            if wm.ShowFPS then caption = caption .. "  |  " .. tostring(fps) .. " fps" end
-            watermarkText:SetText(caption)
-            local size = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(400, 22))
-            watermark.Size = UDim2.fromOffset(math.clamp(size.X + 18, 60, 260), 22)
-            watermarkText:Width(math.clamp(size.X + 2, 40, 244))
-            watermark.BackgroundColor3 = palette[2]
-        end
+        window:UpdateAccess(fps, elapsed)
 
         for index = #window.Notifications, 1, -1 do
             local notif = window.Notifications[index]
@@ -939,9 +930,6 @@ function Library:CreateWindow(opts)
         end
 
         if not frame.Visible then
-            reopen.BackgroundColor3 = palette[2]
-            reopenIcon:Color(accent)
-            reopenIcon:Alpha(state.AccentAlpha)
             return
         end
 
@@ -975,7 +963,7 @@ function Library:CreateWindow(opts)
             object.BackgroundColor3 = palette[1]
             object.Size = UDim2.fromOffset(pop.Width, math.max(1, pop.CurrentHeight))
             if object.Visible then
-                local s = math.max(0.001, scale.Scale)
+                local s = math.max(0.001, window.PopupScale.Scale)
                 local origin = (pop.Anchor.AbsolutePosition - popupLayer.AbsolutePosition) / s
                 local minX, minY = -window.Position.X / s, -window.Position.Y / s
                 local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
@@ -992,14 +980,16 @@ function Library:CreateWindow(opts)
 end
 
 function Window:SetVisible(value)
+    if Library.Window ~= self or not self.Gui.Parent then return end
     self.Frame.Visible = value and true or false
     self.PopupLayer.Visible = self.Frame.Visible
-    self.Reopen.Visible = not self.Frame.Visible
     if not self.Frame.Visible then
         self.Opened = nil
         self.CancelDrag()
         self.PendingKeybind = nil
+        self:CloseSettings()
     end
+    self:LayoutAccess()
 end
 
 function Window:SetScale(value)
@@ -1021,8 +1011,11 @@ function Window:SelectTab(name)
     if not tab or self.Current == tab then return end
     if tab.Window ~= self then return end
     self.CancelDrag()
+    self:CloseSettings()
     self.Opened = nil
+    if self.Current then self.Current.Page.Visible = false end
     self.Current = tab
+    tab.Page.Visible = true
     state.Tab = tab.Name
     self.Scroll.CanvasSize = UDim2.fromOffset(0, tab.Height + PAD * 2)
     self.Scroll.CanvasPosition = Vector2.new(0, 0)
@@ -1109,15 +1102,17 @@ function Window:SetPosition(x, y)
 end
 
 function Tab:_width(value)
+    local width = self.ContentWidth or W
     local fraction = finite(value, 1)
-    if fraction <= 0 or fraction >= 1 then return W end
+    if fraction <= 0 or fraction >= 1 then return width end
     local columns = math.max(1, math.floor(1 / fraction + 0.5))
-    return math.max(105, math.floor((W - GAP * (columns - 1)) / columns))
+    return math.min(width, math.max(105, math.floor((width - GAP * (columns - 1)) / columns)))
 end
 
 function Tab:_place(w, h)
+    local width = self.ContentWidth or W
     local cursor = self.Cursor
-    if cursor.X > 0 and cursor.X + w > W + 0.5 then
+    if cursor.X > 0 and cursor.X + w > width + 0.5 then
         cursor.Y = cursor.Y + cursor.RowHeight + GAP
         cursor.X = 0
         cursor.RowHeight = 0
@@ -1125,7 +1120,7 @@ function Tab:_place(w, h)
     local x, y = cursor.X, cursor.Y
     cursor.X = cursor.X + w + GAP
     cursor.RowHeight = math.max(cursor.RowHeight, h)
-    if cursor.X >= W then
+    if cursor.X >= width then
         cursor.Y = cursor.Y + cursor.RowHeight + GAP
         cursor.X = 0
         cursor.RowHeight = 0
@@ -1168,11 +1163,14 @@ function Tab:_grow()
         end
     end
     self.Height = height
-    self.Page.Size = UDim2.fromOffset(W, math.max(1, height))
-    if self.Window.Current == self then
+    self.Page.Size = UDim2.fromOffset(self.ContentWidth or W, math.max(1, height))
+    if self.Scroll then
+        self.Scroll.CanvasSize = UDim2.fromOffset(0, height + PAD * 2)
+    elseif self.Window.Current == self then
         self.Window.Scroll.CanvasSize = UDim2.fromOffset(0, height + PAD * 2)
     end
     self.Reflowing = false
+    if self.OnGrow then self:OnGrow(height) end
 end
 
 function Tab:_card(w, h, name)
@@ -1202,8 +1200,9 @@ end
 function Tab:AddSection(nameOrOpts)
     local opts = type(nameOrOpts) == "table" and nameOrOpts or {Name = nameOrOpts}
     self:_newline()
-    local x, y = self:_place(W, 16)
-    local api = muted(self.Page, string.upper(tostring(opts.Name or "Section")), x, y, W, 16, 11, nil,
+    local width = self.ContentWidth or W
+    local x, y = self:_place(width, 16)
+    local api = muted(self.Page, string.upper(tostring(opts.Name or "Section")), x, y, width, 16, 11, nil,
         {Font = Enum.Font.GothamBold})
     self:_newline()
     self:_grow()
@@ -1212,8 +1211,9 @@ end
 
 function Tab:AddDivider()
     self:_newline()
-    local x, y = self:_place(W, 1)
-    local line = paint(rect(self.Page, x, y + 0, W, 1, palette[4]), 4)
+    local width = self.ContentWidth or W
+    local x, y = self:_place(width, 1)
+    local line = paint(rect(self.Page, x, y + 0, width, 1, palette[4]), 4)
     self:_newline()
     self:_grow()
     return {Object = line}
@@ -1623,7 +1623,9 @@ function Tab:AddToggle(opts)
 
     function api:Get() return value end
     function api:Set(newValue, silent)
-        value = newValue and true or false
+        local nextValue = newValue and true or false
+        if nextValue == value then return end
+        value = nextValue
         push(not silent)
     end
     function api:Toggle() self:Set(not value) end
@@ -2068,11 +2070,14 @@ function Tab:AddButton(opts)
     local flash, color, hover = 0, palette[4], false
     connect(control.MouseEnter, function() hover = true end)
     connect(control.MouseLeave, function() hover = false end)
-    connect(control.Activated, function()
+    function api:Press()
+        if self.Destroyed or not card.Parent then return false end
         flash = 1 / 9
-        if self.Window then self.Window.ButtonPressed:Fire(self.Name .. "." .. name) end
+        if self.Tab.Window then self.Tab.Window.ButtonPressed:Fire(self.Tab.Name .. "." .. name) end
         if opts.Callback then task.spawn(opts.Callback) end
-    end)
+        return true
+    end
+    connect(control.Activated, function() api:Press() end)
 
     step(function(dt, k)
         flash = math.max(0, flash - dt)
@@ -2131,7 +2136,10 @@ function Library:SetWatermark(opts)
     local config = window.WatermarkConfig
     if opts.Text ~= nil then config.Text = tostring(opts.Text) end
     if opts.ShowFPS ~= nil then config.ShowFPS = opts.ShowFPS and true or false end
-    config.Enabled = opts.Enabled ~= false
+    if opts.Enabled ~= nil then config.Enabled = opts.Enabled == true end
+    if opts.ShowClock ~= nil then config.ShowClock = opts.ShowClock == true end
+    if opts.Transparency ~= nil then config.Transparency = math.clamp(finite(opts.Transparency, config.Transparency), 0, 0.95) end
+    window:LayoutAccess()
     return config
 end
 
@@ -2175,6 +2183,7 @@ function Library:GetConfig()
     end
     config.Accent = serialize(state.Accent)
     config.AccentAlpha = state.AccentAlpha
+    if self.Window then config.Interface = self.Window:GetInterfaceConfig() end
     return config
 end
 
@@ -2201,6 +2210,9 @@ function Library:LoadConfig(config)
             if element and element.Set then element:Set(value) else self.Flags[flag] = value end
         end)
     end
+    apply("Interface", function()
+        if config.Interface and self.Window then self.Window:LoadInterfaceConfig(config.Interface) end
+    end)
     if #errors > 0 then return false, table.concat(errors, "\n") end
     return true
 end
@@ -2373,6 +2385,10 @@ function Library:Unload()
     if self.Unloading then return end
     self.Unloading = true
     if self.Window and self.Window.CancelDrag then self.Window.CancelDrag() end
+    if self.Window then
+        for _, button in ipairs(table.clone(self.Window.QuickButtons or {})) do button:Destroy() end
+        for _, panel in ipairs(table.clone(self.Window.SettingsPanels or {})) do panel:Destroy() end
+    end
     Runtime.Alive = false
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
@@ -2615,6 +2631,713 @@ end
 function Tab:AddSegmented(opts) return choiceControl(self, opts, false) end
 function Tab:AddRadioGroup(opts) return choiceControl(self, opts, true) end
 
+local function isPrimary(input)
+    return input and (input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch)
+end
+
+local function pointInside(point, object)
+    local p, size = object.AbsolutePosition, object.AbsoluteSize
+    return point.X >= p.X and point.Y >= p.Y and point.X <= p.X + size.X and point.Y <= p.Y + size.Y
+end
+
+local function shown(object)
+    while object do
+        if object:IsA("GuiObject") and not object.Visible then return false end
+        object = object.Parent
+    end
+    return true
+end
+
+local function disconnectAll(connections)
+    for _, connection in ipairs(connections or {}) do connection:Disconnect() end
+end
+
+local function removeValue(list, value)
+    for i = #list, 1, -1 do if list[i] == value then table.remove(list, i) end end
+end
+
+local function clampPoint(point, size, viewport)
+    return Vector2.new(math.clamp(point.X, 0, math.max(0, viewport.X - size.X)),
+        math.clamp(point.Y, 0, math.max(0, viewport.Y - size.Y)))
+end
+
+function Window:BindFloatingInput(button, opts)
+    local gesture
+    local connections = self.Draggable(button, function(point, initial)
+        if initial then
+            gesture = {Start = point, Point = point, Moved = false,
+                Origin = opts.GetPosition and opts.GetPosition() or Vector2.new(0, 0)}
+        end
+        if not gesture then return end
+        gesture.Point = point
+        local delta = point - gesture.Start
+        if delta.X * delta.X + delta.Y * delta.Y >= (opts.DragThreshold or 7) ^ 2 then gesture.Moved = true end
+        if gesture.Moved and opts.Move then opts.Move(gesture.Origin + delta) end
+    end, function(cancelled)
+        local completed = gesture
+        gesture = nil
+        if not completed then return end
+        if completed.Moved then
+            if opts.Drop then opts.Drop(cancelled) end
+        elseif not cancelled and pointInside(completed.Point, button) then
+            if opts.Click then opts.Click() end
+        end
+    end, {Always = true, CanStart = function()
+        return button.Parent and shown(button) and (not opts.CanStart or opts.CanStart())
+    end})
+    connections[#connections + 1] = connect(button.Activated, function(input)
+        if isPrimary(input) then return end
+        if button.Parent and shown(button) and (not opts.CanStart or opts.CanStart()) then
+            if opts.Click then opts.Click() end
+        end
+    end)
+    return connections
+end
+
+function Window:SetBoundsEnabled(value)
+    self.BoundToScreen = value == true
+    self.CancelDrag()
+    self.Layout()
+end
+
+function Window:Toggle()
+    if not self.Frame.Visible then
+        local p, size, v = self.Position, self.Frame.AbsoluteSize, self.Viewport
+        if p.X + size.X < 40 or p.Y + size.Y < 40 or p.X > v.X - 40 or p.Y > v.Y - 40 then self:Center() end
+    end
+    self:SetVisible(not self.Frame.Visible)
+end
+
+function Window:InitializeAccess(opts)
+    self.AccessPosition = Vector2.new(8, 8)
+    self.AccessConfig = {Mode = "Watermark", Transparency = 0.12, ButtonSize = 48}
+    self.WatermarkConfig = {Enabled = true, Text = opts.Name or "Wolf", ShowFPS = true,
+        ShowClock = false, Transparency = 0.12}
+    self.QuickButtons, self.QuickButtonIds = {}, {}
+    self.QuickConfig = {ButtonSize = 56, Gap = 8, Side = "Left"}
+    self.QuickPage = 1
+    self.QuickLayer = transparent(self.Gui, 0, 0, 0, 0)
+    self.QuickLayer.Size = UDim2.fromScale(1, 1)
+    self.QuickLayer.ZIndex = 15
+    self.QuickLayer.Name = "QuickActions"
+
+    local watermark = rect(self.Gui, 8, 8, 240, 42, palette[2], 8, "CanvasGroup")
+    watermark.ZIndex = 25
+    watermark.Name = "Watermark"
+    self.Watermark = watermark
+    self.WatermarkBar = rect(watermark, 0, 6, 3, 30, accent, 2)
+    self.WatermarkText = text(watermark, self.WatermarkConfig.Text, 12, 5, 190, 16, 12, white)
+    self.WatermarkDetail = text(watermark, "", 12, 23, 190, 13, 10, palette[3])
+    local waterHit = transparent(watermark, 0, 0, 240, 42, "TextButton")
+    waterHit.Size = UDim2.fromScale(1, 1)
+    waterHit.ZIndex = 4
+    self.WatermarkHit = waterHit
+    local reopen = rect(self.Gui, 8, 8, 48, 48, palette[2], 8, "CanvasGroup")
+    reopen.Name, reopen.ZIndex = "Reopen", 25
+    self.Reopen = reopen
+    self.ReopenIcon = iconLabel(reopen, opts.Icon or "dog", 13, 7, 22, accent, "W")
+    self.ReopenCaption = text(reopen, "MENU", 0, 31, 48, 12, 8, white, "center")
+    local reopenHit = transparent(reopen, 0, 0, 48, 48, "TextButton")
+    reopenHit.Size, reopenHit.ZIndex = UDim2.fromScale(1, 1), 4
+    self.ReopenHit = reopenHit
+    local center = rect(self.Gui, 0, 0, 44, 44, palette[2], 22, "TextButton")
+    center.ZIndex, center.Name, center.BackgroundTransparency = 25, "CenterTap", 0.8
+    self.CenterHit = center
+    self.CenterIcon = text(center, "W", 0, 0, 44, 44, 14, white, "center")
+
+    local function accessGesture(hit)
+        self:BindFloatingInput(hit, {
+            GetPosition = function() return self.AccessPosition end,
+            Move = function(position)
+                self.AccessPosition = clampPoint(position, hit.Parent.AbsoluteSize, self.Viewport)
+                self:LayoutAccess()
+            end,
+            Click = function() self:Toggle() end,
+        })
+    end
+    accessGesture(waterHit)
+    accessGesture(reopenHit)
+    self:BindFloatingInput(center, {Click = function() self:Toggle() end})
+
+    local pager = rect(self.Gui, 0, 0, 160, 30, palette[2], 6)
+    pager.Name, pager.ZIndex = "QuickPages", 25
+    self.QuickPager = pager
+    self.QuickPagerText = text(pager, "", 34, 0, 92, 30, 11, white, "center")
+    local prev = transparent(pager, 0, 0, 34, 30, "TextButton")
+    local nextButton = transparent(pager, 126, 0, 34, 30, "TextButton")
+    self.QuickPrevious, self.QuickNext = prev, nextButton
+    text(prev, "‹", 0, 0, 34, 30, 22, white, "center")
+    text(nextButton, "›", 0, 0, 34, 30, 22, white, "center")
+    connect(prev.Activated, function() self:SetQuickPage(self.QuickPage - 1) end)
+    connect(nextButton.Activated, function() self:SetQuickPage(self.QuickPage + 1) end)
+    self:SetOpener(opts.Opener or {Mode = "Watermark"})
+    if opts.Watermark then Library:SetWatermark(opts.Watermark) end
+end
+
+function Window:SetOpener(opts)
+    opts = type(opts) == "table" and opts or {Mode = opts}
+    local config = self.AccessConfig
+    if opts.Mode ~= nil then
+        assert(opts.Mode == "Watermark" or opts.Mode == "Button" or opts.Mode == "CenterTap", "Unknown opener mode")
+        config.Mode = opts.Mode
+    end
+    if opts.Transparency ~= nil then config.Transparency = math.clamp(finite(opts.Transparency, 0.12), 0, 0.95) end
+    if opts.ButtonSize ~= nil then config.ButtonSize = math.clamp(finite(opts.ButtonSize, 48), 32, 120) end
+    if typeof(opts.Position) == "Vector2" then self.AccessPosition = opts.Position end
+    self:LayoutAccess()
+    return table.clone(config)
+end
+
+function Library:SetOpener(opts)
+    if self.Window then return self.Window:SetOpener(opts) end
+end
+
+function Window:LayoutAccess()
+    if not self.AccessConfig then return end
+    local viewport, config = self.Viewport, self.AccessConfig
+    local size = math.min(config.ButtonSize, viewport.X, viewport.Y)
+    self.Reopen.Size = UDim2.fromOffset(size, size)
+    self.ReopenIcon.Object.Position = UDim2.fromOffset((size - 22) / 2, math.max(2, size / 2 - 17))
+    self.ReopenCaption.Object.Position = UDim2.fromOffset(0, size - 15)
+    self.ReopenCaption:Width(size)
+    local useWatermark = config.Mode == "Watermark" and self.WatermarkConfig.Enabled
+    self.Watermark.Visible = useWatermark
+    self.Reopen.Visible = config.Mode == "Button" or (config.Mode == "Watermark" and not useWatermark)
+    self.CenterHit.Visible = config.Mode == "CenterTap"
+    local active = useWatermark and self.Watermark or self.Reopen
+    self.AccessPosition = clampPoint(self.AccessPosition, active.AbsoluteSize, viewport)
+    local pos = UDim2.fromOffset(self.AccessPosition.X, self.AccessPosition.Y)
+    self.Watermark.Position, self.Reopen.Position = pos, pos
+    self.CenterHit.Position = UDim2.fromOffset(math.max(0, viewport.X / 2 - 22), math.max(0, viewport.Y / 2 - 22))
+    self:LayoutQuickButtons()
+    self:LayoutSettings()
+end
+
+function Window:UpdateAccess(fps)
+    local config = self.WatermarkConfig
+    local details = {self.Frame.Visible and "MENU OPEN" or "TAP TO OPEN"}
+    if config.ShowFPS then details[#details + 1] = tostring(fps) .. " FPS" end
+    if config.ShowClock then details[#details + 1] = os.date("%H:%M") end
+    local detail = table.concat(details, "  ·  ")
+    local width = math.max(TextService:GetTextSize(config.Text, 12, Enum.Font.Gotham, Vector2.new(800, 16)).X,
+        TextService:GetTextSize(detail, 10, Enum.Font.Gotham, Vector2.new(800, 16)).X) + 28
+    width = math.min(self.Viewport.X, math.clamp(width, 140, 380))
+    if width ~= self.Watermark.Size.X.Offset then
+        self.Watermark.Size = UDim2.fromOffset(width, math.min(42, self.Viewport.Y))
+        self.WatermarkText:Width(math.max(1, width - 24))
+        self.WatermarkDetail:Width(math.max(1, width - 24))
+        self:LayoutAccess()
+    end
+    self.WatermarkText:SetText(config.Text)
+    self.WatermarkDetail:SetText(detail)
+    self.WatermarkDetail:Color(palette[3])
+    self.Watermark.BackgroundColor3 = palette[2]
+    self.WatermarkBar.BackgroundColor3 = accent
+    self.Watermark.GroupTransparency = config.Transparency
+    self.Reopen.BackgroundColor3 = palette[2]
+    self.Reopen.GroupTransparency = self.AccessConfig.Transparency
+    self.ReopenIcon:Color(accent)
+    self.CenterHit.BackgroundColor3 = palette[2]
+    self.CenterIcon:Color(accent)
+    self.QuickPager.BackgroundColor3 = palette[2]
+    for _, item in ipairs(self.QuickButtons) do item:Render() end
+    local panel = self.SettingsStack[#self.SettingsStack]
+    if panel then
+        local ignored, parent = {}, panel.ParentPanel
+        while parent do ignored[parent.Object] = true; parent = parent.ParentPanel end
+        local object, visible = panel.Anchor, panel.Anchor.Parent ~= nil
+        while object and visible do
+            if object:IsA("GuiObject") and not object.Visible and not ignored[object] then visible = false end
+            object = object.Parent
+        end
+        if not visible then panel:Close() end
+        panel.Object.BackgroundColor3 = palette[1]
+    end
+end
+
+function Window:SetQuickButtonLayout(opts)
+    opts = opts or {}
+    if opts.ButtonSize ~= nil then self.QuickConfig.ButtonSize = math.clamp(finite(opts.ButtonSize, 56), 32, 128) end
+    if opts.Gap ~= nil then self.QuickConfig.Gap = math.clamp(finite(opts.Gap, 8), 2, 32) end
+    if opts.Side ~= nil then
+        assert(opts.Side == "Left" or opts.Side == "Right", "Side must be Left or Right")
+        self.QuickConfig.Side = opts.Side
+    end
+    self:LayoutQuickButtons()
+end
+
+function Window:SetQuickPage(page)
+    self.CancelDrag()
+    self.QuickPage = math.clamp(math.floor(finite(page, 1)), 1, self.QuickPageCount or 1)
+    self:LayoutQuickButtons()
+end
+
+function Window:LayoutQuickButtons(priority)
+    if not self.QuickButtons then return end
+    local v, config = self.Viewport, self.QuickConfig
+    local margin = math.min(8, v.X / 8, v.Y / 8)
+    local top = math.min(64, v.Y * 0.2)
+    local bottom = math.min(44, v.Y * 0.15)
+    local gap = config.Gap
+    local size = math.max(1, math.min(config.ButtonSize, v.X - margin * 2, v.Y - top - bottom - margin))
+    local columns = math.max(1, math.floor((v.X - margin * 2 + gap) / (size + gap)))
+    local rows = math.max(1, math.floor((v.Y - top - bottom - margin + gap) / (size + gap)))
+    local capacity = columns * rows
+    local items = {}
+    for _, item in ipairs(self.QuickButtons) do
+        if not item.Destroyed and item.Visible then items[#items + 1] = item end
+        if not item.Destroyed then item.Object.Visible = false end
+    end
+    self.QuickPageCount = math.max(1, math.ceil(#items / capacity))
+    self.QuickPage = math.clamp(self.QuickPage, 1, self.QuickPageCount)
+    self.QuickPager.Visible = self.QuickPageCount > 1
+    local pagerWidth = math.min(160, v.X)
+    self.QuickPager.Size = UDim2.fromOffset(pagerWidth, math.min(30, bottom))
+    self.QuickPager.Position = UDim2.fromOffset((v.X - pagerWidth) / 2, v.Y - math.min(30, bottom) - margin)
+    self.QuickPagerText:SetText(tostring(self.QuickPage) .. " / " .. tostring(self.QuickPageCount))
+    local arrowWidth = math.min(34, pagerWidth / 3)
+    self.QuickPrevious.Size = UDim2.fromOffset(arrowWidth, math.min(30, bottom))
+    self.QuickNext.Size = self.QuickPrevious.Size
+    self.QuickNext.Position = UDim2.fromOffset(pagerWidth - arrowWidth, 0)
+    self.QuickPagerText.Object.Position = UDim2.fromOffset(arrowWidth, 0)
+    self.QuickPagerText:Width(pagerWidth - arrowWidth * 2)
+    local first = (self.QuickPage - 1) * capacity + 1
+    local page = {}
+    for i = first, math.min(#items, first + capacity - 1) do page[#page + 1] = items[i] end
+    if priority then
+        for _, item in ipairs(page) do
+            if item == priority then removeValue(page, priority); table.insert(page, 1, priority); break end
+        end
+    end
+    local occupied = {}
+    local function slotPoint(slot)
+        local column, row = math.floor((slot - 1) / rows), (slot - 1) % rows
+        local x = margin + column * (size + gap)
+        if config.Side == "Right" then x = v.X - margin - size - column * (size + gap) end
+        return Vector2.new(x, top + row * (size + gap))
+    end
+    for _, item in ipairs(page) do
+        local best, distance = nil, math.huge
+        for slot = 1, capacity do
+            if not occupied[slot] then
+                if not item.Preferred then best = slot; break end
+                local d = slot
+                if item.Preferred then
+                    local point = slotPoint(slot)
+                    local dx, dy = point.X - item.Preferred.X * v.X, point.Y - item.Preferred.Y * v.Y
+                    d = dx * dx + dy * dy
+                end
+                if d < distance then best, distance = slot, d end
+            end
+        end
+        if best then
+            occupied[best] = true
+            local position = slotPoint(best)
+            local dragging = self.Drag and self.Drag.Object == item.Hit
+            if not dragging then item.Position = position end
+            item.Object.Size = UDim2.fromOffset(size, size)
+            if not dragging then item.Object.Position = UDim2.fromOffset(position.X, position.Y) end
+            item.Object.Visible = true
+            item.Caption.Object.Size = UDim2.new(1, -8, 0, 18)
+            item.Caption.Object.Position = UDim2.new(0, 4, 1, -21)
+            item.StateLabel.Object.Size = UDim2.new(1, 0, 0, 18)
+            item.StateLabel.Object.Position = UDim2.fromOffset(0, 5)
+            if item.Icon then item.Icon.Object.Position = UDim2.fromOffset((size - 18) / 2, 6) end
+        end
+    end
+end
+
+function Window:ArrangeQuickButtons()
+    self.CancelDrag()
+    for _, item in ipairs(self.QuickButtons) do item.Preferred = nil end
+    self:LayoutQuickButtons()
+end
+
+function Window:CreateQuickButton(opts)
+    opts = opts or {}
+    assert(Library.Window == self, "Window is unloaded")
+    local mode = opts.Mode or "Button"
+    assert(mode == "Toggle" or mode == "Button", "Quick button Mode must be Toggle or Button")
+    self.QuickSerial = (self.QuickSerial or 0) + 1
+    local id = tostring(opts.Id or opts.Flag or ("quick_" .. tostring(self.QuickSerial)))
+    assert(not self.QuickButtonIds[id], "Duplicate quick button Id: " .. id)
+    local target = opts.Target or (opts.TargetFlag and Library.Elements[opts.TargetFlag])
+    if opts.TargetFlag then assert(target, "Unknown TargetFlag: " .. tostring(opts.TargetFlag)) end
+    if target then
+        assert((mode == "Toggle" and target.Get and target.Set) or (mode == "Button" and target.Press), "Target does not support this mode")
+        if mode == "Toggle" then assert(type(target:Get()) == "boolean", "Toggle Target must return a boolean") end
+    end
+    if opts.Flag and not target then assert(not Library.Elements[opts.Flag], "Duplicate quick button Flag") end
+    local object = rect(self.QuickLayer, 0, 0, 56, 56, palette[2], opts.Round and 28 or 9, "CanvasGroup")
+    object.Name = id
+    local hit = transparent(object, 0, 0, 56, 56, "TextButton")
+    hit.Size, hit.ZIndex = UDim2.fromScale(1, 1), 4
+    local api = {Object = object, Hit = hit, Window = self, Id = id, Mode = mode, Target = target,
+        Flag = opts.Flag, Visible = opts.Visible ~= false, Enabled = opts.Enabled ~= false,
+        Value = opts.Default == true, Transparency = math.clamp(finite(opts.Transparency, 0.1), 0, 0.95),
+        Cooldown = math.max(0, finite(opts.Cooldown, 0)), LastPress = -math.huge,
+        Position = Vector2.new(0, 0), Connections = {}, Busy = false, Locked = opts.Locked == true,
+        Color = typeof(opts.Color) == "Color3" and opts.Color or nil}
+    api.Caption = text(object, opts.Text or opts.Name or id, 4, 34, 48, 18, 10, white, "center")
+    api.StateLabel = text(object, "", 0, 5, 56, 18, 11, white, "center")
+    if opts.Icon and mode == "Button" then api.Icon = iconLabel(object, opts.Icon, 19, 6, 18, white, "▶") end
+    api.Stroke = new("UIStroke", object, {Thickness = 1, Color = palette[6], Transparency = 0.3})
+    function api:Get()
+        if self.Target and not self.Target.Destroyed then return self.Target:Get() end
+        return self.Value
+    end
+    function api:Set(value, silent)
+        if self.Destroyed or self.Mode ~= "Toggle" then return false end
+        value = value == true
+        if self.Target then
+            if self.Target.Destroyed then return false end
+            self.Target:Set(value, silent)
+        elseif self.Value ~= value then
+            self.Value = value
+            if self.Flag then fireChange(self.Flag, value) end
+            if not silent and opts.Callback then task.spawn(opts.Callback, value) end
+        end
+        self:Render()
+        return true
+    end
+    function api:Press()
+        if self.Destroyed or not self.Enabled or self.Busy or (self.Target and self.Target.Destroyed) then return false end
+        local now = os.clock()
+        if now - self.LastPress < self.Cooldown then return false end
+        self.LastPress = now
+        if self.Mode == "Toggle" then return self:Set(not self:Get()) end
+        self.Busy = true
+        task.spawn(function()
+            local ok, err = pcall(function()
+                if target then target:Press() elseif opts.Callback then opts.Callback() end
+            end)
+            self.Busy = false
+            if not ok and not self.Destroyed and Library.Window == self.Window then
+                Library:Notify({Title = "Ошибка действия", Text = tostring(err)})
+            end
+        end)
+        return true
+    end
+    function api:SetVisible(value)
+        if self.Destroyed then return end
+        self.Visible = value == true
+        if self.VisibilityControl and not self.VisibilityControl.Destroyed and self.VisibilityControl:Get() ~= self.Visible then
+            self.VisibilityControl:Set(self.Visible)
+        end
+        if not self.Visible and self.Window.Drag and self.Window.Drag.Object == hit then self.Window.CancelDrag() end
+        self.Window:LayoutQuickButtons()
+    end
+    function api:Show() self:SetVisible(true) end
+    function api:Hide() self:SetVisible(false) end
+    function api:SetEnabled(value) self.Enabled = value == true; self:Render() end
+    function api:SetLocked(value) self.Locked = value == true end
+    function api:SetColor(color) if typeof(color) == "Color3" then self.Color = color end end
+    function api:SetText(value) self.Caption:SetText(value) end
+    function api:SetTransparency(value) self.Transparency = math.clamp(finite(value, self.Transparency), 0, 0.95) end
+    function api:SetPosition(x, y)
+        if self.Destroyed then return end
+        local v = self.Window.Viewport
+        self.Preferred = Vector2.new(math.clamp(finite(x, 0) / math.max(1, v.X), 0, 1),
+            math.clamp(finite(y, 0) / math.max(1, v.Y), 0, 1))
+        self.Window:LayoutQuickButtons(self)
+    end
+    function api:Render()
+        if self.Destroyed then return end
+        local active = self.Mode == "Toggle" and self:Get() == true
+        object.BackgroundColor3 = active and palette[6] or palette[2]
+        object.GroupTransparency = self.Transparency
+        self.Stroke.Color = active and (self.Color or accent) or palette[6]
+        self.StateLabel:Color(self.Enabled and (active and (self.Color or accent) or white) or palette[3])
+        self.StateLabel:SetText(not self.Enabled and "OFFLINE" or (self.Busy and "…" or
+            (self.Mode == "Toggle" and (active and (opts.OnText or "ON") or (opts.OffText or "OFF")) or "▶")))
+        if self.Icon then
+            self.Icon.Object.Visible = self.Enabled and not self.Busy
+            self.StateLabel.Object.Visible = not self.Icon.Object.Visible
+            self.Icon:Color(self.Color or accent)
+        end
+    end
+    function api:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        if self.Window.Drag and self.Window.Drag.Object == hit then self.Window.CancelDrag() end
+        disconnectAll(self.Connections)
+        if self.Flag and Library.Elements[self.Flag] == self then Library.Elements[self.Flag], Library.Flags[self.Flag] = nil, nil end
+        self.Window.QuickButtonIds[self.Id] = nil
+        removeValue(self.Window.QuickButtons, self)
+        object:Destroy()
+        if not Library.Unloading then self.Window:LayoutQuickButtons() end
+    end
+    api.Connections = self:BindFloatingInput(hit, {
+        GetPosition = function() return api.Position end,
+        Move = function(position)
+            if api.Locked then return end
+            api.Position = clampPoint(position, object.AbsoluteSize, self.Viewport)
+            object.Position = UDim2.fromOffset(api.Position.X, api.Position.Y)
+        end,
+        Drop = function(cancelled)
+            if not api.Destroyed then
+                if not cancelled then api:SetPosition(api.Position.X, api.Position.Y) else self:LayoutQuickButtons() end
+                if not cancelled and not api.Locked and opts.OnDragEnd then task.spawn(opts.OnDragEnd, api.Position) end
+            end
+        end,
+        Click = function() api:Press() end,
+    })
+    api.Connections[#api.Connections + 1] = connect(object.Destroying, function() api:Destroy() end)
+    if target and target.Object then
+        api.Connections[#api.Connections + 1] = connect(target.Object.Destroying, function() api:Destroy() end)
+    end
+    self.QuickButtons[#self.QuickButtons + 1], self.QuickButtonIds[id] = api, api
+    if opts.Flag and not target and mode == "Toggle" then Library.Elements[opts.Flag] = api; fireChange(opts.Flag, api.Value) end
+    if typeof(opts.Position) == "Vector2" then api:SetPosition(opts.Position.X, opts.Position.Y) end
+    self:LayoutQuickButtons()
+    api:Render()
+    return api
+end
+
+function Library:CreateQuickButton(opts)
+    assert(self.Window, "CreateWindow must be called first")
+    return self.Window:CreateQuickButton(opts)
+end
+
+function Tab:AddQuickButton(opts)
+    opts = opts or {}
+    local config = table.clone(opts.Button or {})
+    config.Id = config.Id or ((opts.Flag or self.Name .. "." .. (opts.Name or "Quick")) .. ".Quick")
+    config.Visible = opts.Default == true
+    local quick = self.Window:CreateQuickButton(config)
+    local row = self:AddToggle({Name = opts.Name or "Quick button", Description = opts.Description,
+        Flag = opts.Flag, Width = opts.Width, Default = opts.Default,
+        Callback = function(value)
+            quick:SetVisible(value)
+            if opts.Callback then opts.Callback(value) end
+        end})
+    row.QuickButton = quick
+    quick.VisibilityControl = row
+    connect(row.Object.Destroying, function() quick:Destroy() end)
+    return row
+end
+
+function Window:CloseSettings()
+    self.Opened = nil
+    self.SettingsStack = {}
+    self:LayoutSettings()
+end
+
+function Window:LayoutSettings()
+    if not self.SettingsPanels then return end
+    local top = self.SettingsStack[#self.SettingsStack]
+    for _, panel in ipairs(self.SettingsPanels) do
+        if not panel.Destroyed then
+            panel.Object.Visible = self.Frame.Visible and panel == top
+            local size = panel.RequestedWidth
+            local s = math.max(0.01, math.min(1, (self.Viewport.X - 16) / size, (self.Viewport.Y - 16) / 100))
+            local height = math.min(panel.MaxHeight, math.max(96, panel.Height + 58), math.max(40, (self.Viewport.Y - 16) / s))
+            panel.Scale.Scale = s
+            panel.Object.Size = UDim2.fromOffset(size, height)
+            panel.Scroll.Size = UDim2.new(1, 0, 1, -40)
+            local root = self.Gui.AbsolutePosition
+            local anchor = panel.Anchor.AbsolutePosition - root
+            local pos = clampPoint(Vector2.new(anchor.X + 30, anchor.Y), Vector2.new(size * s, height * s), self.Viewport)
+            panel.Object.Position = UDim2.fromOffset(pos.X, pos.Y)
+        end
+    end
+    self.PopupScale.Scale = top and top.Scale.Scale or self.UIScale.Scale
+    if self.SettingsShield then self.SettingsShield.Visible = self.Frame.Visible and top ~= nil end
+end
+
+function Window:CreateSettings(owner, opts)
+    opts = opts or {}
+    assert(owner and owner.Object and owner.Tab, "Settings require an element owner")
+    if owner.Settings and not owner.Settings.Destroyed then return owner.Settings end
+    local card = owner.Object
+    local gear = transparent(card, 5, 5, 32, 32, "TextButton")
+    gear.Name, gear.ZIndex = "Settings", 8
+    iconLabel(gear, {"settings", "settings-2"}, 7, 7, 18, white, "⚙")
+    local originalLabels = {}
+    for _, child in ipairs(card:GetChildren()) do
+        if child:IsA("TextLabel") and child.Position.X.Offset <= 12 then
+            originalLabels[child] = {Position = child.Position, Size = child.Size}
+            child.Position = UDim2.fromOffset(child.Position.X.Offset + 34, child.Position.Y.Offset)
+            child.Size = UDim2.fromOffset(math.max(1, child.Size.X.Offset - 34), child.Size.Y.Offset)
+        end
+    end
+    local width = math.clamp(finite(opts.Width, 340), 220, 700)
+    local object = rect(self.Gui, 0, 0, width, 250, palette[1], 8, "CanvasGroup")
+    object.Name, object.ZIndex, object.Visible = "ElementSettings", 18, false
+    object.Active = true
+    if not self.SettingsShield then
+        local shield = transparent(self.Gui, 0, 0, 0, 0, "TextButton")
+        shield.Size, shield.ZIndex, shield.Visible = UDim2.fromScale(1, 1), 17, false
+        self.SettingsShield = shield
+        connect(shield.Activated, function() self:CloseSettings() end)
+    end
+    self.PopupLayer.ZIndex = 22
+    local title = text(object, opts.Name or card.Name, 12, 0, width - 56, 38, 12, white)
+    local close = transparent(object, width - 40, 0, 40, 38, "TextButton")
+    text(close, "×", 0, 0, 40, 38, 22, white, "center")
+    local scroll = new("ScrollingFrame", object, {BackgroundTransparency = 1, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 40), Size = UDim2.new(1, 0, 1, -40),
+        CanvasSize = UDim2.fromOffset(0, 0), ScrollBarThickness = 4,
+        ScrollingDirection = Enum.ScrollingDirection.Y, Active = true})
+    local page = transparent(scroll, 10, 8, width - 24, 1)
+    local panel = setmetatable({Name = owner.Tab.Name .. "." .. (owner.Flag or card.Name) .. ".Settings",
+        Window = self, Object = object, Anchor = gear, Owner = owner, Page = page, Scroll = scroll,
+        ContentWidth = width - 24, RequestedWidth = width, MaxHeight = math.max(100, finite(opts.Height, 380)),
+        Height = 0, Cursor = {X = 0, Y = 0, RowHeight = 0}, Elements = {}, Connections = {},
+        RootTab = owner.Tab.RootTab or owner.Tab,
+        ParentPanel = owner.Tab.IsSettings and owner.Tab or owner.Tab.SettingsContext, IsSettings = true,
+        Scale = new("UIScale", object, {Scale = 1})}, {__index = Tab})
+    function panel:OnGrow() self.Window:LayoutSettings() end
+    function panel:Open()
+        if self.Destroyed or not card.Parent then return end
+        if self.Window.Current ~= self.RootTab then self.Window:SelectTab(self.RootTab) end
+        self.Window:SetVisible(true)
+        self.Window.CancelDrag()
+        self.Window.Opened = nil
+        local stack, cursor = {self}, self.ParentPanel
+        while cursor do table.insert(stack, 1, cursor); cursor = cursor.ParentPanel end
+        self.Window.SettingsStack = stack
+        self.Window:LayoutSettings()
+    end
+    function panel:Close()
+        local stack = self.Window.SettingsStack
+        for i, item in ipairs(stack) do
+            if item == self then for j = #stack, i, -1 do table.remove(stack, j) end; break end
+        end
+        self.Window.CancelDrag()
+        self.Window.Opened = nil
+        self.Window:LayoutSettings()
+    end
+    function panel:Toggle()
+        if self.Object.Visible then self:Close() else self:Open() end
+    end
+    function panel:SetTitle(value) title:SetText(value) end
+    function panel:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        self:Close()
+        for _, element in ipairs(table.clone(self.Elements)) do if element.Destroy then element:Destroy() end end
+        disconnectAll(self.Connections)
+        removeValue(self.Window.SettingsPanels, self)
+        object:Destroy()
+        gear:Destroy()
+        for label, original in pairs(originalLabels) do
+            if label.Parent == card then label.Position, label.Size = original.Position, original.Size end
+        end
+        if owner.Settings == self then owner.Settings = nil end
+    end
+    panel.Connections = {
+        connect(gear.Activated, function() panel:Toggle() end),
+        connect(close.Activated, function() panel:Close() end),
+        connect(card.Destroying, function() panel:Destroy() end),
+        connect(object.Destroying, function() panel:Destroy() end),
+        connect(scroll:GetPropertyChangedSignal("CanvasPosition"), function() self.Opened = nil end),
+    }
+    self.SettingsPanels[#self.SettingsPanels + 1] = panel
+    owner.Settings, owner.SettingsGear = panel, gear
+    return panel
+end
+
+function Tab:AddGroup(opts)
+    opts = opts or {}
+    local width = self:_width(opts.Width)
+    local card = self:_card(width, 38, opts.Name or "Group")
+    card.ClipsDescendants = true
+    local hit = transparent(card, 0, 0, width, 38, "TextButton")
+    local title = text(hit, opts.Name or "Group", 12, 0, width - 44, 38, 12, white)
+    local arrow = text(hit, "", width - 28, 0, 20, 38, 15, white, "center")
+    local page = transparent(card, 10, 42, width - 20, 1)
+    local group = setmetatable({Name = self.Name .. "." .. (opts.Name or "Group"), Window = self.Window,
+        Object = card, Page = page, ContentWidth = width - 20, Height = 0, Elements = {},
+        Cursor = {X = 0, Y = 0, RowHeight = 0}, Expanded = opts.Expanded ~= false, Flag = opts.Flag, IsGroup = true,
+        SettingsContext = self.IsSettings and self or self.SettingsContext,
+        RootTab = self.RootTab or self}, {__index = Tab})
+    function group:OnGrow()
+        page.Visible = self.Expanded
+        card.Size = UDim2.fromOffset(width, self.Expanded and (self.Height + 52) or 38)
+        arrow:SetText(self.Expanded and "−" or "+")
+    end
+    function group:Get() return self.Expanded end
+    function group:Set(value, silent)
+        self.Expanded = value == true
+        self:OnGrow()
+        if self.Flag then fireChange(self.Flag, self.Expanded) end
+        if not silent and opts.Callback then task.spawn(opts.Callback, self.Expanded) end
+    end
+    function group:SetExpanded(value) self:Set(value) end
+    function group:SetTitle(value) title:SetText(value) end
+    connect(hit.Activated, function() group:Set(not group.Expanded) end)
+    connect(card.Destroying, function()
+        for _, element in ipairs(table.clone(group.Elements)) do if element.Destroy then element:Destroy() end end
+    end)
+    if opts.Flag then Library.Elements[opts.Flag] = group end
+    group:Set(group.Expanded, true)
+    return group
+end
+
+function Tab:AddStatus(opts)
+    opts = opts or {}
+    local width = self:_width(opts.Width)
+    local card = self:_card(width, 42, opts.Name or "Status")
+    text(card, opts.Name or "Status", 10, 0, width * 0.5 - 10, 42, 12, white)
+    local label = text(card, opts.Default or "Ready", width * 0.5, 0, width * 0.5 - 10, 42, 11, accent, "right")
+    local api = baseApi(self, card, opts.Flag)
+    local value = tostring(opts.Default or "Ready")
+    function api:Get() return value end
+    function api:Set(nextValue)
+        value = tostring(nextValue or "")
+        label:SetText(value)
+        if self.Flag then fireChange(self.Flag, value) end
+    end
+    function api:SetColor(color) if typeof(color) == "Color3" then label:Color(color) end end
+    api:Set(value)
+    return api
+end
+
+function Window:GetInterfaceConfig()
+    local buttons = {}
+    for _, button in ipairs(self.QuickButtons) do
+        buttons[button.Id] = {Visible = button.Visible, Enabled = button.Enabled, Locked = button.Locked, Transparency = button.Transparency,
+            Position = button.Preferred and {X = button.Preferred.X, Y = button.Preferred.Y} or nil}
+    end
+    return {BoundToScreen = self.BoundToScreen, Opener = table.clone(self.AccessConfig),
+        Watermark = table.clone(self.WatermarkConfig), QuickLayout = table.clone(self.QuickConfig), QuickButtons = buttons,
+        QuickPage = self.QuickPage,
+        WindowPosition = {X = self.Position.X / math.max(1, self.Viewport.X), Y = self.Position.Y / math.max(1, self.Viewport.Y)},
+        AccessPosition = {X = self.AccessPosition.X / math.max(1, self.Viewport.X), Y = self.AccessPosition.Y / math.max(1, self.Viewport.Y)}}
+end
+
+function Window:LoadInterfaceConfig(config)
+    assert(type(config) == "table", "Interface config must be a table")
+    if config.BoundToScreen ~= nil then self:SetBoundsEnabled(config.BoundToScreen) end
+    if config.Watermark then Library:SetWatermark(config.Watermark) end
+    if config.Opener then self:SetOpener(config.Opener) end
+    if type(config.AccessPosition) == "table" then
+        self.AccessPosition = Vector2.new(finite(config.AccessPosition.X, 0) * self.Viewport.X,
+            finite(config.AccessPosition.Y, 0) * self.Viewport.Y)
+    end
+    if config.QuickLayout then self:SetQuickButtonLayout(config.QuickLayout) end
+    if type(config.WindowPosition) == "table" then
+        self:SetPosition(finite(config.WindowPosition.X, 0) * self.Viewport.X,
+            finite(config.WindowPosition.Y, 0) * self.Viewport.Y)
+    end
+    for id, data in pairs(config.QuickButtons or {}) do
+        local button = self.QuickButtonIds[id]
+        if button and type(data) == "table" then
+            if data.Visible ~= nil then button:SetVisible(data.Visible) end
+            if data.Enabled ~= nil then button:SetEnabled(data.Enabled) end
+            if data.Locked ~= nil then button:SetLocked(data.Locked) end
+            if data.Transparency ~= nil then button:SetTransparency(data.Transparency) end
+            if type(data.Position) == "table" then
+                button.Preferred = Vector2.new(math.clamp(finite(data.Position.X, 0), 0, 1), math.clamp(finite(data.Position.Y, 0), 0, 1))
+            else button.Preferred = nil end
+        end
+    end
+    self:LayoutAccess()
+    if config.QuickPage then self:SetQuickPage(config.QuickPage) end
+end
+
 for name, factory in pairs(Tab) do
     if string.sub(name, 1, 3) == "Add" and type(factory) == "function" then
         Tab[name] = function(self, ...)
@@ -2625,6 +3348,8 @@ for name, factory in pairs(Tab) do
             local object = api and api.Object
             if not object then return api end
             api.Tab = self
+            api.Kind = name
+            api.OwnedQuickButtons = api.OwnedQuickButtons or {}
             local ownedConnections, ownedUpdates, ownedPopups, ownedBinds, ownedFlags = {}, {}, {}, {}, {}
             for i = connectionStart + 1, #Runtime.Connections do ownedConnections[Runtime.Connections[i]] = true end
             for i = updateStart + 1, #Runtime.Updates do
@@ -2642,6 +3367,14 @@ for name, factory in pairs(Tab) do
                 if cleaned then return end
                 cleaned = true
                 api.Destroyed = true
+                if api.Settings then api.Settings:Destroy() end
+                if api.QuickButton then api.QuickButton:Destroy() end
+                for _, quick in ipairs(api.OwnedQuickButtons) do quick:Destroy() end
+                if api.IsGroup then
+                    for _, element in ipairs(table.clone(api.Elements)) do
+                        if element.Destroy then element:Destroy() end
+                    end
+                end
                 local window = self.Window
                 if window.Drag and (window.Drag.Object == object or window.Drag.Object:IsDescendantOf(object)) then
                     window.CancelDrag()
@@ -2690,12 +3423,37 @@ for name, factory in pairs(Tab) do
                 if cleaned then return end
                 object.Visible = value == true
                 if not object.Visible then
+                    if self.Settings then self.Settings:Close() end
                     for pop in pairs(ownedPopups) do pop:Close() end
                     if self.Tab.Window.Drag and self.Tab.Window.Drag.Object:IsDescendantOf(object) then
                         self.Tab.Window.CancelDrag()
                     end
                 end
                 self.Tab:_grow()
+            end
+            function api:CreateSettings(options)
+                if cleaned then return nil end
+                return self.Tab.Window:CreateSettings(self, options)
+            end
+            function api:CreateQuickButton(options)
+                assert(not cleaned, "Element is destroyed")
+                options = table.clone(options or {})
+                options.Target = self
+                options.Mode = options.Mode or (self.Kind == "AddToggle" and "Toggle" or "Button")
+                options.Text = options.Text or object.Name
+                local quick = self.Tab.Window:CreateQuickButton(options)
+                self.OwnedQuickButtons[#self.OwnedQuickButtons + 1] = quick
+                return quick
+            end
+            local options = select(1, ...)
+            if type(options) == "table" and options.Settings then
+                local settingsOptions = type(options.Settings) == "table" and options.Settings or {}
+                local panel = api:CreateSettings(settingsOptions)
+                local build = type(options.Settings) == "function" and options.Settings or settingsOptions.Build
+                if build then
+                    local ok, err = pcall(build, panel, api)
+                    if not ok then api:Destroy(); error(err, 0) end
+                end
             end
             return api
         end
