@@ -1,113 +1,3 @@
--- =============================================================================
--- WolfLib v2.1.0 — UI library for Roblox (один файл, без зависимостей)
---
--- ЭТО БИБЛИОТЕКА. Сама она меню не рисует: последняя строка файла — return
--- Library. Меню появляется только когда твой скрипт вызовет CreateWindow.
--- Быстрая проверка одной строкой (можно вставить прямо в исполнитель):
---   loadstring(game:HttpGet("https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"))():Demo()
---
--- ВАЖНО: документация ниже — строчные комментарии, по два дефиса на каждой
--- строке. Блочных комментариев в файле нет намеренно: если при заливке на
--- GitHub потеряется начало файла, остаток всё равно останется валидным Lua.
---
--- Дизайн интерфейса зафиксирован и менять его нельзя. Геометрия и палитра
--- 1:1 с оригинальным меню Wolf (590x350, сайдбар 70, правая полоса 30,
--- карточки palette[2] r5).
---
--- -----------------------------------------------------------------------------
--- БЫСТРЫЙ СТАРТ
--- -----------------------------------------------------------------------------
---   local url = "https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"
---   local Library = loadstring(game:HttpGet(url))()
---
---   local Window = Library:CreateWindow({
---       Name = "Wolf",
---       Icon = "dog",
---       Folder = "MyScript",   -- папка скрипта: WolfUi/MyScript/
---   })
---   local Tab = Window:CreateTab({ Name = "ASSIST", Icon = "crosshair" })
---
---   Tab:AddToggle({
---       Name = "Enable aimbot", Description = "Главный выключатель",
---       Flag = "aim_enabled", Default = true,
---       Keybind = Enum.KeyCode.E,             -- бинд прямо на тумблере
---       ColorPicker = { Flag = "aim_color" }, -- палитра прямо на тумблере
---       Callback = function(value) print(value) end,
---   })
---
--- -----------------------------------------------------------------------------
--- ГДЕ ЖИВЁТ МЕНЮ
--- -----------------------------------------------------------------------------
--- ScreenGui создаётся в gethui() / CoreGui, поэтому меню рисуется поверх
--- всего игрового интерфейса. Если исполнитель не даёт туда писать, идёт
--- фоллбэк в PlayerGui (меню всё равно работает).
--- События для совместимости всегда лежат в PlayerGui.WolfUI (папка):
---   PlayerGui.WolfUI.Changed.Event -> (flag, value)
---   PlayerGui.WolfUI.TabChanged.Event -> (tab)
---   PlayerGui.WolfUI.ButtonPressed.Event -> (name)
--- Проверить, куда попало меню: Window.Host, Window.Protected.
---
--- -----------------------------------------------------------------------------
--- ФАЙЛЫ В ПАМЯТИ ИСПОЛНИТЕЛЯ
--- -----------------------------------------------------------------------------
--- Всё, что пишет библиотека, лежит в одной корневой папке WolfUi, внутри —
--- по папке на каждый скрипт, который её использует:
---   WolfUi/
---     MyScript/
---       configs/default.json
---     AnotherScript/
---       configs/pvp.json
--- Имя папки скрипта берётся из CreateWindow{ Folder = "..." }, иначе из Name.
---   Library:GetFolder()            -- "WolfUi/MyScript"
---   Library:GetConfigFolder()      -- "WolfUi/MyScript/configs"
---   Library:SetScriptName("Name")  -- сменить папку скрипта вручную
---   Library:WriteFile("data.json", text) / Library:ReadFile("data.json")
---   Library:ListFiles()            -- файлы своей папки
---   Library:DeleteFile("data.json")
--- Старые конфиги из плоской папки WolfLib переносятся автоматически.
---
--- -----------------------------------------------------------------------------
--- ЭЛЕМЕНТЫ (все принимают Width = 1 / 0.5 / 0.33 / 0.25)
--- -----------------------------------------------------------------------------
---   Tab:AddSection("Aimbot")
---   Tab:AddDivider()
---   Tab:AddLabel({ Text = "...", Muted, Size, Align })
---   Tab:AddParagraph({ Name = "...", Text = "многострочный текст" })
---   Tab:AddToggle({ Name, Description, Default, Flag, Keybind, ColorPicker, Callback })
---   Tab:AddSlider({ Name, Description, Min, Max, Default, Decimals, Suffix, Flag, Callback })
---   Tab:AddDropdown({ Name, Description, Options, Default, Multiple, MaxRows, Flag, Callback })
---   Tab:AddColorPicker({ Name, Description, Default, Alpha, UseAlpha, Presets, Flag, Callback })
---   Tab:AddKeybind({ Name, Description, Default, Flag, Callback })
---   Tab:AddTextBox({ Name, Placeholder, Default, MaxLength, ShowName, OnEnter, Flag, Callback })
---   Tab:AddButton({ Name, Text, Icon, Compact, Description, Callback })
---
--- Любой элемент возвращает api: api:Get(), api:Set(value), api:SetName(text),
--- api:SetVisible(bool). Дропдаун ещё api:SetOptions(list).
---
--- Палитра цвета: SV-квадрат, полосы hue и alpha, превью, поле HEX и быстрые
--- цвета (свой набор — Presets = { Color3, ... }).
---
--- -----------------------------------------------------------------------------
--- БИБЛИОТЕКА
--- -----------------------------------------------------------------------------
---   Library.Version                      -- "2.1.0"
---   Library:Demo()                       -- готовое меню одной строкой (проверка)
---   Library.Flags[flag]                  -- текущее значение любого элемента
---   Library:SetFlag(flag, value) / Library:GetFlag(flag)
---   Library:OnChange(function(flag, value) end)
---   Library:Notify({ Title, Text, Duration, Icon })
---   Library:SetWatermark({ Text = "Wolf", ShowFPS = true })
---   Library:SetTheme(1..3)  Library:SetAccent(Color3, alpha)
---   Library:GetConfig() / Library:LoadConfig(table)
---   Library:SaveConfigFile(name) / LoadConfigFile(name) / ListConfigs() / DeleteConfigFile(name)
---   Library:Unload()
---   Window:SelectTab("ASSIST")  Window:SetVisible(bool)  Window:SetScale(100|75|50)
---   Window:AddRailButton({ Icon, Fallback, Callback })
---
--- Масштаб меню: только 100 / 75 / 50 (при загрузке 100, больше 100 не бывает).
--- Бинды: RightShift — скрыть/показать, F1/F2 — переключение масштаба.
--- =============================================================================
-
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -121,10 +11,6 @@ while not player do
 end
 local playerGui = player:WaitForChild("PlayerGui")
 
-----------------------------------------------------------------------
--- Куда парентить меню: gethui() / CoreGui, чтобы быть поверх всего.
--- Если исполнитель туда не даёт писать — фоллбэк в PlayerGui.
-----------------------------------------------------------------------
 local function guiHost()
     local getters = {}
     if type(gethui) == "function" then
@@ -150,9 +36,6 @@ local function guiHost()
     return playerGui, false
 end
 
-----------------------------------------------------------------------
--- 1. Иконки Lucide
-----------------------------------------------------------------------
 local Icons
 do
     local ok, result = pcall(function()
@@ -192,8 +75,6 @@ do
     end
 end
 
--- В разных сборках icons.lua порядок {size, offset} различается.
--- Размер ячейки одинаков у всех иконок, смещение уникально — по этому и определяем.
 local SIZE_INDEX, OFFSET_INDEX = 2, 3
 do
     local seen = {[2] = {}, [3] = {}}
@@ -255,12 +136,15 @@ local function resolveIcon(names)
     return nil
 end
 
-----------------------------------------------------------------------
--- 2. Рантайм и примитивы
-----------------------------------------------------------------------
 local white, black = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
 
 local Runtime = {Connections = {}, Updates = {}, Alive = false}
+
+local function finite(value, fallback)
+    local n = tonumber(value)
+    if not n or n ~= n or math.abs(n) == math.huge then return fallback end
+    return n
+end
 
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -269,7 +153,7 @@ local function connect(signal, callback)
 end
 
 local function step(callback)
-    Runtime.Updates[#Runtime.Updates + 1] = callback
+    Runtime.Updates[#Runtime.Updates + 1] = {Callback = callback}
 end
 
 local function approach(a, b, k)
@@ -384,9 +268,6 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
     return api
 end
 
-----------------------------------------------------------------------
--- 3. Темы, состояние, библиотека
-----------------------------------------------------------------------
 local themes = {
     {{15, 15, 18}, {17, 17, 21}, {92, 95, 122}, {20, 20, 25}, {22, 22, 28}, {50, 50, 65}},
     {{26, 26, 30}, {31, 31, 36}, {128, 128, 143}, {36, 36, 42}, {40, 40, 46}, {70, 70, 90}},
@@ -415,17 +296,16 @@ local function muted(parent, value, x, y, w, h, size, align, opts)
     return api
 end
 
--- геометрия оригинала
 local WINDOW_W, WINDOW_H = 590, 350
 local SIDEBAR_W, RAIL_W = 70, 30
-local CONTENT_W = WINDOW_W - SIDEBAR_W - RAIL_W -- 490
+local CONTENT_W = WINDOW_W - SIDEBAR_W - RAIL_W 
 local PAD = 10
-local W = CONTENT_W - PAD * 3 -- 460, 10 из которых занимает скроллбар
+local W = CONTENT_W - PAD * 3 
 local GAP = 10
 local TAB_SLOT = 70
 
 local Library = {
-    Version = "2.1.0",
+    Version = "2.2.0",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -495,7 +375,7 @@ function Library:GetFlag(flag)
 end
 
 function Library:SetTheme(index)
-    index = math.clamp(math.floor(tonumber(index) or 1), 1, #themes)
+    index = math.clamp(math.floor(finite(index, 1)), 1, #themes)
     state.Theme = index
     self.Theme = index
     fireChange("Theme", index)
@@ -507,8 +387,8 @@ function Library:SetAccent(color, alpha)
         self.Accent = color
         fireChange("Accent", color)
     end
-    if alpha then
-        alpha = math.clamp(alpha, 0, 1)
+    if alpha ~= nil then
+        alpha = math.clamp(finite(alpha, state.AccentAlpha), 0, 1)
         state.AccentAlpha = alpha
         self.AccentAlpha = alpha
         fireChange("AccentAlpha", alpha)
@@ -516,7 +396,7 @@ function Library:SetAccent(color, alpha)
 end
 
 local function snapScale(value)
-    value = tonumber(value) or 100
+    value = finite(value, 100)
     local best, delta = Library.ScaleOptions[1], math.huge
     for _, option in ipairs(Library.ScaleOptions) do
         local d = math.abs(option - value)
@@ -525,9 +405,6 @@ local function snapScale(value)
     return best
 end
 
-----------------------------------------------------------------------
--- 4. Клавиши
-----------------------------------------------------------------------
 local KEY_SHORT = {
     LeftShift = "LSHIFT", RightShift = "RSHIFT",
     LeftControl = "LCTRL", RightControl = "RCTRL",
@@ -548,7 +425,14 @@ local function keyName(key)
 end
 
 local function keyFromName(name)
-    if type(name) ~= "string" or name == "" or name == "NONE" then return nil end
+    if type(name) ~= "string" or name == "" or string.upper(name) == "NONE" then return nil end
+    local upper = string.upper(name)
+    for full, short in pairs(KEY_SHORT) do
+        if upper == short or upper == string.upper(full) then name = full; break end
+    end
+    for _, item in ipairs(Enum.KeyCode:GetEnumItems()) do
+        if string.upper(item.Name) == upper then return item end
+    end
     local ok, key = pcall(function() return Enum.KeyCode[name] end)
     if ok and key then return key end
     ok, key = pcall(function() return Enum.UserInputType[name] end)
@@ -556,9 +440,6 @@ local function keyFromName(name)
     return nil
 end
 
-----------------------------------------------------------------------
--- 5. Окно
-----------------------------------------------------------------------
 local Tab = {}
 Tab.__index = Tab
 
@@ -614,10 +495,10 @@ function Library:CreateWindow(opts)
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
 
-    state.Theme = math.clamp(tonumber(opts.Theme) or 1, 1, #themes)
+    state.Theme = math.clamp(math.floor(finite(opts.Theme, 1)), 1, #themes)
     state.Scale = snapScale(opts.Scale or 100)
     state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or Color3.fromRGB(126, 139, 209)
-    state.AccentAlpha = opts.AccentAlpha or 1
+    state.AccentAlpha = math.clamp(finite(opts.AccentAlpha, 1), 0, 1)
     state.Tab = nil
     accent = state.Accent
     for i, color in ipairs(themes[state.Theme]) do palette[i] = color end
@@ -650,9 +531,10 @@ function Library:CreateWindow(opts)
     gui.Name = opts.GuiName or "WolfUI"
     gui.ResetOnSpawn = false
     gui.IgnoreGuiInset = true
+    pcall(function() gui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets end)
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.DisplayOrder = opts.DisplayOrder or 10000
-    -- часть исполнителей требует защитить gui ДО парентинга
+    
     if type(syn) == "table" and type(syn.protect_gui) == "function" then
         pcall(function() syn.protect_gui(gui) end)
     elseif type(protectgui) == "function" then
@@ -664,7 +546,6 @@ function Library:CreateWindow(opts)
     window.Host = host
     window.Protected = protected
 
-    -- события остаются в PlayerGui.WolfUI (совместимость со старыми скриптами)
     local events = new("Folder", playerGui, {Name = opts.GuiName or "WolfUI"})
     window.Events = events
     window.Changed = new("BindableEvent", events, {Name = "Changed"})
@@ -686,15 +567,17 @@ function Library:CreateWindow(opts)
     window.PopupLayer = popupLayer
     window.PopupScale = new("UIScale", popupLayer, {Scale = 1})
 
-    ------------------------------------------------------------------
-    -- масштаб / позиция
-    ------------------------------------------------------------------
     local function layout()
         local camera = workspace.CurrentCamera
-        if camera then window.Viewport = camera.ViewportSize end
-        local viewport = window.Viewport
+        if camera then
+            window.Viewport = camera.ViewportSize
+            window.CameraViewport = camera.ViewportSize
+        end
+        local viewport = gui.AbsoluteSize
+        if viewport.X <= 0 or viewport.Y <= 0 then viewport = window.Viewport end
+        window.Viewport = viewport
         local s = math.min(state.Scale / 100, (viewport.X - 16) / WINDOW_W, (viewport.Y - 16) / WINDOW_H)
-        s = math.max(0.35, math.min(1, s))
+        s = math.max(0.01, math.min(1, s))
         scale.Scale = s
         window.PopupScale.Scale = s
         if not window.Initialized then
@@ -716,11 +599,41 @@ function Library:CreateWindow(opts)
             or input.UserInputType == Enum.UserInputType.Touch
     end
 
+    local function finishDrag(cancelled)
+        local drag = window.Drag
+        if not drag then return end
+        window.Drag = nil
+        if drag.StateConnection then drag.StateConnection:Disconnect() end
+        for scroll, enabled in pairs(drag.Scrolls) do
+            if scroll.Parent then scroll.ScrollingEnabled = enabled end
+        end
+        if drag.Finish then task.spawn(drag.Finish, cancelled == true) end
+    end
+    window.CancelDrag = function() finishDrag(true) end
+
     local function draggable(object, onMove, onEnd)
+        object.Active = true
         connect(object.InputBegan, function(input)
-            if not primary(input) then return end
-            window.Drag = {Input = input, Move = onMove, Finish = onEnd}
+            if not primary(input) or window.Drag or not frame.Visible then return end
+            local scrolls = {}
+            local parent = object.Parent
+            while parent and parent ~= gui do
+                if parent:IsA("ScrollingFrame") then
+                    scrolls[parent] = parent.ScrollingEnabled
+                    parent.ScrollingEnabled = false
+                end
+                parent = parent.Parent
+            end
+            local drag = {Input = input, Object = object, Move = onMove, Finish = onEnd, Scrolls = scrolls}
+            window.Drag = drag
+            drag.StateConnection = input:GetPropertyChangedSignal("UserInputState"):Connect(function()
+                if window.Drag ~= drag then return end
+                if input.UserInputState == Enum.UserInputState.Cancel then finishDrag(true) end
+            end)
             onMove(Vector2.new(input.Position.X, input.Position.Y), true)
+        end)
+        connect(object.Destroying, function()
+            if window.Drag and window.Drag.Object == object then finishDrag(true) end
         end)
     end
     window.Draggable = draggable
@@ -728,6 +641,7 @@ function Library:CreateWindow(opts)
     connect(UIS.InputChanged, function(input)
         local drag = window.Drag
         if not drag then return end
+        if not drag.Object.Parent then finishDrag(true); return end
         local same = input == drag.Input
         local mouse = drag.Input.UserInputType == Enum.UserInputType.MouseButton1
             and input.UserInputType == Enum.UserInputType.MouseMovement
@@ -742,24 +656,15 @@ function Library:CreateWindow(opts)
         local same = input == drag.Input
         local mouse = drag.Input.UserInputType == Enum.UserInputType.MouseButton1
             and input.UserInputType == Enum.UserInputType.MouseButton1
-        local touch = drag.Input.UserInputType == Enum.UserInputType.Touch
-            and input.UserInputType == Enum.UserInputType.Touch
-        if same or mouse or touch then
-            local finish = drag.Finish
-            window.Drag = nil
-            if finish then finish() end
+        if same or mouse then
+            local point = mouse and UIS:GetMouseLocation() or Vector2.new(input.Position.X, input.Position.Y)
+            drag.Move(point, false)
+            finishDrag(false)
         end
     end)
 
-    connect(UIS.WindowFocusReleased, function()
-        local drag = window.Drag
-        window.Drag = nil
-        if drag and drag.Finish then drag.Finish() end
-    end)
+    connect(UIS.WindowFocusReleased, function() finishDrag(true) end)
 
-    ------------------------------------------------------------------
-    -- сайдбар
-    ------------------------------------------------------------------
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
     sidebar.Name = "Sidebar"
     window.Sidebar = sidebar
@@ -780,6 +685,8 @@ function Library:CreateWindow(opts)
         end
         window.Position = windowStart + point - dragStart
         layout()
+        windowStart = window.Position
+        dragStart = point
     end)
 
     local tabHolder = new("ScrollingFrame", sidebar, {
@@ -797,9 +704,6 @@ function Library:CreateWindow(opts)
     })
     window.TabHolder = tabHolder
 
-    ------------------------------------------------------------------
-    -- контент
-    ------------------------------------------------------------------
     local scroll = new("ScrollingFrame", frame, {
         Name = "Content",
         BackgroundTransparency = 1,
@@ -821,9 +725,6 @@ function Library:CreateWindow(opts)
     rail.Name = "Rail"
     window.Rail = rail
 
-    ------------------------------------------------------------------
-    -- попапы: закрытие по клику вне
-    ------------------------------------------------------------------
     local function inside(point, object)
         if not object then return false end
         local p, s = object.AbsolutePosition, object.AbsoluteSize
@@ -840,9 +741,6 @@ function Library:CreateWindow(opts)
     end)
     connect(scroll:GetPropertyChangedSignal("CanvasPosition"), function() window.Opened = nil end)
 
-    ------------------------------------------------------------------
-    -- правая полоса: тема и настройки (как в оригинале)
-    ------------------------------------------------------------------
     function window:AddRailButton(config)
         config = config or {}
         local y = 10 + self.RailCount * 20
@@ -875,7 +773,6 @@ function Library:CreateWindow(opts)
         Fallback = "S",
     })
 
-    -- попап настроек: только 100 / 75 / 50
     local settingsPopup = createPopup(window, settingsButton, 200, 72, false)
     muted(settingsPopup.Object, "Menu scale", 10, 6, 180, 14, 11)
     local scaleButtons = {}
@@ -900,9 +797,6 @@ function Library:CreateWindow(opts)
     end
     connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
 
-    ------------------------------------------------------------------
-    -- кнопка возврата (когда меню скрыто)
-    ------------------------------------------------------------------
     local reopen = rect(gui, 8, 8, 32, 32, palette[2], 5, "TextButton")
     reopen.Name = "Reopen"
     reopen.Visible = false
@@ -911,9 +805,6 @@ function Library:CreateWindow(opts)
     window.Reopen = reopen
     connect(reopen.Activated, function() window:SetVisible(true) end)
 
-    ------------------------------------------------------------------
-    -- ватермарка
-    ------------------------------------------------------------------
     local watermark = paint(rect(gui, 8, 8, 160, 22, palette[2], 5), 2)
     watermark.Name = "Watermark"
     watermark.Visible = false
@@ -922,9 +813,6 @@ function Library:CreateWindow(opts)
     window.WatermarkText = watermarkText
     window.WatermarkConfig = {Enabled = false, Text = opts.Name or "Wolf", ShowFPS = false}
 
-    ------------------------------------------------------------------
-    -- уведомления
-    ------------------------------------------------------------------
     local notifyHolder = transparent(gui, 0, 0, 250, WINDOW_H)
     notifyHolder.Name = "Notifications"
     notifyHolder.Position = UDim2.new(1, -258, 0, 8)
@@ -932,11 +820,8 @@ function Library:CreateWindow(opts)
     notifyHolder.ZIndex = 30
     window.NotifyHolder = notifyHolder
 
-    ------------------------------------------------------------------
-    -- бинды и цикл отрисовки
-    ------------------------------------------------------------------
     connect(UIS.InputBegan, function(input, processed)
-        -- захват клавиши для keybind-элементов
+        
         if window.PendingKeybind then
             local pending = window.PendingKeybind
             if input.UserInputType == Enum.UserInputType.Keyboard then
@@ -983,15 +868,20 @@ function Library:CreateWindow(opts)
     window.ToggleKey = opts.ToggleKey or Enum.KeyCode.RightShift
 
     connect(gui.Destroying, function()
-        Runtime.Alive = false
+        if Library.Window == window then Library:Unload() end
+    end)
+    connect(gui:GetPropertyChangedSignal("AbsoluteSize"), function()
+        window.CancelDrag()
+        layout()
     end)
 
     local fps, fpsTimer, fpsFrames = 60, 0, 0
 
     connect(RunService.RenderStepped, function(dt)
         if not Runtime.Alive then return end
+        local elapsed = dt
         dt = math.min(dt, 0.1)
-        local k = math.min(24 * dt, 1)
+        local k = 1 - math.exp(-24 * dt)
 
         local theme = themes[state.Theme] or themes[1]
         for i, target in ipairs(theme) do
@@ -1000,16 +890,21 @@ function Library:CreateWindow(opts)
         accent = accent:Lerp(state.Accent, k)
 
         fpsFrames = fpsFrames + 1
-        fpsTimer = fpsTimer + dt
+        fpsTimer = fpsTimer + elapsed
         if fpsTimer >= 0.5 then
+            for i = #Runtime.Connections, 1, -1 do
+                if not Runtime.Connections[i].Connected then table.remove(Runtime.Connections, i) end
+            end
             fps = math.floor(fpsFrames / fpsTimer + 0.5)
             fpsFrames, fpsTimer = 0, 0
         end
 
         local camera = workspace.CurrentCamera
-        if camera and camera.ViewportSize ~= window.Viewport then layout() end
+        if camera and camera.ViewportSize ~= window.CameraViewport then
+            window.CancelDrag()
+            layout()
+        end
 
-        -- ватермарка
         local wm = window.WatermarkConfig
         watermark.Visible = wm.Enabled and frame.Visible
         if watermark.Visible then
@@ -1022,10 +917,9 @@ function Library:CreateWindow(opts)
             watermark.BackgroundColor3 = palette[2]
         end
 
-        -- уведомления
         for index = #window.Notifications, 1, -1 do
             local notif = window.Notifications[index]
-            notif.Life = notif.Life - dt
+            notif.Life = notif.Life - elapsed
             local target = (notif.Life > 0) and 1 or 0
             notif.Alpha = move(notif.Alpha, target, 5 * dt)
             notif.Object.GroupTransparency = 1 - notif.Alpha
@@ -1052,21 +946,21 @@ function Library:CreateWindow(opts)
         end
 
         for _, update in ipairs(Runtime.Updates) do
-            update(dt, k)
+            if not update.Owner or update.Owner.Parent then
+                update.Callback(dt, k)
+            end
         end
 
-        -- страницы вкладок
         for _, tab in ipairs(window.TabList) do
             local active = window.Current == tab
             tab.Alpha = move(tab.Alpha, active and 1 or 0, 8 * dt)
             local page = tab.Page
-            page.Visible = tab.Alpha > 0.01
+            page.Visible = active
             if page.Visible then
                 page.GroupTransparency = 1 - tab.Alpha
             end
         end
 
-        -- попапы (позиционирование как в оригинале — поверх анкера)
         for _, pop in ipairs(window.Popups) do
             local show = window.Opened == pop
             pop.Alpha = move(pop.Alpha, show and 1 or 0, 9 * dt)
@@ -1076,13 +970,13 @@ function Library:CreateWindow(opts)
                 pop.CurrentHeight = pop.Height
             end
             local object = pop.Object
-            object.Visible = pop.Alpha > 0.01 and pop.Anchor ~= nil
+            object.Visible = pop.Alpha > 0.01 and pop.Anchor ~= nil and pop.Anchor.Parent ~= nil
             object.GroupTransparency = 1 - pop.Alpha
             object.BackgroundColor3 = palette[1]
             object.Size = UDim2.fromOffset(pop.Width, math.max(1, pop.CurrentHeight))
             if object.Visible then
                 local s = math.max(0.001, scale.Scale)
-                local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
+                local origin = (pop.Anchor.AbsolutePosition - popupLayer.AbsolutePosition) / s
                 local minX, minY = -window.Position.X / s, -window.Position.Y / s
                 local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
                 local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
@@ -1097,16 +991,13 @@ function Library:CreateWindow(opts)
     return window
 end
 
-----------------------------------------------------------------------
--- 6. Методы окна
-----------------------------------------------------------------------
 function Window:SetVisible(value)
     self.Frame.Visible = value and true or false
     self.PopupLayer.Visible = self.Frame.Visible
     self.Reopen.Visible = not self.Frame.Visible
     if not self.Frame.Visible then
         self.Opened = nil
-        self.Drag = nil
+        self.CancelDrag()
         self.PendingKeybind = nil
     end
 end
@@ -1115,6 +1006,7 @@ function Window:SetScale(value)
     local snapped = snapScale(value)
     state.Scale = snapped
     Library.Scale = snapped
+    self.CancelDrag()
     self.Layout()
     fireChange("Scale", snapped)
     return snapped
@@ -1127,6 +1019,8 @@ end
 function Window:SelectTab(name)
     local tab = type(name) == "table" and name or self.Tabs[name]
     if not tab or self.Current == tab then return end
+    if tab.Window ~= self then return end
+    self.CancelDrag()
     self.Opened = nil
     self.Current = tab
     state.Tab = tab.Name
@@ -1139,6 +1033,7 @@ end
 function Window:CreateTab(opts)
     opts = opts or {}
     local name = opts.Name or ("Tab" .. tostring(#self.TabList + 1))
+    assert(not self.Tabs[name], "Duplicate tab name: " .. tostring(name))
     local index = #self.TabList + 1
 
     local page = new("CanvasGroup", self.Scroll, {
@@ -1165,7 +1060,6 @@ function Window:CreateTab(opts)
     self.Tabs[name] = tab
     self.TabList[index] = tab
 
-    -- кнопка вкладки в сайдбаре (геометрия оригинала: 70x70, иконка + подпись)
     local top = (index - 1) * TAB_SLOT
     local hit = rect(self.TabHolder, 0, top, SIDEBAR_W, TAB_SLOT, palette[4], nil, "TextButton")
     hit.Name = name
@@ -1199,17 +1093,26 @@ function Window:CreateTab(opts)
 end
 
 function Window:Destroy()
-    Library:Unload()
+    if Library.Window == self then Library:Unload() end
 end
 
-----------------------------------------------------------------------
--- 7. Раскладка внутри вкладки
-----------------------------------------------------------------------
+function Window:Center()
+    self.CancelDrag()
+    self.Initialized = false
+    self.Layout()
+end
+
+function Window:SetPosition(x, y)
+    self.CancelDrag()
+    self.Position = Vector2.new(finite(x, self.Position.X), finite(y, self.Position.Y))
+    self.Layout()
+end
+
 function Tab:_width(value)
-    local fraction = tonumber(value)
-    if not fraction or fraction >= 1 then return W end
+    local fraction = finite(value, 1)
+    if fraction <= 0 or fraction >= 1 then return W end
     local columns = math.max(1, math.floor(1 / fraction + 0.5))
-    return math.floor((W - GAP * (columns - 1)) / columns)
+    return math.max(105, math.floor((W - GAP * (columns - 1)) / columns))
 end
 
 function Tab:_place(w, h)
@@ -1240,13 +1143,36 @@ function Tab:_newline()
 end
 
 function Tab:_grow()
-    local cursor = self.Cursor
-    local height = cursor.Y + cursor.RowHeight
+    if self.Reflowing or not self.Page.Parent then return end
+    self.Reflowing = true
+    self.LayoutItems = self.LayoutItems or {}
+    self.LayoutSeen = self.LayoutSeen or setmetatable({}, {__mode = "k"})
+    for _, item in ipairs(self.Page:GetChildren()) do
+        if item:IsA("GuiObject") and not self.LayoutSeen[item] then
+            self.LayoutSeen[item] = true
+            self.LayoutItems[#self.LayoutItems + 1] = item
+            connect(item:GetPropertyChangedSignal("Visible"), function() self:_grow() end)
+            connect(item:GetPropertyChangedSignal("Size"), function() self:_grow() end)
+        end
+    end
+    self.Cursor = {X = 0, Y = 0, RowHeight = 0}
+    local height = 0
+    for i = #self.LayoutItems, 1, -1 do
+        if self.LayoutItems[i].Parent ~= self.Page then table.remove(self.LayoutItems, i) end
+    end
+    for _, item in ipairs(self.LayoutItems) do
+        if item.Visible then
+            local x, y = self:_place(item.Size.X.Offset, item.Size.Y.Offset)
+            item.Position = UDim2.fromOffset(x, y)
+            height = math.max(height, y + item.Size.Y.Offset)
+        end
+    end
     self.Height = height
     self.Page.Size = UDim2.fromOffset(W, math.max(1, height))
     if self.Window.Current == self then
         self.Window.Scroll.CanvasSize = UDim2.fromOffset(0, height + PAD * 2)
     end
+    self.Reflowing = false
 end
 
 function Tab:_card(w, h, name)
@@ -1260,7 +1186,12 @@ end
 local function baseApi(tab, card, flag)
     local api = {Object = card, Flag = flag, Tab = tab}
     function api:SetVisible(value) card.Visible = value and true or false end
-    function api:Destroy() card:Destroy() end
+    function api:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        card:Destroy()
+        tab:_grow()
+    end
     if flag then
         Library.Elements[flag] = api
     end
@@ -1268,9 +1199,6 @@ local function baseApi(tab, card, flag)
     return api
 end
 
-----------------------------------------------------------------------
--- 8. Оформление: заголовок секции, разделитель, текст
-----------------------------------------------------------------------
 function Tab:AddSection(nameOrOpts)
     local opts = type(nameOrOpts) == "table" and nameOrOpts or {Name = nameOrOpts}
     self:_newline()
@@ -1318,13 +1246,18 @@ function Tab:AddParagraph(opts)
     end
     local paragraph = muted(card, body, 10, hasTitle and 28 or 10, w - 20, math.max(14, bounds.Y), 11, nil, {Wrap = true})
     local api = baseApi(self, card, nil)
-    function api:SetText(value) paragraph:SetText(value) end
+    function api:SetText(value)
+        local bodyText = tostring(value or "")
+        local measured = TextService:GetTextSize(bodyText, 11, Enum.Font.Gotham, Vector2.new(w - 20, 10000))
+        local bodyHeight = math.max(14, measured.Y)
+        paragraph:SetText(bodyText)
+        paragraph.Object.Size = UDim2.fromOffset(w - 20, bodyHeight)
+        card.Size = UDim2.fromOffset(w, (hasTitle and 28 or 10) + bodyHeight + 10)
+        self.Tab:_grow()
+    end
     return api
 end
 
-----------------------------------------------------------------------
--- 9. Палитра цвета (используется и как элемент, и как аддон тумблера)
-----------------------------------------------------------------------
 local function toHex(color)
     return string.format("%02X%02X%02X",
         math.floor(color.R * 255 + 0.5),
@@ -1359,7 +1292,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     local window = tab.Window
     local flag = opts.Flag or ((opts.Name or "Color") .. "." .. tostring(tab.Name))
     local color = typeof(opts.Default) == "Color3" and opts.Default or state.Accent
-    local alphaValue = opts.Alpha ~= nil and math.clamp(opts.Alpha, 0, 1) or 1
+    local alphaValue = opts.Alpha ~= nil and math.clamp(finite(opts.Alpha, 1), 0, 1) or 1
     local useAlpha = opts.UseAlpha ~= false
 
     local anchor = transparent(parent, x, y, size, size, "TextButton")
@@ -1368,11 +1301,10 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     dot.ZIndex = 3
     new("UIStroke", dot, {Color = palette[5], Thickness = 1, Transparency = 0.35})
 
-    -- геометрия палитры
     local PW = 200
     local INNER = PW - 20
     local SV_H = 110
-    local BAR_H = 8
+    local BAR_H = UIS.TouchEnabled and 22 or 8
     local SV_TOP = 10
     local HUE_TOP = SV_TOP + SV_H + 10
     local ALPHA_TOP = HUE_TOP + BAR_H + 8
@@ -1384,7 +1316,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
 
     local hue, saturation, value = color:ToHSV()
 
-    -- квадрат насыщенности/яркости
     local sv = rect(host, 10, SV_TOP, INNER, SV_H, white, 4, "TextButton")
     local svGradient = new("UIGradient", sv, {Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))})
     local shade = rect(sv, 0, 0, INNER, SV_H, black, 4)
@@ -1399,7 +1330,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     svDot.ZIndex = 3
     new("UIStroke", svDot, {Color = white, Thickness = 2})
 
-    -- полоса оттенка (горизонтальная, тонкая)
     local hueBar = rect(host, 10, HUE_TOP, INNER, BAR_H, white, 4, "TextButton")
     local stops = {}
     for i = 0, 6 do
@@ -1410,7 +1340,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     hueThumb.ZIndex = 3
     new("UIStroke", hueThumb, {Color = palette[1], Thickness = 1})
 
-    -- полоса прозрачности
     local alphaBar, alphaThumb
     if useAlpha then
         alphaBar = rect(host, 10, ALPHA_TOP, INNER, BAR_H, color, 4, "TextButton")
@@ -1425,7 +1354,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         new("UIStroke", alphaThumb, {Color = palette[1], Thickness = 1})
     end
 
-    -- нижняя строка: превью, HEX, быстрые цвета
     local preview = rect(host, 10, ROW_TOP, 22, 20, color, 3)
     new("UIStroke", preview, {Color = palette[5], Thickness = 1, Transparency = 0.35})
 
@@ -1469,7 +1397,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
             hue, saturation, value = newColor:ToHSV()
         end
         if newAlpha ~= nil then
-            alphaValue = math.clamp(newAlpha, 0, 1)
+            alphaValue = math.clamp(finite(newAlpha, alphaValue), 0, 1)
         end
         push()
     end
@@ -1551,7 +1479,14 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     end)
 
     Library.Flags[flag] = color
-    if useAlpha then Library.Flags[flag .. ".Alpha"] = alphaValue end
+    if useAlpha then
+        Library.Flags[flag .. ".Alpha"] = alphaValue
+        Library.Elements[flag .. ".Alpha"] = {
+            Object = anchor,
+            Get = function() return alphaValue end,
+            Set = function(_, a) api:Set(nil, finite(a, alphaValue)) end,
+        }
+    end
     Library.Elements[flag] = api
     if opts.Callback then task.spawn(opts.Callback, color, alphaValue) end
     return api
@@ -1575,9 +1510,6 @@ function Tab:AddColorPicker(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 10. Keybind (элемент и аддон)
-----------------------------------------------------------------------
 local function attachKeybind(tab, parent, x, y, w, h, opts)
     opts = opts or {}
     local window = tab.Window
@@ -1589,18 +1521,20 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     button.ZIndex = 3
     local caption = text(button, keyName(key), 0, 0, w, h, 10, palette[3], "center")
 
-    local bind = {Key = key, Flag = flag}
+    local bind = {Key = key, Flag = flag, Object = button}
 
     function bind:Fire()
+        if not button.Parent then return end
         if opts.Callback then task.spawn(opts.Callback, self.Key) end
         if opts.Toggle then opts.Toggle() end
     end
 
     function bind:Set(value)
         if type(value) == "string" then value = keyFromName(value) end
+        if value ~= nil and typeof(value) ~= "EnumItem" then return end
         self.Key = value
         caption:SetText(keyName(value))
-        Library.Flags[flag] = value and keyName(value) or "NONE"
+        Library.Flags[flag] = value and value.Name or "NONE"
         fireChange(flag, Library.Flags[flag])
     end
 
@@ -1618,12 +1552,13 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     connect(button.MouseLeave, function() hover = false end)
     step(function(dt, k)
         local waiting = window.PendingKeybind == bind
+        caption:SetText(waiting and "..." or keyName(bind.Key))
         tint = tint:Lerp((hover or waiting) and white or palette[3], k)
         caption:Color(tint)
         button.BackgroundColor3 = palette[1]:Lerp(palette[4], waiting and 1 or 0)
     end)
 
-    Library.Flags[flag] = key and keyName(key) or "NONE"
+    Library.Flags[flag] = key and key.Name or "NONE"
     Library.Elements[flag] = bind
     return bind
 end
@@ -1646,9 +1581,6 @@ function Tab:AddKeybind(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 11. Toggle
-----------------------------------------------------------------------
 function Tab:AddToggle(opts)
     opts = opts or {}
     local name = opts.Name or "Toggle"
@@ -1662,7 +1594,6 @@ function Tab:AddToggle(opts)
     local fill = rect(box, 7, 7, 0, 0, accent, 3)
     local mark = iconLabel(box, {"check"}, 1, 1, 12, black, "v")
 
-    -- аддоны справа налево, как в оригинале (палитра шла на w-48)
     local edge = w - 24
     local function claim(width)
         edge = edge - 10 - width
@@ -1731,16 +1662,16 @@ function Tab:AddToggle(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 12. Slider
-----------------------------------------------------------------------
 local function makeSlider(tab, parent, x, y, w, opts)
     opts = opts or {}
     local name = opts.Name or "Slider"
     local flag = opts.Flag or ((tab and tab.Name or "TAB") .. "." .. name)
-    local min = tonumber(opts.Min) or 0
-    local max = tonumber(opts.Max) or 100
-    local decimals = math.max(0, math.floor(tonumber(opts.Decimals) or 0))
+    local min = finite(opts.Min, 0)
+    local max = finite(opts.Max, 100)
+    if min > max then min, max = max, min end
+    local decimals = math.clamp(math.floor(finite(opts.Decimals, 0)), 0, 6)
+    local increment = math.abs(finite(opts.Step, 10 ^ -decimals))
+    if increment == 0 then increment = 10 ^ -decimals end
     local suffix = opts.Suffix or ""
 
     local card = paint(rect(parent, x, y, w, 58, palette[2], 5), 2)
@@ -1763,14 +1694,16 @@ local function makeSlider(tab, parent, x, y, w, opts)
     })
     local thumb = rect(track, 0, 0, 10, 10, white, 3)
 
-    local value = math.clamp(tonumber(opts.Default) or min, min, max)
+    local value = math.clamp(finite(opts.Default, min), min, max)
 
     local function quantize(raw)
-        if decimals <= 0 then return math.floor(raw + 0.5) end
-        local m = 10 ^ decimals
-        return math.floor(raw * m + 0.5) / m
+        if raw >= max then return max end
+        if raw <= min then return min end
+        local snapped = min + math.floor((raw - min) / increment + 0.5) * increment
+        return math.clamp(snapped, min, max)
     end
 
+    value = quantize(value)
     local api = {Flag = flag, Object = card}
 
     local function push(fire)
@@ -1781,7 +1714,9 @@ local function makeSlider(tab, parent, x, y, w, opts)
 
     function api:Get() return value end
     function api:Set(newValue, silent)
-        value = math.clamp(quantize(tonumber(newValue) or min), min, max)
+        local nextValue = quantize(finite(newValue, value))
+        if value == nextValue then return end
+        value = nextValue
         push(not silent)
     end
     function api:SetName(v) title:SetText(v) end
@@ -1793,7 +1728,16 @@ local function makeSlider(tab, parent, x, y, w, opts)
         local ratio = math.clamp(
             (point.X - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
         api:Set(min + (max - min) * ratio)
-    end, opts.OnRelease)
+    end, function(cancelled)
+        if opts.OnRelease then opts.OnRelease(value, cancelled) end
+    end)
+    connect(hit.InputBegan, function(input)
+        if input.KeyCode == Enum.KeyCode.Left or input.KeyCode == Enum.KeyCode.DPadLeft then
+            api:Set(value - increment)
+        elseif input.KeyCode == Enum.KeyCode.Right or input.KeyCode == Enum.KeyCode.DPadRight then
+            api:Set(value + increment)
+        end
+    end)
 
     local span = math.max(1e-6, max - min)
     local a = (value - min) / span
@@ -1822,9 +1766,6 @@ function Tab:AddSlider(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 13. Dropdown
-----------------------------------------------------------------------
 function Tab:AddDropdown(opts)
     opts = opts or {}
     local name = opts.Name or "Dropdown"
@@ -1848,7 +1789,7 @@ function Tab:AddDropdown(opts)
     step(function() arrow:Color(palette[3]) end)
 
     local ROW_H = 31
-    local maxRows = math.max(1, math.floor(tonumber(opts.MaxRows) or 5))
+    local maxRows = math.max(1, math.floor(finite(opts.MaxRows, 5)))
     local pop = createPopup(self.Window, control, controlW, math.min(#options, maxRows) * ROW_H, true)
     local list = new("ScrollingFrame", pop.Object, {
         BackgroundTransparency = 1,
@@ -1864,13 +1805,6 @@ function Tab:AddDropdown(opts)
     })
 
     local selection = multiple and {} or 1
-    if multiple then
-        if type(opts.Default) == "table" then
-            for _, index in ipairs(opts.Default) do selection[index] = true end
-        end
-    else
-        selection = math.clamp(tonumber(opts.Default) or 1, 1, math.max(1, #options))
-    end
 
     local rows = {}
     local api = baseApi(self, card, flag)
@@ -1892,7 +1826,7 @@ function Tab:AddDropdown(opts)
         for index, option in ipairs(options) do
             if selection[index] then names[#names + 1] = option end
         end
-        return names, selection
+        return names, table.clone(selection)
     end
 
     local function push(fire)
@@ -1967,9 +1901,10 @@ function Tab:AddDropdown(opts)
             local next_ = {}
             if type(value) == "table" then
                 for key, flagValue in pairs(value) do
-                    if type(key) == "number" and flagValue then
-                        next_[key] = true
-                    elseif type(flagValue) == "number" then
+                    if type(flagValue) == "boolean" and flagValue then
+                        local index = tonumber(key)
+                        if index and options[index] then next_[index] = true end
+                    elseif type(flagValue) == "number" and options[flagValue] then
                         next_[flagValue] = true
                     elseif type(flagValue) == "string" then
                         for index, option in ipairs(options) do
@@ -1990,7 +1925,7 @@ function Tab:AddDropdown(opts)
                 end
                 value = found or selection
             end
-            selection = math.clamp(tonumber(value) or 1, 1, math.max(1, #options))
+            selection = math.clamp(math.floor(finite(value, 1)), 1, math.max(1, #options))
         end
         push(not silent)
     end
@@ -2005,17 +1940,14 @@ function Tab:AddDropdown(opts)
         buildRows()
         push(false)
     end
-    function api:GetOptions() return options end
+    function api:GetOptions() return table.clone(options) end
 
     buildRows()
-    push(false)
+    api:Set(opts.Default or (multiple and {} or 1), true)
     if opts.Callback then task.spawn(opts.Callback, selectedValue()) end
     return api
 end
 
-----------------------------------------------------------------------
--- 14. TextBox
-----------------------------------------------------------------------
 function Tab:AddTextBox(opts)
     opts = opts or {}
     local name = opts.Name or "Text field"
@@ -2050,7 +1982,7 @@ function Tab:AddTextBox(opts)
     })
     step(function() box.PlaceholderColor3 = palette[3] end)
 
-    local maxLength = math.max(1, math.floor(tonumber(opts.MaxLength) or 96))
+    local maxLength = math.max(1, math.floor(finite(opts.MaxLength, 96)))
     local api = baseApi(self, card, flag)
 
     local function push(fire)
@@ -2059,7 +1991,20 @@ function Tab:AddTextBox(opts)
         if fire and opts.Callback then task.spawn(opts.Callback, box.Text) end
     end
 
+    local committed
+    local function normalize(value)
+        value = tostring(value or "")
+        local length = utf8.len(value)
+        if length and length > maxLength then
+            local offset = utf8.offset(value, maxLength + 1)
+            value = string.sub(value, 1, offset - 1)
+        end
+        return value
+    end
+    committed = normalize(box.Text)
+    box.Text = committed
     connect(box:GetPropertyChangedSignal("Text"), function()
+        if box.Text == committed then return end
         local length = utf8.len(box.Text)
         if length and length > maxLength then
             local offset = utf8.offset(box.Text, maxLength + 1)
@@ -2068,6 +2013,7 @@ function Tab:AddTextBox(opts)
                 return
             end
         end
+        committed = box.Text
         push(true)
     end)
 
@@ -2079,8 +2025,11 @@ function Tab:AddTextBox(opts)
 
     function api:Get() return box.Text end
     function api:Set(value, silent)
-        box.Text = tostring(value or "")
-        if silent then Library.Flags[flag] = box.Text end
+        local nextValue = normalize(value)
+        if nextValue == committed then return end
+        committed = nextValue
+        box.Text = nextValue
+        push(not silent)
     end
     function api:SetName(value) box.PlaceholderText = tostring(value) end
 
@@ -2088,15 +2037,12 @@ function Tab:AddTextBox(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15. Button
-----------------------------------------------------------------------
 function Tab:AddButton(opts)
     opts = opts or {}
     local name = opts.Name or "Button"
     local w = self:_width(opts.Width)
     local compact = opts.Compact and true or false
-    local card = self:_card(w, compact and 31 or 68, name)
+    local card = self:_card(w, compact and 31 or (opts.Description and 79 or 68), name)
 
     local control
     if compact then
@@ -2106,7 +2052,7 @@ function Tab:AddButton(opts)
         if opts.Description then
             muted(card, opts.Description, 10, 22, w - 20, 14, 11)
         end
-        control = paint(rect(card, 10, 27, w - 20, 31, palette[4], 3, "TextButton"), 4)
+        control = paint(rect(card, 10, opts.Description and 38 or 27, w - 20, 31, palette[4], 3, "TextButton"), 4)
     end
 
     local controlW = compact and w or (w - 20)
@@ -2142,9 +2088,6 @@ function Tab:AddButton(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 16. Уведомления и ватермарка
-----------------------------------------------------------------------
 function Library:Notify(opts)
     opts = type(opts) == "table" and opts or {Text = opts}
     local window = self.Window
@@ -2175,7 +2118,7 @@ function Library:Notify(opts)
         Height = height,
         Alpha = 0,
         Y = 0,
-        Life = tonumber(opts.Duration) or 4,
+        Life = math.max(0, finite(opts.Duration, 4)),
     }
     window.Notifications[#window.Notifications + 1] = notif
     return notif
@@ -2192,9 +2135,6 @@ function Library:SetWatermark(opts)
     return config
 end
 
-----------------------------------------------------------------------
--- 17. Конфиги
-----------------------------------------------------------------------
 local function serialize(value)
     if typeof(value) == "Color3" then
         return {__type = "Color3", R = value.R, G = value.G, B = value.B}
@@ -2240,26 +2180,31 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
-    if config.Theme then self:SetTheme(config.Theme) end
-    if config.Accent then self:SetAccent(deserialize(config.Accent), config.AccentAlpha) end
-    if config.Scale and self.Window then self.Window:SetScale(config.Scale) end
-    for flag, raw in pairs(config.Flags or {}) do
-        local element = self.Elements[flag]
-        local value = deserialize(raw)
-        if element and element.Set then
-            pcall(function() element:Set(value) end)
-        else
-            self.Flags[flag] = value
-        end
+    if config.Flags ~= nil and type(config.Flags) ~= "table" then return false, "Flags must be a table" end
+    local errors = {}
+    local function apply(label, callback)
+        local ok, err = pcall(callback)
+        if not ok then errors[#errors + 1] = tostring(label) .. ": " .. tostring(err) end
     end
+    apply("Theme", function() if config.Theme then self:SetTheme(config.Theme) end end)
+    apply("Accent", function()
+        self:SetAccent(config.Accent and deserialize(config.Accent), config.AccentAlpha)
+    end)
+    apply("Scale", function() if config.Scale and self.Window then self.Window:SetScale(config.Scale) end end)
+    local flags = {}
+    for flag in pairs(config.Flags or {}) do flags[#flags + 1] = flag end
+    table.sort(flags, function(a, b) return tostring(a) < tostring(b) end)
+    for _, flag in ipairs(flags) do
+        apply(flag, function()
+            local element = self.Elements[flag]
+            local value = deserialize(config.Flags[flag])
+            if element and element.Set then element:Set(value) else self.Flags[flag] = value end
+        end)
+    end
+    if #errors > 0 then return false, table.concat(errors, "\n") end
     return true
 end
 
--- Файлы в памяти исполнителя: одна корневая папка WolfUi, внутри —
--- по папке на каждый скрипт, который использует библиотеку:
---   WolfUi/
---     MyScript/
---       configs/default.json
 local ROOT = "WolfUi"
 local LEGACY_ROOT = "WolfLib"
 local scriptFolder = "Default"
@@ -2268,7 +2213,7 @@ local function safeName(value)
     local name = string.gsub(tostring(value or ""), "[^%w%-%. ]", "_")
     name = string.gsub(name, "^ +", "")
     name = string.gsub(name, " +$", "")
-    if name == "" then name = "Default" end
+    if name == "" or name == "." or name == ".." then name = "Default" end
     return string.sub(name, 1, 40)
 end
 
@@ -2280,8 +2225,6 @@ local function folderSupport()
     return type(isfolder) == "function" and type(makefolder) == "function"
 end
 
--- makefolder в части исполнителей не создаёт вложенные пути сам,
--- поэтому создаём папки по одной сверху вниз
 local function ensureFolder(path)
     if not folderSupport() then return false end
     local built = nil
@@ -2333,13 +2276,20 @@ function Library:GetConfigFolder()
 end
 
 local function resolvePath(path)
-    local clean = string.gsub(tostring(path or ""), "^/+", "")
-    return ROOT .. "/" .. scriptFolder .. "/" .. clean
+    local clean = string.gsub(tostring(path or ""), "\\", "/")
+    clean = string.gsub(clean, "^/+", "")
+    local parts = {}
+    for part in string.gmatch(clean, "[^/]+") do
+        if part == ".." or string.find(part, "[%z%c:]") then return nil, "invalid relative path" end
+        if part ~= "." then parts[#parts + 1] = part end
+    end
+    return ROOT .. "/" .. scriptFolder .. "/" .. table.concat(parts, "/")
 end
 
 function Library:WriteFile(path, content)
     if not fileSupport() then return false, "executor has no file API" end
-    local full = resolvePath(path)
+    local full, err = resolvePath(path)
+    if not full then return false, err end
     local folder = string.match(full, "^(.*)/[^/]+$")
     if folder then ensureFolder(folder) end
     return pcall(writefile, full, tostring(content))
@@ -2347,20 +2297,29 @@ end
 
 function Library:ReadFile(path)
     if not fileSupport() then return nil, "executor has no file API" end
-    local ok, result = pcall(readfile, resolvePath(path))
+    local full, err = resolvePath(path)
+    if not full then return nil, err end
+    local ok, result = pcall(readfile, full)
     if not ok then return nil, result end
     return result
 end
 
 function Library:DeleteFile(path)
     if type(delfile) ~= "function" then return false, "executor has no delfile" end
-    return pcall(delfile, resolvePath(path))
+    local full, err = resolvePath(path)
+    if not full then return false, err end
+    return pcall(delfile, full)
 end
 
 function Library:ListFiles(subFolder)
     local names = {}
     if type(listfiles) ~= "function" then return names end
-    local folder = subFolder and resolvePath(subFolder) or self:GetFolder()
+    local folder = self:GetFolder()
+    if subFolder then
+        local err
+        folder, err = resolvePath(subFolder)
+        if not folder then return names, err end
+    end
     pcall(function()
         for _, path in ipairs(listfiles(folder)) do
             names[#names + 1] = string.match(path, "([^/\\]+)$") or path
@@ -2410,10 +2369,10 @@ function Library:DeleteConfigFile(name)
         self:GetConfigFolder() .. "/" .. safeName(name or "default") .. ".json")
 end
 
-----------------------------------------------------------------------
--- 18. Выгрузка
-----------------------------------------------------------------------
 function Library:Unload()
+    if self.Unloading then return end
+    self.Unloading = true
+    if self.Window and self.Window.CancelDrag then self.Window.CancelDrag() end
     Runtime.Alive = false
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
@@ -2427,18 +2386,15 @@ function Library:Unload()
     end
     self.Window = nil
     self.Elements = {}
+    self.Flags = {}
     for _, listener in ipairs(unloadListeners) do
         pcall(listener)
     end
     unloadListeners = {}
     changeListeners = {}
+    self.Unloading = false
 end
 
-----------------------------------------------------------------------
--- Демо-меню: проверка, что библиотека загрузилась и рисует.
--- Одной строкой:
---   loadstring(game:HttpGet(URL))():Demo()
-----------------------------------------------------------------------
 function Library:Demo()
     local window = self:CreateWindow({Name = "Wolf", Icon = {"dog", "paw-print", "moon"}})
 
@@ -2478,7 +2434,7 @@ function Library:Demo()
     misc:AddParagraph({
         Name = "Это демо",
         Text = "Библиотека загрузилась и работает. RightShift — скрыть/показать меню, " ..
-            "F1/F2 — масштаб 100/75/50. Иконку в сайдбаре можно тянуть мышью.",
+            "F1/F2 — масштаб 100/75/50. Иконку в сайдбаре можно тянуть мышью или пальцем.",
     })
     misc:AddTextBox({Name = "Ник", Placeholder = "введите текст", ShowName = true})
     misc:AddButton({
@@ -2492,21 +2448,258 @@ function Library:Demo()
         end,
     })
 
+    local controls = window:CreateTab({Name = "CONTROLS", Icon = {"sliders-horizontal"}})
+    controls:AddNumberInput({Name = "Количество", Min = 0, Max = 100, Default = 10, Width = 0.5})
+    controls:AddProgressBar({Name = "Прогресс", Default = 65, Width = 0.5})
+    controls:AddSegmented({Name = "Качество", Options = {"Низкое", "Среднее", "Высокое"}, Default = 2})
+    controls:AddRadioGroup({Name = "Режим", Options = {"Автоматически", "Вручную"}})
+
     self:SetWatermark({Text = "WolfLib " .. tostring(self.Version), ShowFPS = true})
     self:Notify({Title = "WolfLib", Text = "Демо-меню создано", Duration = 5})
     return window
 end
 
--- Подсказка в консоль: чаще всего "меню не появилось" значит, что запустили
--- саму библиотеку, а не скрипт, который вызывает CreateWindow.
-pcall(function()
-    print("[WolfLib] v" .. tostring(Library.Version) ..
-        " загружена. Это библиотека, меню появится после Library:CreateWindow(...)." ..
-        " Быстрая проверка: Library:Demo()")
-end)
-
 Library.Runtime = Runtime
 Library.Palette = palette
 Library.Icons = IconSheet
+
+local function numberOptions(opts)
+    local low, high = finite(opts.Min, 0), finite(opts.Max, 100)
+    if low > high then low, high = high, low end
+    local increment = math.abs(finite(opts.Step, 1))
+    if increment == 0 then increment = 1 end
+    return low, high, increment
+end
+
+function Tab:AddNumberInput(opts)
+    opts = opts or {}
+    local low, high, increment = numberOptions(opts)
+    local w = math.max(180, self:_width(opts.Width))
+    local name = opts.Name or "Number"
+    local flag = opts.Flag or (self.Name .. "." .. name)
+    local card = self:_card(w, 78, name)
+    local title = text(card, name, 10, 8, w - 20, 16, 12, white)
+    local minus = paint(rect(card, 8, 32, 36, 36, palette[4], 4, "TextButton"), 4)
+    text(minus, "−", 0, 0, 36, 36, 18, white, "center")
+    local plus = paint(rect(card, w - 44, 32, 36, 36, palette[4], 4, "TextButton"), 4)
+    text(plus, "+", 0, 0, 36, 36, 18, white, "center")
+    local box = new("TextBox", card, {
+        Position = UDim2.fromOffset(48, 32), Size = UDim2.fromOffset(w - 96, 36),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        Text = "", Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = white,
+        ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Center,
+    })
+    local value
+    local api = baseApi(self, card, flag)
+    function api:Get() return value end
+    function api:Set(raw, silent)
+        local n = math.clamp(finite(raw, value or low), low, high)
+        if n > low and n < high then n = low + math.floor((n - low) / increment + 0.5) * increment end
+        n = math.clamp(n, low, high)
+        local changed = value ~= n
+        value = n
+        box.Text = string.format("%.10g", n)
+        if changed then
+            fireChange(flag, n)
+            if not silent and opts.Callback then task.spawn(opts.Callback, n) end
+        end
+    end
+    function api:SetName(v) title:SetText(v) end
+    connect(minus.Activated, function() api:Set(value - increment) end)
+    connect(plus.Activated, function() api:Set(value + increment) end)
+    connect(box.FocusLost, function() api:Set((string.gsub(box.Text, ",", "."))) end)
+    api:Set(opts.Default or low, true)
+    return api
+end
+
+function Tab:AddProgressBar(opts)
+    opts = opts or {}
+    local low, high = numberOptions(opts)
+    local w = self:_width(opts.Width)
+    local name = opts.Name or "Progress"
+    local flag = opts.Flag or (self.Name .. "." .. name)
+    local card = self:_card(w, 56, name)
+    local title = text(card, name, 10, 8, w - 70, 16, 12, white)
+    local caption = text(card, "", w - 60, 8, 50, 16, 11, white, "right")
+    local track = paint(rect(card, 10, 34, w - 20, 12, palette[4], 4), 4)
+    local fill = rect(track, 0, 0, 0, 12, accent, 4)
+    local value, shown = nil, 0
+    local api = baseApi(self, card, flag)
+    function api:Get() return value end
+    function api:Set(raw, silent)
+        local n = math.clamp(finite(raw, value or low), low, high)
+        if n == value then return end
+        value = n
+        fireChange(flag, value)
+        if not silent and opts.Callback then task.spawn(opts.Callback, value) end
+    end
+    function api:SetName(v) title:SetText(v) end
+    api:Set(opts.Default or low, true)
+    step(function(_, k)
+        local ratio = high == low and 1 or (value - low) / (high - low)
+        shown = approach(shown, ratio, k)
+        fill.Size = UDim2.new(shown, 0, 1, 0)
+        fill.BackgroundColor3 = typeof(opts.Color) == "Color3" and opts.Color or accent
+        caption:SetText(tostring(math.floor(ratio * 100 + 0.5)) .. "%")
+    end)
+    return api
+end
+
+local function choiceControl(tab, opts, vertical)
+    opts = opts or {}
+    local name = opts.Name or (vertical and "Radio group" or "Segmented")
+    local flag = opts.Flag or (tab.Name .. "." .. name)
+    local w = tab:_width(opts.Width)
+    local options, buttons, selection = {}, {}, nil
+    local card = tab:_card(w, 76, name)
+    local title = text(card, name, 10, 8, w - 20, 16, 12, white)
+    local api = baseApi(tab, card, flag)
+    function api:Get() return options[selection], selection end
+    function api:GetOptions() return table.clone(options) end
+    function api:Set(value, silent)
+        local index = nil
+        if type(value) == "string" then
+            for i, option in ipairs(options) do if option == value then index = i; break end end
+        else
+            index = finite(value, nil)
+        end
+        if index then index = math.floor(index) end
+        if not index or not options[index] then index = #options > 0 and 1 or nil end
+        if selection == index then return end
+        selection = index
+        fireChange(flag, index or 0)
+        if not silent and opts.Callback then task.spawn(opts.Callback, self:Get()) end
+    end
+    function api:SetName(value) title:SetText(value) end
+    function api:SetOptions(values)
+        local old = options[selection]
+        for _, entry in ipairs(buttons) do
+            entry.Connection:Disconnect()
+            entry.Object:Destroy()
+        end
+        options, buttons = {}, {}
+        for _, value in ipairs(type(values) == "table" and values or {}) do
+            options[#options + 1] = tostring(value)
+        end
+        local columns = vertical and 1 or math.max(1, math.min(#options, math.floor((w - 20) / 80)))
+        local rows = math.max(1, math.ceil(#options / columns))
+        local bw = (w - 20 - (columns - 1) * 6) / columns
+        card.Size = UDim2.fromOffset(w, 32 + rows * 38 + 6)
+        for i, option in ipairs(options) do
+            local x = 10 + ((i - 1) % columns) * (bw + 6)
+            local y = 32 + math.floor((i - 1) / columns) * 38
+            local button = rect(card, x, y, bw, 32, palette[4], 4, "TextButton")
+            local label = text(button, option, vertical and 28 or 6, 0,
+                bw - (vertical and 34 or 12), 32, 11, white, vertical and nil or "center")
+            local dot = vertical and rect(button, 10, 11, 10, 10, palette[3], 5) or nil
+            buttons[i] = {Object = button, Label = label, Dot = dot,
+                Connection = connect(button.Activated, function() api:Set(i) end)}
+        end
+        selection = nil
+        self:Set(old or 1, true)
+        if #options == 0 then fireChange(flag, 0) end
+        tab:_grow()
+    end
+    step(function()
+        for i, entry in ipairs(buttons) do
+            entry.Object.BackgroundColor3 = i == selection and palette[6] or palette[4]
+            entry.Label:Color(i == selection and white or palette[3])
+            if entry.Dot then entry.Dot.BackgroundColor3 = i == selection and accent or palette[3] end
+        end
+    end)
+    api:SetOptions(opts.Options or {"One", "Two", "Three"})
+    api:Set(opts.Default or 1, true)
+    return api
+end
+
+function Tab:AddSegmented(opts) return choiceControl(self, opts, false) end
+function Tab:AddRadioGroup(opts) return choiceControl(self, opts, true) end
+
+for name, factory in pairs(Tab) do
+    if string.sub(name, 1, 3) == "Add" and type(factory) == "function" then
+        Tab[name] = function(self, ...)
+            local connectionStart, updateStart = #Runtime.Connections, #Runtime.Updates
+            local popupStart, bindStart = #self.Window.Popups, #self.Window.Keybinds
+            local before = table.clone(Library.Elements)
+            local api = factory(self, ...)
+            local object = api and api.Object
+            if not object then return api end
+            api.Tab = self
+            local ownedConnections, ownedUpdates, ownedPopups, ownedBinds, ownedFlags = {}, {}, {}, {}, {}
+            for i = connectionStart + 1, #Runtime.Connections do ownedConnections[Runtime.Connections[i]] = true end
+            for i = updateStart + 1, #Runtime.Updates do
+                local entry = Runtime.Updates[i]
+                entry.Owner = entry.Owner or object
+                ownedUpdates[entry] = true
+            end
+            for i = popupStart + 1, #self.Window.Popups do ownedPopups[self.Window.Popups[i]] = true end
+            for i = bindStart + 1, #self.Window.Keybinds do ownedBinds[self.Window.Keybinds[i]] = true end
+            for flag, element in pairs(Library.Elements) do
+                if before[flag] ~= element then ownedFlags[flag] = element end
+            end
+            local cleaned = false
+            local function cleanup()
+                if cleaned then return end
+                cleaned = true
+                api.Destroyed = true
+                local window = self.Window
+                if window.Drag and (window.Drag.Object == object or window.Drag.Object:IsDescendantOf(object)) then
+                    window.CancelDrag()
+                end
+                for i = #Runtime.Connections, 1, -1 do
+                    local c = Runtime.Connections[i]
+                    if ownedConnections[c] then c:Disconnect(); table.remove(Runtime.Connections, i) end
+                end
+                for i = #Runtime.Updates, 1, -1 do
+                    if ownedUpdates[Runtime.Updates[i]] then table.remove(Runtime.Updates, i) end
+                end
+                for i = #window.Popups, 1, -1 do
+                    local pop = window.Popups[i]
+                    if ownedPopups[pop] then
+                        pop:Close()
+                        pop.Object:Destroy()
+                        table.remove(window.Popups, i)
+                    end
+                end
+                for i = #window.Keybinds, 1, -1 do
+                    local bind = window.Keybinds[i]
+                    if ownedBinds[bind] then
+                        if window.PendingKeybind == bind then window.PendingKeybind = nil end
+                        table.remove(window.Keybinds, i)
+                    end
+                end
+                for flag, element in pairs(ownedFlags) do
+                    if Library.Elements[flag] == element then
+                        Library.Elements[flag], Library.Flags[flag], Library.Flags[flag .. ".Text"] = nil, nil, nil
+                    end
+                end
+                for i = #self.Elements, 1, -1 do
+                    if self.Elements[i] == api then table.remove(self.Elements, i) end
+                end
+                task.defer(function() self:_grow() end)
+            end
+            local destroyConnection = connect(object.Destroying, cleanup)
+            ownedConnections[destroyConnection] = true
+            function api:Destroy()
+                if cleaned then return end
+                cleanup()
+                object:Destroy()
+                self.Tab:_grow()
+            end
+            function api:SetVisible(value)
+                if cleaned then return end
+                object.Visible = value == true
+                if not object.Visible then
+                    for pop in pairs(ownedPopups) do pop:Close() end
+                    if self.Tab.Window.Drag and self.Tab.Window.Drag.Object:IsDescendantOf(object) then
+                        self.Tab.Window.CancelDrag()
+                    end
+                end
+                self.Tab:_grow()
+            end
+            return api
+        end
+    end
+end
 
 return Library
