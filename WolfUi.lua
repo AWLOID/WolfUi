@@ -1,54 +1,73 @@
-
-      local Library = loadstring(game:HttpGet("...WolfLib.lua"))()
-
-      local Window = Library:CreateWindow({ Name = "Wolf", Icon = "dog" })
-      local Tab    = Window:CreateTab({ Name = "ASSIST", Icon = "crosshair" })
-
-      Tab:AddToggle({
-          Name = "Enable aimbot", Description = "Главный выключатель",
-          Flag = "aim_enabled", Default = true,
-          Keybind = Enum.KeyCode.E,           -- бинд прямо на тумблере
-          ColorPicker = { Flag = "aim_color" },-- палитра прямо на тумблере
-          Callback = function(value) print(value) end,
-      })
-
-    ----------------------------------------------------------------------
-    ЭЛЕМЕНТЫ (все принимают Width = 1 / 0.5 / 0.33 / 0.25)
-    ----------------------------------------------------------------------
-      Tab:AddSection("Aimbot")
-      Tab:AddDivider()
-      Tab:AddLabel({ Text = "..." })
-      Tab:AddParagraph({ Name = "...", Text = "многострочный текст" })
-      Tab:AddToggle({ Name, Description, Default, Flag, Keybind, ColorPicker, Callback })
-      Tab:AddSlider({ Name, Description, Min, Max, Default, Decimals, Suffix, Flag, Callback })
-      Tab:AddDropdown({ Name, Description, Options, Default, Multiple, Flag, Callback })
-      Tab:AddColorPicker({ Name, Description, Default, Alpha, Flag, Callback })
-      Tab:AddKeybind({ Name, Description, Default, Flag, Callback })
-      Tab:AddTextBox({ Name, Placeholder, Default, MaxLength, Flag, Callback })
-      Tab:AddButton({ Name, Text, Icon, Compact, Callback })
-
-    Любой элемент возвращает api: api:Get(), api:Set(value), api:SetName(text),
-    api:SetVisible(bool). Дропдаун ещё api:SetOptions(list).
-
-    ----------------------------------------------------------------------
-    БИБЛИОТЕКА
-    ----------------------------------------------------------------------
-      Library.Flags[flag]                  -- текущее значение любого элемента
-      Library:SetFlag(flag, value)
-      Library:OnChange(function(flag, value) end)
-      Library:Notify({ Title, Text, Duration, Icon })
-      Library:SetWatermark({ Text = "Wolf", ShowFPS = true })
-      Library:SetTheme(1..3)  Library:SetAccent(Color3)  Library:SetScale(100/75/50)
-      Library:GetConfig()  Library:LoadConfig(table)
-      Library:SaveConfigFile("name")  Library:LoadConfigFile("name")  Library:ListConfigs()
-      Library:Unload()
-      Window:SelectTab("ASSIST")  Window:SetVisible(bool)  Window:AddRailButton({Icon, Callback})
-
-    События (совместимость со старым скриптом), внутри PlayerGui.WolfUI:
-      Changed.Event -> (flag, value) | TabChanged.Event -> (tab) | ButtonPressed.Event -> (name)
-
-    Бинды: RightShift — скрыть/показать, F1/F2 — масштаб (100/75/50).
-===========================================================================]]
+-- =============================================================================
+-- WolfLib v2.0.1 — UI library for Roblox (один файл, без зависимостей)
+--
+-- ВАЖНО: документация ниже — строчные комментарии, по два дефиса на каждой
+-- строке. Блочных комментариев в файле нет намеренно: если при копировании
+-- в GitHub потеряется начало файла, остаток всё равно останется валидным Lua
+-- и библиотека загрузится.
+--
+-- Геометрия и палитра 1:1 с оригинальным меню Wolf (590x350, сайдбар 70,
+-- правая полоса 30, карточки palette[2] r5). Отличия от растрового
+-- оригинала только там, где просили: иконки Lucide и настоящие TextLabel
+-- (работает кириллица).
+--
+-- -----------------------------------------------------------------------------
+-- БЫСТРЫЙ СТАРТ
+-- -----------------------------------------------------------------------------
+--   local url = "https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"
+--   local Library = loadstring(game:HttpGet(url))()
+--
+--   local Window = Library:CreateWindow({ Name = "Wolf", Icon = "dog" })
+--   local Tab    = Window:CreateTab({ Name = "ASSIST", Icon = "crosshair" })
+--
+--   Tab:AddToggle({
+--       Name = "Enable aimbot", Description = "Главный выключатель",
+--       Flag = "aim_enabled", Default = true,
+--       Keybind = Enum.KeyCode.E,             -- бинд прямо на тумблере
+--       ColorPicker = { Flag = "aim_color" }, -- палитра прямо на тумблере
+--       Callback = function(value) print(value) end,
+--   })
+--
+-- -----------------------------------------------------------------------------
+-- ЭЛЕМЕНТЫ (все принимают Width = 1 / 0.5 / 0.33 / 0.25)
+-- -----------------------------------------------------------------------------
+--   Tab:AddSection("Aimbot")
+--   Tab:AddDivider()
+--   Tab:AddLabel({ Text = "..." })
+--   Tab:AddParagraph({ Name = "...", Text = "многострочный текст" })
+--   Tab:AddToggle({ Name, Description, Default, Flag, Keybind, ColorPicker, Callback })
+--   Tab:AddSlider({ Name, Description, Min, Max, Default, Decimals, Suffix, Flag, Callback })
+--   Tab:AddDropdown({ Name, Description, Options, Default, Multiple, MaxRows, Flag, Callback })
+--   Tab:AddColorPicker({ Name, Description, Default, Alpha, UseAlpha, Flag, Callback })
+--   Tab:AddKeybind({ Name, Description, Default, Flag, Callback })
+--   Tab:AddTextBox({ Name, Placeholder, Default, MaxLength, ShowName, OnEnter, Flag, Callback })
+--   Tab:AddButton({ Name, Text, Icon, Compact, Description, Callback })
+--
+-- Любой элемент возвращает api: api:Get(), api:Set(value), api:SetName(text),
+-- api:SetVisible(bool). Дропдаун ещё api:SetOptions(list).
+--
+-- -----------------------------------------------------------------------------
+-- БИБЛИОТЕКА
+-- -----------------------------------------------------------------------------
+--   Library.Version                      -- "2.0.1"
+--   Library.Flags[flag]                  -- текущее значение любого элемента
+--   Library:SetFlag(flag, value) / Library:GetFlag(flag)
+--   Library:OnChange(function(flag, value) end)
+--   Library:Notify({ Title, Text, Duration, Icon })
+--   Library:SetWatermark({ Text = "Wolf", ShowFPS = true })
+--   Library:SetTheme(1..3)  Library:SetAccent(Color3, alpha)
+--   Library:GetConfig() / Library:LoadConfig(table)
+--   Library:SaveConfigFile(name) / LoadConfigFile(name) / ListConfigs() / DeleteConfigFile(name)
+--   Library:Unload()
+--   Window:SelectTab("ASSIST")  Window:SetVisible(bool)  Window:SetScale(100|75|50)
+--   Window:AddRailButton({ Icon, Fallback, Callback })
+--
+-- События (совместимость со старым скриптом), внутри PlayerGui.WolfUI:
+--   Changed.Event -> (flag, value) | TabChanged.Event -> (tab) | ButtonPressed.Event -> (name)
+--
+-- Масштаб меню: только 100 / 75 / 50 (при загрузке 100, больше 100 не бывает).
+-- Бинды: RightShift — скрыть/показать, F1/F2 — переключение масштаба.
+-- =============================================================================
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
