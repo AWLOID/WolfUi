@@ -1,10 +1,14 @@
 -- =============================================================================
--- WolfLib v2.0.1 — UI library for Roblox (один файл, без зависимостей)
+-- WolfLib v2.0.2 — UI library for Roblox (один файл, без зависимостей)
+--
+-- ЭТО БИБЛИОТЕКА. Сама она меню не рисует: последняя строка файла — return
+-- Library. Меню появляется только когда твой скрипт вызовет CreateWindow.
+-- Быстрая проверка одной строкой (можно вставить прямо в исполнитель):
+--   loadstring(game:HttpGet("https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"))():Demo()
 --
 -- ВАЖНО: документация ниже — строчные комментарии, по два дефиса на каждой
--- строке. Блочных комментариев в файле нет намеренно: если при копировании
--- в GitHub потеряется начало файла, остаток всё равно останется валидным Lua
--- и библиотека загрузится.
+-- строке. Блочных комментариев в файле нет намеренно: если при заливке на
+-- GitHub потеряется начало файла, остаток всё равно останется валидным Lua.
 --
 -- Геометрия и палитра 1:1 с оригинальным меню Wolf (590x350, сайдбар 70,
 -- правая полоса 30, карточки palette[2] r5). Отличия от растрового
@@ -33,7 +37,7 @@
 -- -----------------------------------------------------------------------------
 --   Tab:AddSection("Aimbot")
 --   Tab:AddDivider()
---   Tab:AddLabel({ Text = "..." })
+--   Tab:AddLabel({ Text = "...", Muted, Size, Align })
 --   Tab:AddParagraph({ Name = "...", Text = "многострочный текст" })
 --   Tab:AddToggle({ Name, Description, Default, Flag, Keybind, ColorPicker, Callback })
 --   Tab:AddSlider({ Name, Description, Min, Max, Default, Decimals, Suffix, Flag, Callback })
@@ -49,7 +53,8 @@
 -- -----------------------------------------------------------------------------
 -- БИБЛИОТЕКА
 -- -----------------------------------------------------------------------------
---   Library.Version                      -- "2.0.1"
+--   Library.Version                      -- "2.0.2"
+--   Library:Demo()                       -- готовое меню одной строкой (проверка)
 --   Library.Flags[flag]                  -- текущее значение любого элемента
 --   Library:SetFlag(flag, value) / Library:GetFlag(flag)
 --   Library:OnChange(function(flag, value) end)
@@ -357,7 +362,7 @@ local GAP = 10
 local TAB_SLOT = 70
 
 local Library = {
-    Version = "2.0",
+    Version = "2.0.2",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -2131,6 +2136,77 @@ function Library:Unload()
     unloadListeners = {}
     changeListeners = {}
 end
+
+----------------------------------------------------------------------
+-- Демо-меню: проверка, что библиотека загрузилась и рисует.
+-- Одной строкой:
+--   loadstring(game:HttpGet(URL))():Demo()
+----------------------------------------------------------------------
+function Library:Demo()
+    local window = self:CreateWindow({Name = "Wolf", Icon = {"dog", "paw-print", "moon"}})
+
+    local assist = window:CreateTab({Name = "ASSIST", Icon = {"crosshair", "target"}})
+    assist:AddSection("Aimbot")
+    assist:AddToggle({
+        Name = "Enable aimbot", Description = "Демо-тумблер",
+        Flag = "demo_aim", Default = true, Width = 0.5,
+        ColorPicker = {Flag = "demo_aim_color"},
+        Keybind = Enum.KeyCode.E,
+    })
+    assist:AddToggle({Name = "Silent aim", Flag = "demo_silent", Width = 0.5})
+    assist:AddSlider({
+        Name = "Field of view", Flag = "demo_fov",
+        Min = 0, Max = 500, Default = 120, Suffix = " px", Width = 0.5,
+    })
+    assist:AddSlider({
+        Name = "Smoothness", Flag = "demo_smooth",
+        Min = 1, Max = 100, Default = 35, Width = 0.5,
+    })
+    assist:AddDropdown({
+        Name = "Target part", Flag = "demo_part",
+        Options = {"Head", "Torso", "Nearest"}, Default = "Head",
+    })
+
+    local visuals = window:CreateTab({Name = "VISUALS", Icon = {"eye", "scan-eye"}})
+    visuals:AddSection("ESP")
+    visuals:AddToggle({Name = "Boxes", Flag = "demo_boxes", Default = true, Width = 0.5})
+    visuals:AddToggle({Name = "Names", Flag = "demo_names", Width = 0.5})
+    visuals:AddColorPicker({
+        Name = "Box color", Flag = "demo_box_color",
+        Default = Color3.fromRGB(126, 139, 209),
+    })
+    visuals:AddKeybind({Name = "Toggle ESP", Flag = "demo_esp_key", Default = Enum.KeyCode.X})
+
+    local misc = window:CreateTab({Name = "MISC", Icon = {"settings", "sliders-horizontal"}})
+    misc:AddParagraph({
+        Name = "Это демо",
+        Text = "Библиотека загрузилась и работает. RightShift — скрыть/показать меню, " ..
+            "F1/F2 — масштаб 100/75/50. Иконку в сайдбаре можно тянуть мышью.",
+    })
+    misc:AddTextBox({Name = "Ник", Placeholder = "введите текст", ShowName = true})
+    misc:AddButton({
+        Name = "Уведомление", Text = "Показать",
+        Callback = function()
+            Library:Notify({
+                Title = "WolfLib",
+                Text = "Всё работает, версия " .. tostring(Library.Version),
+                Duration = 4,
+            })
+        end,
+    })
+
+    self:SetWatermark({Text = "WolfLib " .. tostring(self.Version), ShowFPS = true})
+    self:Notify({Title = "WolfLib", Text = "Демо-меню создано", Duration = 5})
+    return window
+end
+
+-- Подсказка в консоль: чаще всего "меню не появилось" значит, что запустили
+-- саму библиотеку, а не скрипт, который вызывает CreateWindow.
+pcall(function()
+    print("[WolfLib] v" .. tostring(Library.Version) ..
+        " загружена. Это библиотека, меню появится после Library:CreateWindow(...)." ..
+        " Быстрая проверка: Library:Demo()")
+end)
 
 Library.Runtime = Runtime
 Library.Palette = palette
