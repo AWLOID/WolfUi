@@ -189,10 +189,11 @@ local function fadeGroup(root, alpha)
         elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
             properties[#properties + 1] = "ImageTransparency"
         elseif object:IsA("UIStroke") then properties[#properties + 1] = "Transparency" end
+        if object:IsA("ScrollingFrame") then properties[#properties + 1] = "ScrollBarImageTransparency" end
         if #properties > 0 then
-            local values = {}
+            local values = fadeValues[object] or {}
             for _, property in ipairs(properties) do
-                values[property] = object[property]
+                if values[property] == nil then values[property] = object[property] end
                 object[property] = 1 - (1 - object[property]) * alpha
             end
             fadeValues[object] = values
@@ -352,11 +353,13 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "3.1.0",
+    Version = "3.2.0",
     Flags = {},
     Elements = {},
     Themes = themes,
     ThemeNames = {"Wolf", "Slate", "Black"},
+    FadeAnimations = false,
+    FadeDuration = 0.18,
     ScaleOptions = {100, 75, 50},
     Theme = 1,
     Scale = 100,
@@ -407,6 +410,39 @@ local function fireChange(flag, value)
     for _, listener in ipairs(changeListeners) do
         task.spawn(listener, flag, value)
     end
+end
+
+local function fadeAlpha(current, target, dt)
+    if not Library.FadeAnimations then return target end
+    return move(current, target, dt / Library.FadeDuration)
+end
+
+function Library:SetFadeAnimations(enabled, duration)
+    self.FadeAnimations = enabled == true
+    if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.18, 0.01, 5) end
+    if not self.FadeAnimations then
+        restoreFades()
+        local window = self.Window
+        if window then
+            window.Alpha = window.Visible and 1 or 0
+            window.Frame.Visible = window.Visible
+            window.PopupLayer.Visible = window.Visible
+            for _, tab in ipairs(window.TabList) do
+                tab.Alpha = window.Current == tab and 1 or 0
+                tab.Page.Visible = tab.Alpha == 1
+            end
+            for _, pop in ipairs(window.Popups) do
+                pop.Alpha = pop:IsActive() and 1 or 0
+                pop.Object.Visible = pop.Alpha == 1 and pop.Anchor ~= nil
+            end
+        end
+    end
+    fireChange("FadeAnimations", self.FadeAnimations)
+    return self.FadeAnimations
+end
+
+function Library:GetFadeAnimations()
+    return self.FadeAnimations, self.FadeDuration
 end
 
 function Library:OnChange(callback)
@@ -601,6 +637,9 @@ function Library:CreateWindow(opts)
 
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive = {}, {}, {}, true
     Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
+    if opts.FadeAnimations ~= nil or opts.FadeDuration ~= nil then
+        self:SetFadeAnimations(opts.FadeAnimations == nil and self.FadeAnimations or opts.FadeAnimations, opts.FadeDuration)
+    end
 
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
@@ -617,6 +656,8 @@ function Library:CreateWindow(opts)
     Library.Accent, Library.AccentAlpha = state.Accent, state.AccentAlpha
 
     local window = setmetatable({
+        Visible = true,
+        Alpha = 1,
         Tabs = {},
         TabList = {},
         Popups = {},
@@ -768,7 +809,7 @@ function Library:CreateWindow(opts)
     connect(UIS.InputEnded, function(input)
         local drag = window.Drag
         if not drag or input ~= drag.Input then return end
-        updateDrag(input)
+        if input.UserInputType == Enum.UserInputType.Touch then updateDrag(input) end
         window.Drag = nil
         if drag.Finish then drag.Finish(false, drag.Moved) end
     end)
@@ -970,6 +1011,7 @@ function Library:CreateWindow(opts)
             end
         end
     end
+    window.LayoutMini = layoutMini
     overlayStep(layoutMini)
 
     local reopen = rect(miniLayer, 8, 8, 32, 32, palette[2], 5, "TextButton")
@@ -1004,7 +1046,7 @@ function Library:CreateWindow(opts)
     }
     window.OpenConfig = {
         Mode = opts.OpenMode or "button",
-        AlwaysVisible = opts.OpenAlways and true or false,
+        AlwaysVisible = opts.OpenAlways ~= false,
         Size = math.max(24, math.floor(tonumber(opts.OpenSize) or 32)),
         Width = math.max(24, math.floor(tonumber(opts.OpenWidth or opts.OpenSize) or 32)),
         Height = math.max(24, math.floor(tonumber(opts.OpenHeight or opts.OpenSize) or 32)),
@@ -1013,6 +1055,12 @@ function Library:CreateWindow(opts)
         Interval = 0.4,
         Position = Vector2.new(8, 8),
     }
+
+    function window.UpdateOpenVisibility()
+        local oc, wm = window.OpenConfig, window.WatermarkConfig
+        watermark.Visible = oc.Mode == "watermark" and wm.Enabled == true
+        reopen.Visible = oc.Mode == "button" and (not window.Visible or oc.AlwaysVisible) == true
+    end
 
     local tooltip = rect(gui, 0, 0, 10, 20, palette[1], 3)
     tooltip.Name = "Tooltip"
@@ -1026,11 +1074,19 @@ function Library:CreateWindow(opts)
         draggable(object, function(point, initial)
             if initial then
                 startPoint = point
-                startPos = Vector2.new(object.AbsolutePosition.X, object.AbsolutePosition.Y)
+                startPos = Vector2.new(object.Position.X.Offset, object.Position.Y.Offset)
                 return
             end
-            config.Position = startPos + point - startPoint
-            if onDrop then config.Custom = true end
+            local target = startPos + point - startPoint
+            local size, viewport = object.AbsoluteSize, window.Viewport
+            local margin = onDrop and MINI_MARGIN or 0
+            target = Vector2.new(
+                math.floor(math.clamp(target.X, margin, math.max(margin, viewport.X - size.X - margin)) + 0.5),
+                math.floor(math.clamp(target.Y, margin, math.max(margin, viewport.Y - size.Y - margin)) + 0.5)
+            )
+            config.Position = target
+            if onDrop then config.Custom, config.Target = true, target end
+            object.Position = UDim2.fromOffset(target.X, target.Y)
         end, function(cancelled, moved)
             if cancelled then return end
             if moved then
@@ -1041,11 +1097,12 @@ function Library:CreateWindow(opts)
     window.Floating = floating
 
     floating(reopen, window.OpenConfig, function()
-        window:SetVisible(not frame.Visible)
+        window:SetVisible(not window.Visible)
     end)
-    floating(watermark, window.WatermarkConfig, function()
-        if window.WatermarkConfig.Toggle ~= false then
-            window:SetVisible(not frame.Visible)
+    connect(watermark.Activated, function()
+        if window.OpenConfig.Mode == "watermark" and window.WatermarkConfig.Enabled
+            and window.WatermarkConfig.Toggle ~= false then
+            window:SetVisible(not window.Visible)
         end
     end)
 
@@ -1057,7 +1114,7 @@ function Library:CreateWindow(opts)
     end
     connect(UIS.InputBegan, function(input, processed)
         if centerInput then centerInput = nil; tapCount = 0; return end
-        if window.OpenConfig.Mode ~= "center" or frame.Visible or processed
+        if window.OpenConfig.Mode ~= "center" or window.Visible or processed
             or UIS:GetFocusedTextBox() or not primary(input) then return end
         local point = Vector2.new(input.Position.X, input.Position.Y)
         if not inCenter(point) then tapCount = 0; return end
@@ -1079,7 +1136,7 @@ function Library:CreateWindow(opts)
         if not tap or input ~= tap.Input then return end
         centerInput = nil
         local oc, now = window.OpenConfig, os.clock()
-        if oc.Mode ~= "center" or frame.Visible or window.Drag or now - tap.Time > 0.4
+        if oc.Mode ~= "center" or window.Visible or window.Drag or now - tap.Time > 0.4
             or (Vector2.new(input.Position.X, input.Position.Y) - tap.Point).Magnitude >= DRAG_THRESHOLD then
             tapCount = 0
             return
@@ -1097,10 +1154,9 @@ function Library:CreateWindow(opts)
         local viewport = window.Viewport
         local oc = window.OpenConfig
         local wm = window.WatermarkConfig
-        local hidden = not frame.Visible
+        local hidden = not window.Visible
 
-        local showWatermark = wm.Enabled
-            and (not hidden or oc.Mode == "watermark" or wm.AlwaysVisible) and true or false
+        local showWatermark = oc.Mode == "watermark" and wm.Enabled == true
         watermark.Visible = showWatermark
         if showWatermark then
             local parts = {tostring(wm.Text or "")}
@@ -1149,7 +1205,7 @@ function Library:CreateWindow(opts)
             reopenIcon.Object.Size = UDim2.fromOffset(math.floor(size * 0.68), math.floor(size * 0.68))
         end
 
-        if frame.Visible and window.TooltipText and window.TooltipObject
+        if window.Visible and window.TooltipText and window.TooltipObject
             and window.TooltipObject.Parent then
             local caption = window.TooltipText
             local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 20))
@@ -1206,7 +1262,7 @@ function Library:CreateWindow(opts)
         end
 
         if input.KeyCode == (window.ToggleKey or Enum.KeyCode.RightShift) then
-            window:SetVisible(not frame.Visible)
+            window:SetVisible(not window.Visible)
         elseif input.KeyCode == Enum.KeyCode.F1 or input.KeyCode == Enum.KeyCode.F2 then
             local options = Library.ScaleOptions
             local sorted = {}
@@ -1265,7 +1321,7 @@ function Library:CreateWindow(opts)
             local notif = window.Notifications[index]
             notif.Life = notif.Life - dt
             local target = (notif.Life > 0) and 1 or 0
-            notif.Alpha = move(notif.Alpha, target, 5 * dt)
+            notif.Alpha = fadeAlpha(notif.Alpha, target, dt)
             fadeGroup(notif.Object, notif.Alpha)
             notif.Object.BackgroundColor3 = palette[2]
             notif.Bar.BackgroundColor3 = accent
@@ -1282,6 +1338,9 @@ function Library:CreateWindow(opts)
             offset = offset + notif.Height + 8
         end
 
+        window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
+        frame.Visible = window.Visible or window.Alpha > 0
+        window.PopupLayer.Visible = frame.Visible
         if not frame.Visible then return end
 
         for _, update in ipairs(Runtime.Updates) do
@@ -1290,9 +1349,10 @@ function Library:CreateWindow(opts)
 
         for _, tab in ipairs(window.TabList) do
             local active = window.Current == tab
-            tab.Alpha = move(tab.Alpha, active and 1 or 0, 8 * dt)
+            tab.Alpha = fadeAlpha(tab.Alpha, active and 1 or 0, dt)
             local page = tab.Page
-            page.Visible = tab.Alpha > 0.01
+            page.Visible = tab.Alpha > 0
+            page.Interactable = active and window.Visible
             if page.Visible then
                 fadeGroup(page, tab.Alpha)
             end
@@ -1300,14 +1360,15 @@ function Library:CreateWindow(opts)
 
         for _, pop in ipairs(window.Popups) do
             local show = pop:IsActive()
-            pop.Alpha = move(pop.Alpha, show and 1 or 0, 9 * dt)
+            pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, dt)
             if pop.AnimateHeight then
                 pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, math.min(16 * dt, 1))
             else
                 pop.CurrentHeight = pop.Height
             end
             local object = pop.Object
-            object.Visible = pop.Alpha > 0.01 and pop.Anchor ~= nil
+            object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
+            object.Interactable = show and window.Visible
             fadeGroup(object, pop.Alpha)
             object.BackgroundColor3 = palette[1]
             object.Size = UDim2.fromOffset(pop.Width, math.max(1, pop.CurrentHeight))
@@ -1323,19 +1384,34 @@ function Library:CreateWindow(opts)
                 )
             end
         end
+        fadeGroup(frame, window.Alpha)
+        fadeGroup(popupLayer, window.Alpha)
     end)
 
     return window
 end
 
 function Window:SetVisible(value)
-    self.Frame.Visible = value and true or false
+    self.Visible = value == true
+    if not Library.FadeAnimations then self.Alpha = self.Visible and 1 or 0 end
+    self.Frame.Visible = self.Visible or self.Alpha > 0
+    self.Frame.Interactable = self.Visible
     self.PopupLayer.Visible = self.Frame.Visible
-    if not self.Frame.Visible then
+    self.PopupLayer.Interactable = self.Visible
+    if not self.Visible then
         self.Opened = nil
         self.CancelDrag()
         self.PendingKeybind = nil
     end
+    if self.UpdateOpenVisibility then self.UpdateOpenVisibility() end
+end
+
+function Window:GetVisible()
+    return self.Visible
+end
+
+function Window:SetFadeAnimations(enabled, duration)
+    return Library:SetFadeAnimations(enabled, duration)
 end
 
 function Window:SetScale(value, exact)
@@ -1601,11 +1677,16 @@ local function createMiniButton(window, config)
     function mini:SetPosition(x, y)
         self.Custom = true
         self.Position = Vector2.new(tonumber(x) or MINI_MARGIN, tonumber(y) or MINI_MARGIN)
+        window.LayoutMini()
+        button.Position = UDim2.fromOffset(self.Position.X, self.Position.Y)
         window.MiniPositions[self.Key] = {X = self.Position.X, Y = self.Position.Y}
     end
     function mini:Reset()
+        if window.Drag and window.Drag.Object == button then window.CancelDrag() end
         self.Custom = false
         window.MiniPositions[self.Key] = nil
+        window.LayoutMini()
+        button.Position = UDim2.fromOffset(self.Target.X, self.Target.Y)
     end
     function mini:Destroy()
         if self.Destroyed then return end
@@ -1661,17 +1742,14 @@ local function createMiniButton(window, config)
         tint = tint:Lerp(mini.Active and white or palette[3], k)
         icon:Color(tint)
         if label then label:Color(tint) end
-        local current = Vector2.new(button.Position.X.Offset, button.Position.Y.Offset)
         local target = mini.Target
         if mini.Custom then window.MiniPositions[mini.Key] = {X = mini.Position.X, Y = mini.Position.Y} end
-        if window.Drag and window.Drag.Object == button then k = 1 end
-        button.Position = UDim2.fromOffset(
-            math.floor(approach(current.X, target.X, k) + 0.5),
-            math.floor(approach(current.Y, target.Y, k) + 0.5)
-        )
+        button.Position = UDim2.fromOffset(math.floor(target.X + 0.5), math.floor(target.Y + 0.5))
     end
     mini.Update = updateMini
     overlayStep(updateMini)
+    window.LayoutMini()
+    updateMini(0, 1)
 
     return mini
 end
@@ -3243,6 +3321,7 @@ function Library:SetWatermark(opts)
         config.Position = Vector2.new(tonumber(opts.X) or 8, tonumber(opts.Y) or 8)
     end
     config.Enabled = opts.Enabled ~= false
+    window.UpdateOpenVisibility()
     return config
 end
 
@@ -3254,6 +3333,7 @@ function Library:SetOpenMode(opts)
     if opts.Mode ~= nil then
         local mode = string.lower(tostring(opts.Mode))
         assert(mode == "button" or mode == "watermark" or mode == "center" or mode == "none", "Invalid open mode")
+        if window.Drag and window.Drag.Object == window.Reopen and mode ~= "button" then window.CancelDrag() end
         config.Mode = mode
         if mode == "watermark" then window.WatermarkConfig.Enabled = true; window.WatermarkConfig.Toggle = true end
     end
@@ -3273,6 +3353,7 @@ function Library:SetOpenMode(opts)
     if opts.X ~= nil and opts.Y ~= nil then
         config.Position = Vector2.new(tonumber(opts.X) or 8, tonumber(opts.Y) or 8)
     end
+    window.UpdateOpenVisibility()
     return config
 end
 
@@ -3388,6 +3469,7 @@ function Library:GetConfig()
     for flag, value in pairs(self.Flags) do
         config.Flags[flag] = serialize(value)
     end
+    config.FadeAnimations, config.FadeDuration = self.FadeAnimations, self.FadeDuration
     config.ThemePalette = {}
     for i, color in ipairs(themes[state.Theme]) do config.ThemePalette[i] = serialize(color) end
     config.ThemeName = self.ThemeNames[state.Theme]
@@ -3408,6 +3490,7 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
+    if config.FadeAnimations ~= nil then self:SetFadeAnimations(config.FadeAnimations, config.FadeDuration) end
     if type(config.ThemePalette) == "table" then
         local colors = {}
         for i, color in ipairs(config.ThemePalette) do colors[i] = deserialize(color) end
@@ -3600,6 +3683,7 @@ end
 
 function Library:Unload()
     Runtime.Alive = false
+    restoreFades()
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
     end
