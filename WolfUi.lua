@@ -806,21 +806,34 @@ function Library:CreateWindow(opts)
     end
     connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
 
-    local reopen = rect(gui, 8, 8, 32, 32, palette[2], 5, "TextButton")
+    local reopen = rect(gui, 8, 8, 36, 36, palette[2], 10, "TextButton")
     reopen.Name = "Reopen"
     reopen.Visible = false
-    local reopenIcon = iconLabel(reopen, opts.Icon or {"dog", "paw-print", "moon"}, 5, 5, 22, accent,
+    reopen.Active = true
+    local reopenStroke = new("UIStroke", reopen, {Thickness = 1, Color = accent, Transparency = 0.45})
+    local reopenIcon = iconLabel(reopen, opts.Icon or {"dog", "paw-print", "moon"}, 7, 7, 22, accent,
         string.sub(opts.Name or "W", 1, 1))
     window.Reopen = reopen
+    window.ReopenStroke = reopenStroke
 
 
-    local watermark = paint(rect(gui, 8, 8, 160, 30, palette[2], 7, "CanvasGroup"), 2)
+    local watermark = paint(rect(gui, 8, 8, 160, 30, palette[2], 8, "CanvasGroup"), 2)
     watermark.Name = "Watermark"
     watermark.Visible = false
-    local watermarkText = text(watermark, "", 8, 0, 144, 30, 11, white)
+    local wmIconWrap = rect(watermark, 6, 6, 18, 18, palette[4], 5)
+    wmIconWrap.Name = "IconWrap"
+    local wmIcon = iconLabel(wmIconWrap, opts.Icon or {"dog", "paw-print", "moon"}, 3, 3, 12, accent,
+        string.sub(opts.Name or "W", 1, 1))
+    local wmDot = rect(wmIconWrap, 12, -2, 6, 6, accent, 3)
+    wmDot.Name = "StatusDot"
+    wmDot.ZIndex = 3
+    new("UIStroke", wmDot, {Thickness = 1, Color = palette[2], Transparency = 0})
+    local watermarkText = text(watermark, "", 30, 0, 122, 30, 11, white)
     window.Watermark = watermark
+    window.WatermarkIconWrap, window.WatermarkIcon, window.WatermarkDot = wmIconWrap, wmIcon, wmDot
     window.WatermarkText = watermarkText
-    window.WatermarkConfig = {Enabled = false, Text = opts.Name or "Wolf", ShowFPS = false, Transparency = 0.12}
+    window.WatermarkConfig = {Enabled = false, Text = opts.Name or "Wolf", ShowFPS = false,
+        Transparency = 0.12, ShowIcon = true, ShowDot = true}
 
     local notifyHolder = transparent(gui, 0, 0, 250, WINDOW_H)
     notifyHolder.Name = "Notifications"
@@ -919,13 +932,26 @@ function Library:CreateWindow(opts)
         reopen.Visible = window.OpenerMode == "Button" or (window.OpenerMode == "Watermark" and not wm.Enabled)
         if watermark.Visible then
             local caption = wm.Text
-            if wm.ShowFPS then caption = caption .. "  |  " .. tostring(fps) .. " fps" end
+            if wm.ShowFPS then caption = caption .. "  ·  " .. tostring(fps) .. " " .. "FPS" end
             watermarkText:SetText(caption)
-            local size = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(400, 22))
-            watermark.Size = UDim2.fromOffset(math.clamp(size.X + 18, 60, 260), 30)
-            watermarkText:Width(math.clamp(size.X + 2, 40, 244))
+            local iconW = wm.ShowIcon and 26 or 0
+            local size = TextService:GetTextSize(caption, 11, Enum.Font.GothamMedium, Vector2.new(400, 22))
+            watermark.Size = UDim2.fromOffset(math.clamp(size.X + 20 + iconW, 60, 280), 30)
+            watermarkText.Object.Position = UDim2.fromOffset(6 + iconW, 0)
+            watermarkText:Width(math.clamp(size.X + 2, 30, 240))
             watermark.BackgroundColor3 = palette[2]
             watermark.GroupTransparency = wm.Transparency
+            wmIconWrap.Visible = wm.ShowIcon
+            wmIconWrap.BackgroundColor3 = palette[4]
+            wmIcon:Color(accent)
+            wmIcon:Alpha(state.AccentAlpha)
+            wmDot.Visible = wm.ShowDot and wm.ShowIcon
+            wmDot.BackgroundColor3 = frame.Visible and accent or palette[3]
+            window.WatermarkStroke.Color = accent
+        end
+        if reopen.Visible then
+            reopenStroke.Color = accent
+            reopenStroke.Transparency = 0.45
         end
 
         for index = #window.Notifications, 1, -1 do
@@ -952,6 +978,7 @@ function Library:CreateWindow(opts)
         window:UpdateOverlay()
         if not frame.Visible then
             reopen.BackgroundColor3 = palette[2]
+            reopenStroke.Color = accent
             reopenIcon:Color(accent)
             reopenIcon:Alpha(state.AccentAlpha)
             return
@@ -994,10 +1021,22 @@ function Library:CreateWindow(opts)
             if object.Visible then
                 local s = math.max(0.001, scale.Scale)
                 local origin = (pop.Anchor.AbsolutePosition - popupLayer.AbsolutePosition) / s
-                if pop.BelowAnchor then origin = origin + Vector2.new(0, pop.Anchor.AbsoluteSize.Y / s + 4) end
                 local minX, minY = -window.Position.X / s, -window.Position.Y / s
                 local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
                 local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
+                if pop.BelowAnchor then
+                    origin = origin + Vector2.new(0, pop.Anchor.AbsoluteSize.Y / s + 4)
+                elseif pop.SideAnchor then
+                    -- Flyout beside the anchor (gear-icon quick settings, etc.): prefer the
+                    -- right side, flip to the left if it would run off the window/screen,
+                    -- and vertically center it on the anchor row.
+                    local anchorSize = pop.Anchor.AbsoluteSize / s
+                    local rightX = origin.X + anchorSize.X + 6
+                    local leftX = origin.X - pop.Width - 6
+                    local x = (rightX <= maxX or leftX < minX) and rightX or leftX
+                    local y = origin.Y + anchorSize.Y / 2 - pop.CurrentHeight / 2
+                    origin = Vector2.new(x, y)
+                end
                 object.Position = UDim2.fromOffset(
                     math.clamp(origin.X, minX, math.max(minX, maxX)),
                     math.clamp(origin.Y, minY, math.max(minY, maxY))
@@ -2179,6 +2218,8 @@ function Library:SetWatermark(opts)
     if opts.Enabled ~= nil then config.Enabled = opts.Enabled == true
     elseif opts.Text ~= nil then config.Enabled = true end
     if opts.Transparency ~= nil then config.Transparency = math.clamp(finite(opts.Transparency, 0.12), 0, 1) end
+    if opts.ShowIcon ~= nil then config.ShowIcon = opts.ShowIcon == true end
+    if opts.ShowDot ~= nil then config.ShowDot = opts.ShowDot == true end
     return config
 end
 
@@ -2774,7 +2815,10 @@ end
 function Window:ArrangeMiniButtons()
     if not self.MiniButtons then return end
     local view = self.Viewport
-    local cellW, cellH = math.min(100, math.max(1, view.X - 16)), 48
+    -- Cell size is a target, not a fixed value: the library recomputes columns/rows
+    -- from the live viewport every time so buttons stay laid out edge-to-edge and
+    -- never spill past the visible screen, however many are added.
+    local cellW, cellH = math.min(92, math.max(1, view.X - 16)), 46
     local columns = math.max(1, math.floor((view.X - 16) / cellW))
     local rows = math.max(1, math.floor((view.Y - 100) / cellH))
     local capacity = columns * rows
@@ -2826,6 +2870,11 @@ function Window:UpdateOverlay()
             item.Caption:Color(active and black or white)
             item.Indicator.BackgroundColor3 = active and white or palette[3]
             item.Object.BackgroundTransparency = item.Enabled and item.Transparency or 0.65
+            if item.Icon then item.Icon:Color(active and black or white) end
+            if item.Stroke then
+                item.Stroke.Color = active and accent or palette[5]
+                item.Stroke.Transparency = active and 0.15 or 0.6
+            end
         end
     end
 end
@@ -2838,13 +2887,21 @@ function Window:AddMiniButton(opts)
     assert(kind == "Toggle" or kind == "Button", "MiniButton.Type must be Toggle or Button")
     local object = rect(self.Overlay, 8, 56, 92, 40, palette[2], 7, "TextButton")
     object.Name = opts.Name or "MiniButton"
-    local caption = text(object, opts.Text or opts.Name or kind, 6, 0, 80, 36, 11, white, "center")
-    caption.Object.Size = UDim2.new(1, -12, 1, -4)
+    local stroke = new("UIStroke", object, {Thickness = 1, Color = palette[5], Transparency = 0.6})
+    local hasIcon = opts.Icon ~= nil
+    local icon
+    if hasIcon then
+        icon = iconLabel(object, opts.Icon, 8, 8, 14, white, "•")
+    end
+    local textX = hasIcon and 24 or 6
+    local caption = text(object, opts.Text or opts.Name or kind, textX, 0, 80 - (textX - 6), 36, 11, white,
+        hasIcon and "left" or "center")
+    caption.Object.Size = UDim2.new(1, -(textX + 6), 1, -4)
     local indicator = rect(object, 8, 35, 76, 2, palette[3], 1)
     indicator.Size = UDim2.new(1, -16, 0, 2)
     indicator.Position = UDim2.new(0, 8, 1, -5)
     indicator.Visible = kind == "Toggle"
-    local api = {Object = object, Caption = caption, Indicator = indicator, Type = kind,
+    local api = {Object = object, Caption = caption, Indicator = indicator, Icon = icon, Stroke = stroke, Type = kind,
         Visible = opts.Visible ~= false, Enabled = opts.Enabled ~= false, Target = target,
         Value = opts.Default == true, Flag = opts.Flag,
         Id = tostring(opts.Id or opts.Flag or (target and target.Flag) or opts.Name or (#self.MiniButtons + 1)),
@@ -2891,7 +2948,7 @@ function Window:AddMiniButton(opts)
     local start = #Runtime.Connections
     dragClick(self, object, function() api:Press() end, function(position)
         local column = math.clamp(math.floor((position.X.Offset - 8) / window.MiniCellWidth + 0.5), 0, window.MiniColumns - 1)
-        local row = math.max(0, math.floor((position.Y.Offset - 56) / 48 + 0.5))
+        local row = math.max(0, math.floor((position.Y.Offset - 56) / 46 + 0.5))
         local slot = math.min(window.MiniCapacity - 1, row * window.MiniColumns + column)
         local destination
         for _, item in ipairs(window.MiniVisible) do
@@ -2910,31 +2967,80 @@ function Window:AddMiniButton(opts)
     return api
 end
 
+-- Compact quick-settings flyout, in the spirit of the color picker: it opens
+-- beside its trigger (never below it, never draggable, never a big menu) and
+-- sizes itself to whatever small set of controls (sliders/toggles/dropdowns)
+-- the caller drops into it via Build. Meant for "one parameter next to a
+-- toggle", not a second settings tab.
 function Window:AttachSettings(owner, opts)
     opts = type(opts) == "function" and {Build = opts} or (type(opts) == "table" and opts or {})
     local gear = transparent(owner.Object, 4, 5, 30, 33, "TextButton")
     gear.Name, gear.ZIndex = "Settings", 5
-    iconLabel(gear, {"settings", "cog"}, 7, 8, 16, white, "⚙")
-    local width = math.clamp(finite(opts.Width, 280), 220, 360)
-    local height = math.clamp(finite(opts.Height, 240), 90, 340)
-    local pop = createPopup(self, gear, width, height, false)
-    pop.BelowAnchor = true
-    local title = text(pop.Object, opts.Name or "Настройки", 12, 8, width - 48, 20, 12, white)
-    local close = transparent(pop.Object, width - 32, 4, 28, 28, "TextButton")
-    text(close, "×", 0, 0, 28, 28, 18, white, "center")
-    connect(close.Activated, function() pop:Close() end)
-    local scroll = new("ScrollingFrame", pop.Object, {Position = UDim2.fromOffset(8, 36),
-        Size = UDim2.new(1, -16, 1, -44), BackgroundTransparency = 1, BorderSizePixel = 0,
-        CanvasSize = UDim2.fromOffset(0, 0), ScrollBarThickness = 3,
-        ScrollingDirection = Enum.ScrollingDirection.Y, ClipsDescendants = true})
-    local page = transparent(scroll, 0, 0, width - 24, 1)
+    local gearIcon = iconLabel(gear, {"settings", "cog", "sliders-horizontal"}, 7, 8, 16, palette[3], "⚙")
+
+    local width = math.clamp(finite(opts.Width, 220), 170, 260)
+    local showTitle = opts.Name ~= nil or opts.Title ~= nil
+    local topPad = showTitle and 32 or 10
+    local pop = createPopup(self, gear, width, topPad + 10, true)
+    pop.SideAnchor = true -- flyout beside the gear icon, like a color picker; never a dropdown menu
+
+    local hovered = false
+    connect(gear.MouseEnter, function() hovered = true end)
+    connect(gear.MouseLeave, function() hovered = false end)
+    step(function()
+        local open = self.Opened == pop
+        gearIcon:Color((hovered or open) and white or palette[3])
+    end)
+
+    local title
+    if showTitle then
+        title = text(pop.Object, opts.Name or opts.Title, 10, 8, width - 20, 16, 11, palette[3])
+    end
+
+    local page = transparent(pop.Object, 0, topPad, width, 1)
     local panel = setmetatable({Name = (owner.Flag or owner.Object.Name) .. ".Settings", Window = self,
-        Page = page, ContentWidth = width - 24, ContainerScroll = scroll, Elements = {},
-        Cursor = {X = 0, Y = 0, RowHeight = 0}, Popup = pop, Object = pop.Object}, Tab)
+        Page = page, ContentWidth = width, Elements = {},
+        Cursor = {X = 0, Y = 0, RowHeight = 0}, Popup = pop, Object = pop.Object, TopPad = topPad}, Tab)
+
+    -- Unlike a tab page, this popup must grow to fit its content instead of
+    -- scrolling, and the popup's animated height needs to track that growth.
+    function panel:_grow()
+        if self.Reflowing or not self.Page.Parent then return end
+        self.Reflowing = true
+        self.LayoutItems = self.LayoutItems or {}
+        self.LayoutSeen = self.LayoutSeen or setmetatable({}, {__mode = "k"})
+        for _, item in ipairs(self.Page:GetChildren()) do
+            if item:IsA("GuiObject") and not self.LayoutSeen[item] then
+                self.LayoutSeen[item] = true
+                self.LayoutItems[#self.LayoutItems + 1] = item
+                connect(item:GetPropertyChangedSignal("Visible"), function() self:_grow() end)
+                connect(item:GetPropertyChangedSignal("Size"), function() self:_grow() end)
+            end
+        end
+        self.Cursor = {X = 0, Y = 0, RowHeight = 0}
+        local height = 0
+        for i = #self.LayoutItems, 1, -1 do
+            if self.LayoutItems[i].Parent ~= self.Page then table.remove(self.LayoutItems, i) end
+        end
+        for _, item in ipairs(self.LayoutItems) do
+            if item.Visible then
+                local x, y = self:_place(item.Size.X.Offset, item.Size.Y.Offset)
+                item.Position = UDim2.fromOffset(x, y)
+                height = math.max(height, y + item.Size.Y.Offset)
+            end
+        end
+        self.Height = height
+        self.Page.Size = UDim2.fromOffset(self.ContentWidth, math.max(1, height))
+        pop.Height = self.TopPad + height + 10
+        self.Reflowing = false
+    end
+
     function panel:Open() pop:Open() end
     function panel:Close() pop:Close() end
     function panel:Toggle() pop:Toggle() end
-    function panel:SetTitle(value) title:SetText(value) end
+    function panel:SetTitle(value)
+        if title then title:SetText(value) end
+    end
     function panel:Destroy()
         if self.Destroyed then return end
         self.Destroyed = true
@@ -2947,14 +3053,8 @@ function Window:AttachSettings(owner, opts)
     end
     connect(gear.Activated, function() pop:Toggle() end)
     connect(owner.Object.Destroying, function() panel:Destroy() end)
-    connect(scroll:GetPropertyChangedSignal("CanvasPosition"), function()
-        local current = self.Opened
-        while current and current ~= pop do
-            if current.ParentPopup == pop then self.Opened = pop; break end
-            current = current.ParentPopup
-        end
-    end)
     if opts.Build then opts.Build(panel, owner) end
+    panel:_grow()
     return panel
 end
 
@@ -3002,6 +3102,21 @@ end
 
 function Library:AddMiniButton(opts) assert(self.Window, "CreateWindow first"); return self.Window:AddMiniButton(opts) end
 function Library:SetOpener(opts) if self.Window then self.Window:SetOpener(opts) end end
+
+-- Sugar for the common "just give me a floating toggle/button, I don't need
+-- a menu entry behind it" case. Functionally identical to AddMiniButton with
+-- Type preset, just shorter to type when the mini button is the whole feature.
+function Library:AddQuickToggle(opts)
+    opts = type(opts) == "table" and table.clone(opts) or {Name = opts}
+    opts.Type = "Toggle"
+    return self:AddMiniButton(opts)
+end
+
+function Library:AddQuickButton(opts)
+    opts = type(opts) == "table" and table.clone(opts) or {Name = opts}
+    opts.Type = "Button"
+    return self:AddMiniButton(opts)
+end
 
 for name, factory in pairs(Tab) do
     if string.sub(name, 1, 3) == "Add" and type(factory) == "function" then
