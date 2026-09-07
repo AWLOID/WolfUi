@@ -1,199 +1,3 @@
--- =============================================================================
--- WolfLib v3.0.0 — UI library for Roblox (один файл, без зависимостей)
---
--- ЭТО БИБЛИОТЕКА. Сама она меню не рисует: последняя строка файла — return
--- Library. Меню появляется только когда твой скрипт вызовет CreateWindow.
--- Быстрая проверка одной строкой (можно вставить прямо в исполнитель):
---   loadstring(game:HttpGet("https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"))():Demo()
---
--- ВАЖНО: документация ниже — строчные комментарии, по два дефиса на каждой
--- строке. Блочных комментариев в файле нет намеренно: если при заливке на
--- GitHub потеряется начало файла, остаток всё равно останется валидным Lua.
---
--- Дизайн интерфейса зафиксирован и менять его нельзя. Геометрия и палитра
--- 1:1 с оригинальным меню Wolf (590x350, сайдбар 70, правая полоса 30,
--- карточки palette[2] r5).
---
--- -----------------------------------------------------------------------------
--- БЫСТРЫЙ СТАРТ
--- -----------------------------------------------------------------------------
---   local url = "https://raw.githubusercontent.com/AWLOID/WolfUi/refs/heads/main/WolfUi.lua"
---   local Library = loadstring(game:HttpGet(url))()
---
---   local Window = Library:CreateWindow({
---       Name = "Wolf",
---       Icon = "dog",
---       Folder = "MyScript",   -- папка скрипта: WolfUi/MyScript/
---   })
---   local Tab = Window:CreateTab({ Name = "ASSIST", Icon = "crosshair" })
---
---   Tab:AddToggle({
---       Name = "Speed", Description = "Главный выключатель",
---       Flag = "speed", Default = true,
---       Keybind = Enum.KeyCode.E,             -- бинд прямо на тумблере
---       ColorPicker = { Flag = "speed_color" },-- палитра прямо на тумблере
---       MiniButton = { Icon = "zap" },        -- плавающая кнопка на экране
---       Settings = { Build = function(menu)   -- шестерёнка со своим меню
---           menu:AddSlider({ Name = "Скорость", Min = 16, Max = 200, Default = 60 })
---           menu:AddToggle({ Name = "Только на земле" })
---       end },
---       Callback = function(value) print(value) end,
---   })
---
--- -----------------------------------------------------------------------------
--- ГДЕ ЖИВЁТ МЕНЮ
--- -----------------------------------------------------------------------------
--- ScreenGui создаётся в gethui() / CoreGui, поэтому меню рисуется поверх
--- всего игрового интерфейса. Если исполнитель не даёт туда писать, идёт
--- фоллбэк в PlayerGui (меню всё равно работает).
--- События для совместимости всегда лежат в PlayerGui.WolfUI (папка):
---   PlayerGui.WolfUI.Changed.Event -> (flag, value)
---   PlayerGui.WolfUI.TabChanged.Event -> (tab)
---   PlayerGui.WolfUI.ButtonPressed.Event -> (name)
--- Проверить, куда попало меню: Window.Host, Window.Protected.
---
--- -----------------------------------------------------------------------------
--- ФАЙЛЫ В ПАМЯТИ ИСПОЛНИТЕЛЯ
--- -----------------------------------------------------------------------------
--- Всё, что пишет библиотека, лежит в одной корневой папке WolfUi, внутри —
--- по папке на каждый скрипт, который её использует:
---   WolfUi/
---     MyScript/
---       configs/default.json
---     AnotherScript/
---       configs/pvp.json
--- Имя папки скрипта берётся из CreateWindow{ Folder = "..." }, иначе из Name.
---   Library:GetFolder()            -- "WolfUi/MyScript"
---   Library:GetConfigFolder()      -- "WolfUi/MyScript/configs"
---   Library:SetScriptName("Name")  -- сменить папку скрипта вручную
---   Library:WriteFile("data.json", text) / Library:ReadFile("data.json")
---   Library:ListFiles()            -- файлы своей папки
---   Library:DeleteFile("data.json")
--- Старые конфиги из плоской папки WolfLib переносятся автоматически.
---
--- -----------------------------------------------------------------------------
--- ЭЛЕМЕНТЫ (все принимают Width = 1 / 0.5 / 0.33 / 0.25 и Tooltip = "текст")
--- -----------------------------------------------------------------------------
---   Tab:AddSection("Aimbot")
---   Tab:AddDivider()
---   Tab:AddLabel({ Text, Muted, Size, Align })
---   Tab:AddParagraph({ Name, Text })
---   Tab:AddToggle({ Name, Description, Default, Flag, Keybind, ColorPicker,
---                   Settings, MiniButton, Tooltip, Callback })
---   Tab:AddSlider({ Name, Description, Min, Max, Default, Decimals, Suffix, Callback })
---   Tab:AddStepper({ Name, Min, Max, Step, Decimals, Suffix, Default, Callback })
---   Tab:AddDropdown({ Name, Options, Default, Multiple, MaxRows, Callback })
---   Tab:AddSegmented({ Name, Options, Default, Callback })
---   Tab:AddPlayerDropdown({ Name, Multiple, IncludeSelf, Callback })
---   Tab:AddColorPicker({ Name, Default, Alpha, UseAlpha, Presets, Callback })
---   Tab:AddKeybind({ Name, Default, Callback })
---   Tab:AddTextBox({ Name, Placeholder, Default, MaxLength, ShowName, OnEnter, Callback })
---   Tab:AddButton({ Name, Text, Icon, Compact, MiniButton, Callback })
---   Tab:AddList({ Name, Items, Input, Placeholder, Height, Empty, Callback })
---   Tab:AddProgressBar({ Name, Default, ShowPercent })
---   Tab:AddImage({ Image, Height, Fill })
---   Tab:AddMiniButton({ Name, Icon, Text, Mode, Size, Default, Callback })
---   Tab:AddSettings({ Name, Width, Build = function(menu) ... end })
---   Tab:AddConfigManager({ Name })
---
--- Любой элемент возвращает api: api:Get(), api:Set(value), api:SetName(text),
--- api:SetVisible(bool). Дропдаун ещё api:SetOptions(list), список — api:Add,
--- api:Remove, api:Has, api:Clear.
---
--- -----------------------------------------------------------------------------
--- ПЛАВАЮЩИЕ МИНИ-КНОПКИ
--- -----------------------------------------------------------------------------
--- Мини-кнопка висит поверх игры и нужна для быстрого доступа без открытия
--- меню. Её можно тащить пальцем или мышью; короткий тап — это нажатие, а не
--- перенос (порог 6 px). Библиотека сама раскладывает кнопки столбцами и не
--- даёт им уйти за край экрана, а положение, которое задал пользователь,
--- запоминается и сохраняется в конфиг.
---
---   Mode = "Toggle" -- кнопка-переключатель, подсвечивается акцентом
---   Mode = "Action" -- кнопка-действие, просто вызывает Callback
---
--- Три способа создать:
---   1) аддон тумблера:  Tab:AddToggle({ ..., MiniButton = { Icon = "zap" } })
---      (MiniButton = { ShowWhenActive = true } — показывать только когда включено)
---   2) аддон кнопки:    Tab:AddButton({ ..., MiniButton = { Icon = "play" } })
---   3) отдельный пункт: Tab:AddMiniButton({ Name, Icon, Mode, Size, Callback })
---   4) напрямую:        Window:AddMiniButton({ Name, Icon, Mode, Callback })
---
--- У мини-кнопки есть: mini:Get(), mini:SetActive(bool), mini:SetVisible(bool),
--- mini:SetText(text), mini:SetPosition(x, y), mini:Reset(), mini:Destroy().
---
--- -----------------------------------------------------------------------------
--- ШЕСТЕРЁНКА: НАСТРОЙКИ ОТДЕЛЬНОГО ПУНКТА
--- -----------------------------------------------------------------------------
--- Рядом с элементом можно поставить шестерёнку, которая открывает маленькое
--- меню — такое же по стилю, как палитра цвета, только шире. Оно не тащится и
--- закрывается кликом мимо. Внутрь складываются любые элементы теми же
--- методами Add*, включая слайдеры, тумблеры, дропдауны и свою палитру.
---
---   Tab:AddToggle({ Name = "Speed", Settings = { Width = 240, Build = function(menu)
---       menu:AddSlider({ Name = "Скорость", Min = 16, Max = 200, Default = 60 })
---       menu:AddSegmented({ Name = "Режим", Options = { "CFrame", "Velocity" } })
---       menu:AddToggle({ Name = "Только на земле" })
---   end } })
---
--- Отдельным пунктом — Tab:AddSettings({ Name = "Настройки ESP", Build = ... }).
--- Меню доступно как api.Menu: menu:Open(), menu:Close(), menu:Toggle().
---
--- -----------------------------------------------------------------------------
--- ВАТЕРМАРКА И СПОСОБЫ ОТКРЫТЬ МЕНЮ
--- -----------------------------------------------------------------------------
---   Library:SetWatermark({
---       Text = "Wolf", ShowFPS = true, ShowPing = true, ShowTime = true,
---       Transparency = 0.3,     -- прозрачность 0..1
---       Toggle = true,          -- клик по ватермарке скрывает/показывает меню
---       AlwaysVisible = true,   -- видна и при закрытом меню
---   })
--- Ватермарку можно перетаскивать, короткий тап по ней — это нажатие.
---
---   Library:SetOpenMode({ Mode = "button" })    -- квадратная кнопка (по умолчанию)
---   Library:SetOpenMode({ Mode = "watermark" }) -- открывать ватермаркой
---   Library:SetOpenMode({ Mode = "center", Taps = 2 }) -- два тапа по центру экрана
---   Library:SetOpenMode({ Mode = "none" })      -- только клавиша
---   Дополнительно: Size, Transparency, AlwaysVisible, X, Y, Interval.
---   Library:SetToggleKey(Enum.KeyCode.RightControl)
---
--- -----------------------------------------------------------------------------
--- ПРЕДЕЛЫ (по умолчанию мягкие, всё снимается)
--- -----------------------------------------------------------------------------
---   Library:SetLimits({
---       ClampWindow = false,  -- не держать окно внутри экрана
---       Margin = 24,          -- сколько пикселей окна оставлять на экране
---       MinScale = 0.2, MaxScale = 4, -- разрешённый масштаб
---       FitViewport = false,  -- не подгонять окно под размер экрана
---       SnapScale = false,    -- разрешить любой масштаб, не только из списка
---   })
---   Library:SetScaleOptions({ 150, 125, 100, 75, 50 }) -- свой набор кнопок масштаба
---   Window:SetScale(87, true) -- точный масштаб, без привязки к списку
--- Ограничений на число быстрых цветов палитры, длину текста в поле и число
--- строк дропдауна больше нет (MaxRows = 0 — показать все).
---
--- -----------------------------------------------------------------------------
--- БИБЛИОТЕКА
--- -----------------------------------------------------------------------------
---   Library.Version                      -- "3.0.0"
---   Library:Demo()                       -- готовое меню одной строкой (проверка)
---   Library.Flags[flag]                  -- текущее значение любого элемента
---   Library:SetFlag(flag, value) / Library:GetFlag(flag) / Library:GetElement(flag)
---   Library:OnChange(function(flag, value) end)  Library:OnUnload(function() end)
---   Library:Notify({ Title, Text, Duration, Icon })
---   Library:Dialog({ Title, Text, Confirm = function() end })
---   Library:SetTheme(1..3)  Library:SetAccent(Color3, alpha)
---   Library:GetConfig() / Library:LoadConfig(table)
---   Library:SaveConfigFile(name) / LoadConfigFile(name) / ListConfigs() / DeleteConfigFile(name)
---   Library:GetMiniButtons()  Library:Unload()
---   Window:SelectTab("ASSIST")  Window:SetVisible(bool)  Window:SetScale(100)
---   Window:AddRailButton({ Icon, Fallback, Callback })
---   Window:AddMiniButton({ ... })  Window:Tooltip(object, "подсказка")
---
--- Масштаб меню: по умолчанию кнопки 100 / 75 / 50, при загрузке 100.
--- Бинды: RightShift — скрыть/показать, F1/F2 — переключение масштаба.
--- =============================================================================
-
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -207,10 +11,6 @@ while not player do
 end
 local playerGui = player:WaitForChild("PlayerGui")
 
-----------------------------------------------------------------------
--- Куда парентить меню: gethui() / CoreGui, чтобы быть поверх всего.
--- Если исполнитель туда не даёт писать — фоллбэк в PlayerGui.
-----------------------------------------------------------------------
 local function guiHost()
     local getters = {}
     if type(gethui) == "function" then
@@ -236,9 +36,6 @@ local function guiHost()
     return playerGui, false
 end
 
-----------------------------------------------------------------------
--- 1. Иконки Lucide
-----------------------------------------------------------------------
 local Icons
 do
     local ok, result = pcall(function()
@@ -278,8 +75,6 @@ do
     end
 end
 
--- В разных сборках icons.lua порядок {size, offset} различается.
--- Размер ячейки одинаков у всех иконок, смещение уникально — по этому и определяем.
 local SIZE_INDEX, OFFSET_INDEX = 2, 3
 do
     local seen = {[2] = {}, [3] = {}}
@@ -329,6 +124,10 @@ local function iconData(name)
 end
 
 local function resolveIcon(names)
+    if type(names) == "number" then names = "rbxassetid://" .. tostring(names) end
+    if type(names) == "string" and (string.find(names, "://", 1, true) or string.match(names, "^%d+$")) then
+        return string.find(names, "://", 1, true) and names or "rbxassetid://" .. names, Vector2.zero, Vector2.zero
+    end
     if type(names) == "string" then names = {names} end
     for _, name in ipairs(names or {}) do
         if type(name) == "string" then
@@ -341,9 +140,6 @@ local function resolveIcon(names)
     return nil
 end
 
-----------------------------------------------------------------------
--- 2. Рантайм и примитивы
-----------------------------------------------------------------------
 local white, black = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
 
 local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false}
@@ -358,7 +154,6 @@ local function step(callback)
     Runtime.Updates[#Runtime.Updates + 1] = callback
 end
 
--- апдейты, которые выполняются даже когда меню скрыто (плавающие элементы)
 local function overlayStep(callback)
     Runtime.Overlay[#Runtime.Overlay + 1] = callback
 end
@@ -370,6 +165,39 @@ end
 local function move(a, b, amount)
     if a < b then return math.min(a + amount, b) end
     return math.max(a - amount, b)
+end
+
+local fadeValues = setmetatable({}, {__mode = "k"})
+local function restoreFades()
+    for object, values in pairs(fadeValues) do
+        if object.Parent then
+            for property, value in pairs(values) do object[property] = value end
+        end
+        fadeValues[object] = nil
+    end
+end
+local function fadeGroup(root, alpha)
+    if alpha >= 1 then return end
+    local objects = root:GetDescendants()
+    objects[#objects + 1] = root
+    for _, object in ipairs(objects) do
+        local properties = {}
+        if object:IsA("GuiObject") then properties[#properties + 1] = "BackgroundTransparency" end
+        if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+            properties[#properties + 1] = "TextTransparency"
+            properties[#properties + 1] = "TextStrokeTransparency"
+        elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
+            properties[#properties + 1] = "ImageTransparency"
+        elseif object:IsA("UIStroke") then properties[#properties + 1] = "Transparency" end
+        if #properties > 0 then
+            local values = {}
+            for _, property in ipairs(properties) do
+                values[property] = object[property]
+                object[property] = 1 - (1 - object[property]) * alpha
+            end
+            fadeValues[object] = values
+        end
+    end
 end
 
 local function new(class, parent, props)
@@ -472,12 +300,16 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
     function api:Alpha(v)
         if isImage then object.ImageTransparency = 1 - v else object.TextTransparency = 1 - v end
     end
+    function api:SetIcon(value)
+        local replacement = iconLabel(object.Parent, value, 0, 0, size, color, fallback)
+        replacement.Object.Position, replacement.Object.Size = object.Position, object.Size
+        object:Destroy()
+        object, isImage = replacement.Object, replacement.IsImage
+        self.Object, self.IsImage = object, isImage
+    end
     return api
 end
 
-----------------------------------------------------------------------
--- 3. Темы, состояние, библиотека
-----------------------------------------------------------------------
 local themes = {
     {{15, 15, 18}, {17, 17, 21}, {92, 95, 122}, {20, 20, 25}, {22, 22, 28}, {50, 50, 65}},
     {{26, 26, 30}, {31, 31, 36}, {128, 128, 143}, {36, 36, 42}, {40, 40, 46}, {70, 70, 90}},
@@ -506,23 +338,21 @@ local function muted(parent, value, x, y, w, h, size, align, opts)
     return api
 end
 
--- геометрия оригинала
 local WINDOW_W, WINDOW_H = 590, 350
 local SIDEBAR_W, RAIL_W = 70, 30
-local CONTENT_W = WINDOW_W - SIDEBAR_W - RAIL_W -- 490
+local CONTENT_W = WINDOW_W - SIDEBAR_W - RAIL_W 
 local PAD = 10
-local W = CONTENT_W - PAD * 3 -- 460, 10 из которых занимает скроллбар
+local W = CONTENT_W - PAD * 3 
 local GAP = 10
 local TAB_SLOT = 70
 
--- плавающие мини-кнопки и мини-меню
 local MINI_GAP = 8
 local MINI_MARGIN = 12
 local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "3.0.0",
+    Version = "3.1.0",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -532,7 +362,7 @@ local Library = {
     Scale = 100,
     Accent = accent,
     AccentAlpha = 1,
-    -- пределы: по умолчанию мягкие, всё можно отключить через Library:SetLimits
+    
     Limits = {
         ClampWindow = true,
         Margin = 24,
@@ -600,11 +430,35 @@ function Library:GetFlag(flag)
     return self.Flags[flag]
 end
 
-function Library:SetTheme(index)
-    index = math.clamp(math.floor(tonumber(index) or 1), 1, #themes)
-    state.Theme = index
-    self.Theme = index
+function Library:RegisterTheme(name, colors)
+    assert(type(name) == "string" and name ~= "", "Theme name required")
+    assert(type(colors) == "table", "Theme palette required")
+    local paletteColors = colors.Palette or colors
+    local theme = {}
+    for i = 1, 6 do
+        local color = paletteColors[i]
+        if typeof(color) == "table" then color = Color3.fromRGB(color[1], color[2], color[3]) end
+        assert(typeof(color) == "Color3", "Theme requires six colors")
+        theme[i] = color
+    end
+    local index = table.find(self.ThemeNames, name) or (#themes + 1)
+    themes[index], self.ThemeNames[index] = theme, name
+    return index
+end
+
+local function themeIndex(value)
+    if type(value) == "table" then
+        return Library:RegisterTheme(value.Name or "Custom", value)
+    end
+    return math.clamp(math.floor(tonumber(value) or table.find(Library.ThemeNames, value) or 1), 1, #themes)
+end
+
+function Library:SetTheme(value)
+    local index = themeIndex(value)
+    state.Theme, self.Theme = index, index
+    if type(value) == "table" and value.Accent then self:SetAccent(value.Accent, value.AccentAlpha) end
     fireChange("Theme", index)
+    return index
 end
 
 function Library:SetAccent(color, alpha)
@@ -657,9 +511,6 @@ local function snapScale(value)
     return best
 end
 
-----------------------------------------------------------------------
--- 4. Клавиши
-----------------------------------------------------------------------
 local KEY_SHORT = {
     LeftShift = "LSHIFT", RightShift = "RSHIFT",
     LeftControl = "LCTRL", RightControl = "RCTRL",
@@ -688,24 +539,18 @@ local function keyFromName(name)
     return nil
 end
 
-----------------------------------------------------------------------
--- 5. Окно
-----------------------------------------------------------------------
 local Tab = {}
 Tab.__index = Tab
 
 local Window = {}
 Window.__index = Window
 
--- Попапы могут быть вложенными: у дочернего указан Parent, и он считается
--- открытым, пока открыт он сам либо любой его потомок.
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
-    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "CanvasGroup")
+    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "Frame")
     object.Name = "Popup"
     object.Visible = false
     object.Active = true
     object.ClipsDescendants = true
-    object.GroupTransparency = 1
 
     local depth = parentPopup and (parentPopup.Depth + 1) or 0
     object.ZIndex = 1 + depth * 2
@@ -760,9 +605,10 @@ function Library:CreateWindow(opts)
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
 
-    state.Theme = math.clamp(tonumber(opts.Theme) or 1, 1, #themes)
+    state.Theme = themeIndex(opts.Theme or 1)
     state.Scale = snapScale(opts.Scale or 100)
-    state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or Color3.fromRGB(126, 139, 209)
+    local themeAccent = type(opts.Theme) == "table" and opts.Theme.Accent
+    state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or (typeof(themeAccent) == "Color3" and themeAccent or Color3.fromRGB(126, 139, 209))
     state.AccentAlpha = opts.AccentAlpha or 1
     state.Tab = nil
     accent = state.Accent
@@ -802,7 +648,7 @@ function Library:CreateWindow(opts)
     gui.IgnoreGuiInset = true
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.DisplayOrder = opts.DisplayOrder or 10000
-    -- часть исполнителей требует защитить gui ДО парентинга
+    
     if type(syn) == "table" and type(syn.protect_gui) == "function" then
         pcall(function() syn.protect_gui(gui) end)
     elseif type(protectgui) == "function" then
@@ -814,7 +660,6 @@ function Library:CreateWindow(opts)
     window.Host = host
     window.Protected = protected
 
-    -- события остаются в PlayerGui.WolfUI (совместимость со старыми скриптами)
     local events = new("Folder", playerGui, {Name = opts.GuiName or "WolfUI"})
     window.Events = events
     window.Changed = new("BindableEvent", events, {Name = "Changed"})
@@ -836,9 +681,6 @@ function Library:CreateWindow(opts)
     window.PopupLayer = popupLayer
     window.PopupScale = new("UIScale", popupLayer, {Scale = 1})
 
-    ------------------------------------------------------------------
-    -- масштаб / позиция
-    ------------------------------------------------------------------
     local function layout()
         local camera = workspace.CurrentCamera
         if camera then window.Viewport = camera.ViewportSize end
@@ -855,7 +697,7 @@ function Library:CreateWindow(opts)
             window.Position = (viewport - Vector2.new(WINDOW_W * s, WINDOW_H * s)) / 2
             window.Initialized = true
         end
-        -- окно можно увести почти за экран, но оставляем краешек, чтобы его вернуть
+        
         local limitsClamp = Library.Limits
         if limitsClamp.ClampWindow ~= false then
             local keep = tonumber(limitsClamp.Margin) or 24
@@ -864,6 +706,7 @@ function Library:CreateWindow(opts)
                 math.clamp(window.Position.Y, keep - WINDOW_H * s, math.max(keep - WINDOW_H * s, viewport.Y - keep))
             )
         end
+        window.Position = Vector2.new(math.floor(window.Position.X + 0.5), math.floor(window.Position.Y + 0.5))
         frame.Position = UDim2.fromOffset(window.Position.X, window.Position.Y)
         popupLayer.Position = frame.Position
     end
@@ -875,50 +718,62 @@ function Library:CreateWindow(opts)
             or input.UserInputType == Enum.UserInputType.Touch
     end
 
-    local function draggable(object, onMove, onEnd)
+    local function cancelDrag()
+        local drag = window.Drag
+        window.Drag = nil
+        if drag and drag.Finish then drag.Finish(true, drag.Moved) end
+    end
+    window.CancelDrag = cancelDrag
+
+    local dragTargets = setmetatable({}, {__mode = "k"})
+    local function topTarget(point)
+        local ok, objects = pcall(function() return host:GetGuiObjectsAtPosition(point.X, point.Y) end)
+        if not ok then return nil end
+        for _, hit in ipairs(objects) do
+            local current = hit
+            while current and current ~= gui do
+                if dragTargets[current] then return current end
+                current = current.Parent
+            end
+        end
+    end
+    local function draggable(object, onMove, onEnd, threshold)
+        object.Active = true
+        dragTargets[object] = true
         connect(object.InputBegan, function(input)
-            if not primary(input) then return end
-            window.Drag = {Input = input, Move = onMove, Finish = onEnd}
-            onMove(Vector2.new(input.Position.X, input.Position.Y), true)
+            if not primary(input) or window.Drag then return end
+            local point = Vector2.new(input.Position.X, input.Position.Y)
+            local top = topTarget(point)
+            if top and top ~= object then return end
+            window.Drag = {Input = input, Object = object, Start = point,
+                Move = onMove, Finish = onEnd, Moved = false, Threshold = threshold or 0}
+            onMove(point, true)
+        end)
+        connect(object.Destroying, function()
+            if window.Drag and window.Drag.Object == object then cancelDrag() end
         end)
     end
     window.Draggable = draggable
 
-    connect(UIS.InputChanged, function(input)
+    local function updateDrag(input)
         local drag = window.Drag
         if not drag then return end
-        local same = input == drag.Input
-        local mouse = drag.Input.UserInputType == Enum.UserInputType.MouseButton1
-            and input.UserInputType == Enum.UserInputType.MouseMovement
-        if same or mouse then
-            drag.Move(Vector2.new(input.Position.X, input.Position.Y), false)
-        end
-    end)
-
+        if input ~= drag.Input and not (drag.Input.UserInputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseMovement) then return end
+        local point = Vector2.new(input.Position.X, input.Position.Y)
+        if (point - drag.Start).Magnitude >= drag.Threshold then drag.Moved = true end
+        if drag.Moved then drag.Move(point, false) end
+    end
+    connect(UIS.InputChanged, updateDrag)
     connect(UIS.InputEnded, function(input)
         local drag = window.Drag
-        if not drag then return end
-        local same = input == drag.Input
-        local mouse = drag.Input.UserInputType == Enum.UserInputType.MouseButton1
-            and input.UserInputType == Enum.UserInputType.MouseButton1
-        local touch = drag.Input.UserInputType == Enum.UserInputType.Touch
-            and input.UserInputType == Enum.UserInputType.Touch
-        if same or mouse or touch then
-            local finish = drag.Finish
-            window.Drag = nil
-            if finish then finish() end
-        end
-    end)
-
-    connect(UIS.WindowFocusReleased, function()
-        local drag = window.Drag
+        if not drag or input ~= drag.Input then return end
+        updateDrag(input)
         window.Drag = nil
-        if drag and drag.Finish then drag.Finish() end
+        if drag.Finish then drag.Finish(false, drag.Moved) end
     end)
+    connect(UIS.WindowFocusReleased, cancelDrag)
 
-    ------------------------------------------------------------------
-    -- сайдбар
-    ------------------------------------------------------------------
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
     sidebar.Name = "Sidebar"
     window.Sidebar = sidebar
@@ -930,6 +785,10 @@ function Library:CreateWindow(opts)
         logoIcon:Color(accent)
         logoIcon:Alpha(state.AccentAlpha)
     end)
+
+    window.LogoIcon = logoIcon
+    window.Icon = opts.Icon or {"dog", "paw-print", "moon"}
+    window.IconFallback = string.sub(opts.Name or "W", 1, 1)
 
     local dragStart, windowStart
     draggable(logoHit, function(point, initial)
@@ -956,9 +815,6 @@ function Library:CreateWindow(opts)
     })
     window.TabHolder = tabHolder
 
-    ------------------------------------------------------------------
-    -- контент
-    ------------------------------------------------------------------
     local scroll = new("ScrollingFrame", frame, {
         Name = "Content",
         BackgroundTransparency = 1,
@@ -980,9 +836,6 @@ function Library:CreateWindow(opts)
     rail.Name = "Rail"
     window.Rail = rail
 
-    ------------------------------------------------------------------
-    -- попапы: закрытие по клику вне
-    ------------------------------------------------------------------
     local function inside(point, object)
         if not object then return false end
         local p, s = object.AbsolutePosition, object.AbsoluteSize
@@ -992,7 +845,7 @@ function Library:CreateWindow(opts)
     connect(UIS.InputBegan, function(input)
         if primary(input) and window.Opened then
             local point = Vector2.new(input.Position.X, input.Position.Y)
-            -- закрываем цепочку попапов до того, внутри которого нажали
+            
             local current = window.Opened
             while current do
                 if inside(point, current.Object) or inside(point, current.Anchor) then break end
@@ -1003,9 +856,6 @@ function Library:CreateWindow(opts)
     end)
     connect(scroll:GetPropertyChangedSignal("CanvasPosition"), function() window.Opened = nil end)
 
-    ------------------------------------------------------------------
-    -- правая полоса: тема и настройки (как в оригинале)
-    ------------------------------------------------------------------
     function window:AddRailButton(config)
         config = config or {}
         local y = 10 + self.RailCount * 20
@@ -1038,7 +888,6 @@ function Library:CreateWindow(opts)
         Fallback = "S",
     })
 
-    -- попап настроек: набор значений масштаба перестраивается на ходу
     local settingsPopup = createPopup(window, settingsButton, 200, 72, false)
     muted(settingsPopup.Object, "Menu scale", 10, 6, 180, 14, 11)
     local scaleHolder = transparent(settingsPopup.Object, 10, 26, 180, 31)
@@ -1073,16 +922,13 @@ function Library:CreateWindow(opts)
             scaleButtons[#scaleButtons + 1] = button
         end
         scaleHolder.Size = UDim2.fromOffset(180, rows * 40 - 9)
-        -- один ряд кнопок = высота оригинала (200x72)
+        
         settingsPopup.Height = 26 + rows * 40 - 9 + 15
     end
     window.RebuildScaleButtons = rebuildScaleButtons
     rebuildScaleButtons()
     connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
 
-    ------------------------------------------------------------------
-    -- плавающий слой: мини-кнопки, кнопка открытия, ватермарка, подсказка
-    ------------------------------------------------------------------
     local miniLayer = new("Frame", gui, {
         Name = "Floating",
         BackgroundTransparency = 1,
@@ -1094,31 +940,30 @@ function Library:CreateWindow(opts)
     window.MiniLayer = miniLayer
     window.MiniDock = {X = MINI_MARGIN, Y = 120}
 
-    -- мини-кнопки выстраиваются столбцами и никогда не уходят за экран
     local function layoutMini()
         local viewport = window.Viewport
         local dock = window.MiniDock
         local x, y, columnWidth = dock.X, dock.Y, 0
         for _, mini in ipairs(window.Mini) do
-            if mini.Enabled then
-                local size = mini.Size
-                if not mini.Custom then
-                    if y > dock.Y and y + size > viewport.Y - MINI_MARGIN then
+            if not mini.Destroyed then
+                local width, height = mini.Width, mini.Height
+                do
+                    if y > dock.Y and y + height > viewport.Y - MINI_MARGIN then
                         x = x + columnWidth + MINI_GAP
                         y = dock.Y
                         columnWidth = 0
                     end
-                    if x + size > viewport.X - MINI_MARGIN then
+                    if x + width > viewport.X - MINI_MARGIN then
                         x = MINI_MARGIN
                     end
                     mini.Slot = Vector2.new(x, y)
-                    y = y + size + MINI_GAP
-                    columnWidth = math.max(columnWidth, size)
+                    y = y + height + MINI_GAP
+                    columnWidth = math.max(columnWidth, width)
                 end
                 local target = mini.Custom and mini.Position or mini.Slot
                 target = Vector2.new(
-                    math.clamp(target.X, MINI_MARGIN, math.max(MINI_MARGIN, viewport.X - size - MINI_MARGIN)),
-                    math.clamp(target.Y, MINI_MARGIN, math.max(MINI_MARGIN, viewport.Y - size - MINI_MARGIN))
+                    math.clamp(target.X, MINI_MARGIN, math.max(MINI_MARGIN, viewport.X - width - MINI_MARGIN)),
+                    math.clamp(target.Y, MINI_MARGIN, math.max(MINI_MARGIN, viewport.Y - height - MINI_MARGIN))
                 )
                 if mini.Custom then mini.Position = target end
                 mini.Target = target
@@ -1127,7 +972,6 @@ function Library:CreateWindow(opts)
     end
     overlayStep(layoutMini)
 
-    -- кнопка открытия: квадрат, перетаскивается, тап скрывает/показывает меню
     local reopen = rect(miniLayer, 8, 8, 32, 32, palette[2], 5, "TextButton")
     reopen.Name = "Open"
     reopen.Visible = false
@@ -1136,13 +980,15 @@ function Library:CreateWindow(opts)
     local reopenIcon = iconLabel(reopen, opts.Icon or {"dog", "paw-print", "moon"}, 5, 5, 22, accent,
         string.sub(opts.Name or "W", 1, 1))
     window.Reopen = reopen
+    window.ReopenIcon = reopenIcon
 
-    -- ватермарка тоже кнопка: по ней открывается и закрывается меню
     local watermark = rect(gui, 8, 8, 160, 22, palette[2], 5, "TextButton")
     watermark.Name = "Watermark"
     watermark.Visible = false
     watermark.ZIndex = 41
-    local watermarkText = text(watermark, "", 8, 0, 144, 22, 11, white)
+    local watermarkText = text(watermark, "", 28, 0, 144, 22, 11, white)
+    local watermarkIcon = iconLabel(watermark, window.Icon, 7, 3, 16, accent, window.IconFallback)
+    window.WatermarkIcon = watermarkIcon
     window.Watermark = watermark
     window.WatermarkText = watermarkText
     window.WatermarkConfig = {
@@ -1160,13 +1006,14 @@ function Library:CreateWindow(opts)
         Mode = opts.OpenMode or "button",
         AlwaysVisible = opts.OpenAlways and true or false,
         Size = math.max(24, math.floor(tonumber(opts.OpenSize) or 32)),
+        Width = math.max(24, math.floor(tonumber(opts.OpenWidth or opts.OpenSize) or 32)),
+        Height = math.max(24, math.floor(tonumber(opts.OpenHeight or opts.OpenSize) or 32)),
         Transparency = 0,
         Taps = 2,
         Interval = 0.4,
         Position = Vector2.new(8, 8),
     }
 
-    -- подсказка при наведении
     local tooltip = rect(gui, 0, 0, 10, 20, palette[1], 3)
     tooltip.Name = "Tooltip"
     tooltip.Visible = false
@@ -1174,22 +1021,24 @@ function Library:CreateWindow(opts)
     new("UIStroke", tooltip, {Color = palette[5], Thickness = 1, Transparency = 0.4})
     local tooltipText = text(tooltip, "", 6, 0, 10, 20, 11, white)
 
-    -- тап = действие, протяжка = перенос (для ватермарки и кнопки открытия)
-    local function floating(object, config, onPress)
-        local startPoint, startPos, moved = nil, nil, false
+    local function floating(object, config, onPress, onDrop)
+        local startPoint, startPos
         draggable(object, function(point, initial)
             if initial then
-                startPoint, startPos, moved = point, config.Position, false
+                startPoint = point
+                startPos = Vector2.new(object.AbsolutePosition.X, object.AbsolutePosition.Y)
                 return
             end
-            local delta = point - startPoint
-            if not moved and (math.abs(delta.X) + math.abs(delta.Y)) < DRAG_THRESHOLD then return end
-            moved = true
-            config.Position = startPos + delta
-        end, function()
-            if not moved then onPress() end
-        end)
+            config.Position = startPos + point - startPoint
+            if onDrop then config.Custom = true end
+        end, function(cancelled, moved)
+            if cancelled then return end
+            if moved then
+                if onDrop then onDrop() end
+            elseif onPress then onPress() end
+        end, DRAG_THRESHOLD)
     end
+    window.Floating = floating
 
     floating(reopen, window.OpenConfig, function()
         window:SetVisible(not frame.Visible)
@@ -1200,29 +1049,49 @@ function Library:CreateWindow(opts)
         end
     end)
 
-    -- режим "center": несколько тапов по середине экрана открывают меню
-    local lastTap, tapCount = 0, 0
-    connect(UIS.InputBegan, function(input, processed)
-        local oc = window.OpenConfig
-        if oc.Mode ~= "center" or processed then return end
-        if not primary(input) then return end
+    local lastTap, tapCount, centerInput = 0, 0, nil
+    local function inCenter(point)
         local viewport = window.Viewport
+        return math.abs(point.X - viewport.X / 2) <= viewport.X * 0.2
+            and math.abs(point.Y - viewport.Y / 2) <= viewport.Y * 0.2
+    end
+    connect(UIS.InputBegan, function(input, processed)
+        if centerInput then centerInput = nil; tapCount = 0; return end
+        if window.OpenConfig.Mode ~= "center" or frame.Visible or processed
+            or UIS:GetFocusedTextBox() or not primary(input) then return end
         local point = Vector2.new(input.Position.X, input.Position.Y)
-        local center = viewport / 2
-        if math.abs(point.X - center.X) > viewport.X * 0.2
-            or math.abs(point.Y - center.Y) > viewport.Y * 0.2 then
+        if not inCenter(point) then tapCount = 0; return end
+        centerInput = {Input = input, Point = point, Time = os.clock()}
+    end)
+    connect(UIS.InputChanged, function(input)
+        local tap = centerInput
+        if not tap then return end
+        if input == tap.Input or (tap.Input.UserInputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseMovement) then
+            if (Vector2.new(input.Position.X, input.Position.Y) - tap.Point).Magnitude >= DRAG_THRESHOLD then
+                centerInput = nil
+                tapCount = 0
+            end
+        end
+    end)
+    connect(UIS.InputEnded, function(input)
+        local tap = centerInput
+        if not tap or input ~= tap.Input then return end
+        centerInput = nil
+        local oc, now = window.OpenConfig, os.clock()
+        if oc.Mode ~= "center" or frame.Visible or window.Drag or now - tap.Time > 0.4
+            or (Vector2.new(input.Position.X, input.Position.Y) - tap.Point).Magnitude >= DRAG_THRESHOLD then
             tapCount = 0
             return
         end
-        local now = os.clock()
-        if now - lastTap > (tonumber(oc.Interval) or 0.4) then tapCount = 0 end
-        lastTap = now
-        tapCount = tapCount + 1
-        if tapCount >= math.max(1, math.floor(tonumber(oc.Taps) or 2)) then
+        if now - lastTap > oc.Interval then tapCount = 0 end
+        lastTap, tapCount = now, tapCount + 1
+        if tapCount >= oc.Taps then
             tapCount = 0
-            window:SetVisible(not frame.Visible)
+            window:SetVisible(true)
         end
     end)
+    connect(UIS.WindowFocusReleased, function() centerInput = nil; tapCount = 0 end)
 
     overlayStep(function(dt, k)
         local viewport = window.Viewport
@@ -1241,7 +1110,7 @@ function Library:CreateWindow(opts)
             local caption = table.concat(parts, "  |  ")
             watermarkText:SetText(caption)
             local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 22))
-            local width = math.max(60, bounds.X + 18)
+            local width = math.max(60, bounds.X + 38)
             watermark.Size = UDim2.fromOffset(width, 22)
             watermarkText:Width(math.max(40, bounds.X + 2))
             local pos = Vector2.new(
@@ -1253,17 +1122,20 @@ function Library:CreateWindow(opts)
             local transparency = math.clamp(tonumber(wm.Transparency) or 0, 0, 1)
             watermark.BackgroundColor3 = palette[2]
             watermark.BackgroundTransparency = transparency
-            watermarkText:Alpha(1 - math.min(transparency, 0.9))
+            watermarkText:Alpha(1 - transparency)
+            watermarkIcon:Color(accent)
+            watermarkIcon:Alpha((1 - transparency) * state.AccentAlpha)
         end
 
         local showOpen = (oc.Mode == "button") and (hidden or oc.AlwaysVisible) and true or false
         reopen.Visible = showOpen
         if showOpen then
-            local size = oc.Size
-            reopen.Size = UDim2.fromOffset(size, size)
+            local width, height = oc.Width, oc.Height
+            local size = math.min(width, height)
+            reopen.Size = UDim2.fromOffset(width, height)
             local pos = Vector2.new(
-                math.clamp(oc.Position.X, 0, math.max(0, viewport.X - size)),
-                math.clamp(oc.Position.Y, 0, math.max(0, viewport.Y - size))
+                math.clamp(oc.Position.X, 0, math.max(0, viewport.X - width)),
+                math.clamp(oc.Position.Y, 0, math.max(0, viewport.Y - height))
             )
             oc.Position = pos
             reopen.Position = UDim2.fromOffset(math.floor(pos.X + 0.5), math.floor(pos.Y + 0.5))
@@ -1271,8 +1143,9 @@ function Library:CreateWindow(opts)
             reopen.BackgroundTransparency = math.clamp(tonumber(oc.Transparency) or 0, 0, 1)
             reopenStroke.Color = palette[5]
             reopenIcon:Color(accent)
-            reopenIcon:Alpha(state.AccentAlpha)
-            reopenIcon.Object.Position = UDim2.fromOffset(math.floor(size * 0.16), math.floor(size * 0.16))
+            reopenIcon:Alpha(state.AccentAlpha * (1 - oc.Transparency))
+            reopenStroke.Transparency = 0.4 + 0.6 * oc.Transparency
+            reopenIcon.Object.Position = UDim2.fromOffset(math.floor((width - size * 0.68) / 2), math.floor((height - size * 0.68) / 2))
             reopenIcon.Object.Size = UDim2.fromOffset(math.floor(size * 0.68), math.floor(size * 0.68))
         end
 
@@ -1295,9 +1168,7 @@ function Library:CreateWindow(opts)
             tooltip.Visible = false
         end
     end)
-    ------------------------------------------------------------------
-    -- уведомления
-    ------------------------------------------------------------------
+
     local notifyHolder = transparent(gui, 0, 0, 250, WINDOW_H)
     notifyHolder.Name = "Notifications"
     notifyHolder.Position = UDim2.new(1, -258, 0, 8)
@@ -1305,11 +1176,8 @@ function Library:CreateWindow(opts)
     notifyHolder.ZIndex = 30
     window.NotifyHolder = notifyHolder
 
-    ------------------------------------------------------------------
-    -- бинды и цикл отрисовки
-    ------------------------------------------------------------------
     connect(UIS.InputBegan, function(input, processed)
-        -- захват клавиши для keybind-элементов
+        
         if window.PendingKeybind then
             local pending = window.PendingKeybind
             if input.UserInputType == Enum.UserInputType.Keyboard then
@@ -1353,7 +1221,8 @@ function Library:CreateWindow(opts)
         end
     end)
 
-    window.ToggleKey = opts.ToggleKey or Enum.KeyCode.RightShift
+    window.ToggleKey = type(opts.ToggleKey) == "string" and keyFromName(opts.ToggleKey) or opts.ToggleKey or Enum.KeyCode.RightShift
+    Library:SetOpenMode(type(opts.OpenMode) == "table" and opts.OpenMode or {Mode = opts.OpenMode or "button"})
 
     connect(gui.Destroying, function()
         Runtime.Alive = false
@@ -1363,6 +1232,7 @@ function Library:CreateWindow(opts)
 
     connect(RunService.RenderStepped, function(dt)
         if not Runtime.Alive then return end
+        restoreFades()
         dt = math.min(dt, 0.1)
         local k = math.min(24 * dt, 1)
 
@@ -1387,18 +1257,16 @@ function Library:CreateWindow(opts)
         local camera = workspace.CurrentCamera
         if camera and camera.ViewportSize ~= window.Viewport then layout() end
 
-        -- плавающий слой живёт даже при скрытом меню
         for _, update in ipairs(Runtime.Overlay) do
             update(dt, k)
         end
 
-        -- уведомления
         for index = #window.Notifications, 1, -1 do
             local notif = window.Notifications[index]
             notif.Life = notif.Life - dt
             local target = (notif.Life > 0) and 1 or 0
             notif.Alpha = move(notif.Alpha, target, 5 * dt)
-            notif.Object.GroupTransparency = 1 - notif.Alpha
+            fadeGroup(notif.Object, notif.Alpha)
             notif.Object.BackgroundColor3 = palette[2]
             notif.Bar.BackgroundColor3 = accent
             notif.Icon:Color(accent)
@@ -1420,18 +1288,16 @@ function Library:CreateWindow(opts)
             update(dt, k)
         end
 
-        -- страницы вкладок
         for _, tab in ipairs(window.TabList) do
             local active = window.Current == tab
             tab.Alpha = move(tab.Alpha, active and 1 or 0, 8 * dt)
             local page = tab.Page
             page.Visible = tab.Alpha > 0.01
             if page.Visible then
-                page.GroupTransparency = 1 - tab.Alpha
+                fadeGroup(page, tab.Alpha)
             end
         end
 
-        -- попапы (позиционирование как в оригинале — поверх анкера)
         for _, pop in ipairs(window.Popups) do
             local show = pop:IsActive()
             pop.Alpha = move(pop.Alpha, show and 1 or 0, 9 * dt)
@@ -1442,7 +1308,7 @@ function Library:CreateWindow(opts)
             end
             local object = pop.Object
             object.Visible = pop.Alpha > 0.01 and pop.Anchor ~= nil
-            object.GroupTransparency = 1 - pop.Alpha
+            fadeGroup(object, pop.Alpha)
             object.BackgroundColor3 = palette[1]
             object.Size = UDim2.fromOffset(pop.Width, math.max(1, pop.CurrentHeight))
             if object.Visible then
@@ -1462,15 +1328,12 @@ function Library:CreateWindow(opts)
     return window
 end
 
-----------------------------------------------------------------------
--- 6. Методы окна
-----------------------------------------------------------------------
 function Window:SetVisible(value)
     self.Frame.Visible = value and true or false
     self.PopupLayer.Visible = self.Frame.Visible
     if not self.Frame.Visible then
         self.Opened = nil
-        self.Drag = nil
+        self.CancelDrag()
         self.PendingKeybind = nil
     end
 end
@@ -1482,6 +1345,17 @@ function Window:SetScale(value, exact)
     self.Layout()
     fireChange("Scale", snapped)
     return snapped
+end
+
+function Window:SetIcon(value)
+    self.Icon = value
+    self.LogoIcon:SetIcon(value)
+    self.ReopenIcon:SetIcon(value)
+    self.WatermarkIcon:SetIcon(value)
+end
+
+function Library:SetIcon(value)
+    if self.Window then self.Window:SetIcon(value) end
 end
 
 function Window:SetTheme(index)
@@ -1505,14 +1379,13 @@ function Window:CreateTab(opts)
     local name = opts.Name or ("Tab" .. tostring(#self.TabList + 1))
     local index = #self.TabList + 1
 
-    local page = new("CanvasGroup", self.Scroll, {
+    local page = new("Frame", self.Scroll, {
         Name = name,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Position = UDim2.fromOffset(PAD, PAD),
         Size = UDim2.fromOffset(W, 1),
         Visible = false,
-        GroupTransparency = 1,
     })
 
     local tab = setmetatable({
@@ -1529,7 +1402,6 @@ function Window:CreateTab(opts)
     self.Tabs[name] = tab
     self.TabList[index] = tab
 
-    -- кнопка вкладки в сайдбаре (геометрия оригинала: 70x70, иконка + подпись)
     local top = (index - 1) * TAB_SLOT
     local hit = rect(self.TabHolder, 0, top, SIDEBAR_W, TAB_SLOT, palette[4], nil, "TextButton")
     hit.Name = name
@@ -1566,9 +1438,6 @@ function Window:Destroy()
     Library:Unload()
 end
 
-----------------------------------------------------------------------
--- 7. Раскладка внутри вкладки
-----------------------------------------------------------------------
 function Tab:_pageWidth()
     return self.Width or W
 end
@@ -1638,17 +1507,17 @@ local function baseApi(tab, card, flag)
     return api
 end
 
-----------------------------------------------------------------------
--- 7b. Плавающие мини-кнопки и мини-меню настроек
-----------------------------------------------------------------------
--- Мини-кнопка живёт поверх игры, её можно тащить, а тап по ней либо
--- переключает функцию (Mode = "Toggle"), либо просто вызывает колбэк
--- (Mode = "Action"). Тап от протяжки отличается порогом DRAG_THRESHOLD.
 local function createMiniButton(window, config)
     config = config or {}
     local size = math.max(24, math.floor(tonumber(config.Size) or 44))
     local mode = (config.Mode == "Action" or config.Mode == "Button") and "Action" or "Toggle"
     local key = tostring(config.Key or config.Flag or config.Name or ("Mini" .. tostring(#window.Mini + 1)))
+    local baseKey, suffix = key, 1
+    local function keyExists(value)
+        for _, existing in ipairs(window.Mini) do if existing.Key == value then return true end end
+        return false
+    end
+    while keyExists(key) do suffix = suffix + 1; key = baseKey .. "#" .. suffix end
     local radius = math.max(3, math.floor(size / 4))
 
     local button = rect(window.MiniLayer, MINI_MARGIN, MINI_MARGIN, size, size, palette[2], radius, "TextButton")
@@ -1662,17 +1531,18 @@ local function createMiniButton(window, config)
     local iconY = caption and math.floor(size * 0.16) or math.floor((size - iconSize) / 2)
     local icon = iconLabel(button, config.Icon or {"circle"}, math.floor((size - iconSize) / 2), iconY,
         iconSize, white, config.Fallback or string.sub(tostring(config.Name or "M"), 1, 1))
-    local label
-    if caption then
-        label = text(button, caption, 2, math.floor(size * 0.56), size - 4, math.floor(size * 0.32),
-            math.max(8, math.floor(size * 0.2)), palette[3], "center")
-    end
+    local label = text(button, caption or "", 2, math.floor(size * 0.56), size - 4, math.floor(size * 0.32),
+        math.max(8, math.floor(size * 0.2)), palette[3], "center")
+    label.Object.Visible = caption ~= nil
 
     local mini = {
         Object = button,
         Key = key,
         Mode = mode,
         Size = size,
+        Width = math.max(24, math.floor(tonumber(config.Width) or size)),
+        Height = math.max(24, math.floor(tonumber(config.Height) or size)),
+        Transparency = math.clamp(tonumber(config.Transparency) or 0, 0, 1),
         Enabled = config.Enabled ~= false,
         Active = config.Active and true or false,
         Custom = false,
@@ -1693,6 +1563,7 @@ local function createMiniButton(window, config)
     local flash = 0
 
     function mini:Press()
+        if self.Destroyed or not self.Enabled then return end
         flash = 1 / 9
         if config.OnPress then
             config.OnPress(self)
@@ -1706,11 +1577,26 @@ local function createMiniButton(window, config)
 
     function mini:Get() return self.Active end
     function mini:SetActive(value) self.Active = value and true or false end
-    function mini:SetVisible(value) self.Enabled = value and true or false end
+    function mini:SetVisible(value)
+        self.Enabled = value and true or false
+        if not self.Enabled and window.Drag and window.Drag.Object == button then window.CancelDrag() end
+    end
+    function mini:SetSize(width, height)
+        self.Width = math.max(24, math.floor(tonumber(width) or self.Width))
+        self.Height = math.max(24, math.floor(tonumber(height) or tonumber(width) or self.Height))
+        self.Size = math.min(self.Width, self.Height)
+    end
+    function mini:SetWidth(value) self:SetSize(value, self.Height) end
+    function mini:SetHeight(value) self:SetSize(self.Width, value) end
+    function mini:SetTransparency(value)
+        self.Transparency = math.clamp(tonumber(value) or 0, 0, 1)
+    end
     function mini:Show() self:SetVisible(true) end
     function mini:Hide() self:SetVisible(false) end
     function mini:SetText(value)
-        if label then label:SetText(tostring(value)) end
+        caption = value ~= nil and tostring(value) or nil
+        label:SetText(caption or "")
+        label.Object.Visible = caption ~= nil
     end
     function mini:SetPosition(x, y)
         self.Custom = true
@@ -1722,6 +1608,10 @@ local function createMiniButton(window, config)
         window.MiniPositions[self.Key] = nil
     end
     function mini:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed, self.Enabled = true, false
+        local updateIndex = table.find(Runtime.Overlay, self.Update)
+        if updateIndex then table.remove(Runtime.Overlay, updateIndex) end
         for index, item in ipairs(window.Mini) do
             if item == self then
                 table.remove(window.Mini, index)
@@ -1731,25 +1621,8 @@ local function createMiniButton(window, config)
         button:Destroy()
     end
 
-    local startPoint, startPos, moved = nil, nil, false
-    window.Draggable(button, function(point, initial)
-        if initial then
-            startPoint = point
-            startPos = mini.Custom and mini.Position or mini.Target
-            moved = false
-            return
-        end
-        local delta = point - startPoint
-        if not moved and (math.abs(delta.X) + math.abs(delta.Y)) < DRAG_THRESHOLD then return end
-        moved = true
-        mini.Custom = true
-        mini.Position = startPos + delta
-    end, function()
-        if not moved then
-            mini:Press()
-        else
-            window.MiniPositions[mini.Key] = {X = mini.Position.X, Y = mini.Position.Y}
-        end
+    window.Floating(button, mini, function() mini:Press() end, function()
+        window.MiniPositions[mini.Key] = {X = mini.Position.X, Y = mini.Position.Y}
     end)
 
     local hover = false
@@ -1757,7 +1630,8 @@ local function createMiniButton(window, config)
     connect(button.MouseLeave, function() hover = false end)
 
     local alpha, tint = mini.Active and 1 or 0, palette[3]
-    overlayStep(function(dt, k)
+    local function updateMini(dt, k)
+        if mini.Destroyed then return end
         if config.Sync then
             local ok, value = pcall(config.Sync)
             if ok then mini.Active = value and true or false end
@@ -1769,18 +1643,35 @@ local function createMiniButton(window, config)
         local base = palette[2]:Lerp(palette[5], hover and 0.6 or 0)
         if flash > 0 then base = palette[6] end
         button.BackgroundColor3 = base:Lerp(accent, alpha * 0.55 * state.AccentAlpha)
-        button.BackgroundTransparency = math.clamp(tonumber(config.Transparency) or 0, 0, 1)
+        button.BackgroundTransparency = mini.Transparency
+        stroke.Transparency = 0.4 + 0.6 * mini.Transparency
+        icon:Alpha(1 - mini.Transparency)
+        local width, height = mini.Width, mini.Height
+        local size = math.min(width, height)
+        local iconSize = math.floor(caption and size * 0.42 or size * 0.5)
+        icon.Object.Position = UDim2.fromOffset(math.floor((width - iconSize) / 2), caption and math.floor(height * 0.16) or math.floor((height - iconSize) / 2))
+        icon.Object.Size = UDim2.fromOffset(iconSize, iconSize)
+        button.Size = UDim2.fromOffset(width, height)
+        if label then
+            label:Alpha(1 - mini.Transparency)
+            label.Object.Position = UDim2.fromOffset(2, math.floor(height * 0.56))
+            label.Object.Size = UDim2.fromOffset(width - 4, math.floor(height * 0.32))
+        end
         stroke.Color = palette[5]:Lerp(accent, alpha)
         tint = tint:Lerp(mini.Active and white or palette[3], k)
         icon:Color(tint)
         if label then label:Color(tint) end
         local current = Vector2.new(button.Position.X.Offset, button.Position.Y.Offset)
         local target = mini.Target
+        if mini.Custom then window.MiniPositions[mini.Key] = {X = mini.Position.X, Y = mini.Position.Y} end
+        if window.Drag and window.Drag.Object == button then k = 1 end
         button.Position = UDim2.fromOffset(
             math.floor(approach(current.X, target.X, k) + 0.5),
             math.floor(approach(current.Y, target.Y, k) + 0.5)
         )
-    end)
+    end
+    mini.Update = updateMini
+    overlayStep(updateMini)
 
     return mini
 end
@@ -1804,8 +1695,6 @@ function Window:Tooltip(object, message)
     end)
 end
 
--- Мини-меню: попап как палитра, только шире. Это полноценная "вкладка":
--- внутрь можно складывать любые элементы теми же методами Add*.
 local function createSubMenu(window, anchor, opts)
     opts = opts or {}
     local width = math.max(160, math.floor(tonumber(opts.Width) or 240))
@@ -1857,7 +1746,6 @@ local function createSubMenu(window, anchor, opts)
     return menu
 end
 
--- Шестерёнка рядом с элементом: открывает мини-меню, тащить её нельзя.
 local function attachSettings(tab, parent, x, y, size, opts)
     opts = opts or {}
     local anchor = transparent(parent, x, y, size, size, "TextButton")
@@ -1885,9 +1773,6 @@ local function attachSettings(tab, parent, x, y, size, opts)
     return menu
 end
 
-----------------------------------------------------------------------
--- 8. Оформление: заголовок секции, разделитель, текст
-----------------------------------------------------------------------
 function Tab:AddSection(nameOrOpts)
     local opts = type(nameOrOpts) == "table" and nameOrOpts or {Name = nameOrOpts}
     self:_newline()
@@ -1941,9 +1826,6 @@ function Tab:AddParagraph(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 9. Палитра цвета (используется и как элемент, и как аддон тумблера)
-----------------------------------------------------------------------
 local function toHex(color)
     return string.format("%02X%02X%02X",
         math.floor(color.R * 255 + 0.5),
@@ -1987,7 +1869,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     dot.ZIndex = 3
     new("UIStroke", dot, {Color = palette[5], Thickness = 1, Transparency = 0.35})
 
-    -- геометрия палитры
     local PW = 200
     local INNER = PW - 20
     local SV_H = 110
@@ -1996,7 +1877,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     local HUE_TOP = SV_TOP + SV_H + 10
     local ALPHA_TOP = HUE_TOP + BAR_H + 8
     local ROW_TOP = (useAlpha and (ALPHA_TOP + BAR_H) or (HUE_TOP + BAR_H)) + 12
-    -- быстрые цвета: сколько дал разработчик, столько и покажем
+    
     local presets = {}
     for _, swatch in ipairs(type(opts.Presets) == "table" and opts.Presets or DEFAULT_PRESETS) do
         if typeof(swatch) == "Color3" then presets[#presets + 1] = swatch end
@@ -2010,7 +1891,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
 
     local hue, saturation, value = color:ToHSV()
 
-    -- квадрат насыщенности/яркости
     local sv = rect(host, 10, SV_TOP, INNER, SV_H, white, 4, "TextButton")
     local svGradient = new("UIGradient", sv, {Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))})
     local shade = rect(sv, 0, 0, INNER, SV_H, black, 4)
@@ -2025,7 +1905,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     svDot.ZIndex = 3
     new("UIStroke", svDot, {Color = white, Thickness = 2})
 
-    -- полоса оттенка (горизонтальная, тонкая)
     local hueBar = rect(host, 10, HUE_TOP, INNER, BAR_H, white, 4, "TextButton")
     local stops = {}
     for i = 0, 6 do
@@ -2036,7 +1915,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     hueThumb.ZIndex = 3
     new("UIStroke", hueThumb, {Color = palette[1], Thickness = 1})
 
-    -- полоса прозрачности
     local alphaBar, alphaThumb
     if useAlpha then
         alphaBar = rect(host, 10, ALPHA_TOP, INNER, BAR_H, color, 4, "TextButton")
@@ -2051,7 +1929,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         new("UIStroke", alphaThumb, {Color = palette[1], Thickness = 1})
     end
 
-    -- нижняя строка: превью, HEX, быстрые цвета
     local preview = rect(host, 10, ROW_TOP, 22, 20, color, 3)
     new("UIStroke", preview, {Color = palette[5], Thickness = 1, Transparency = 0.35})
 
@@ -2200,9 +2077,6 @@ function Tab:AddColorPicker(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 10. Keybind (элемент и аддон)
-----------------------------------------------------------------------
 local function attachKeybind(tab, parent, x, y, w, h, opts)
     opts = opts or {}
     local window = tab.Window
@@ -2271,9 +2145,6 @@ function Tab:AddKeybind(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 11. Toggle
-----------------------------------------------------------------------
 function Tab:AddToggle(opts)
     opts = opts or {}
     local name = opts.Name or "Toggle"
@@ -2288,7 +2159,6 @@ function Tab:AddToggle(opts)
     local fill = rect(box, 7, 7, 0, 0, accent, 3)
     local mark = iconLabel(box, {"check"}, 1, 1, 12, black, "v")
 
-    -- аддоны занимают место справа налево, как в оригинале
     local edge = w - 24
     local function claim(width)
         edge = edge - 10 - width
@@ -2325,7 +2195,6 @@ function Tab:AddToggle(opts)
         keybind = attachKeybind(self, card, claim(46), 14.5, 46, 14, config)
     end
 
-    -- шестерёнка: своё мини-меню с настройками этого пункта
     if opts.Settings ~= nil then
         local config = type(opts.Settings) == "table" and opts.Settings or {Build = opts.Settings}
         config.Name = config.Name or name
@@ -2338,7 +2207,6 @@ function Tab:AddToggle(opts)
     end
     function api:SetName(v) title:SetText(v) end
 
-    -- плавающая мини-кнопка для быстрого доступа без открытия меню
     if opts.MiniButton ~= nil and opts.MiniButton ~= false then
         local config = type(opts.MiniButton) == "table" and opts.MiniButton or {}
         config.Name = config.Name or name
@@ -2350,7 +2218,7 @@ function Tab:AddToggle(opts)
         config.Enabled = config.Enabled ~= false
         mini = self.Window:AddMiniButton(config)
         if config.ShowWhenActive then
-            -- кнопка видна только пока функция включена (работает и при скрытом меню)
+            
             mini.Enabled = value
             overlayStep(function() mini.Enabled = value end)
         end
@@ -2383,10 +2251,6 @@ function Tab:AddToggle(opts)
     return api
 end
 
-----------------------------------------------------------------------
-----------------------------------------------------------------------
--- 12. Slider
-----------------------------------------------------------------------
 local function makeSlider(tab, parent, x, y, w, opts)
     opts = opts or {}
     local name = opts.Name or "Slider"
@@ -2475,9 +2339,6 @@ function Tab:AddSlider(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 13. Dropdown
-----------------------------------------------------------------------
 function Tab:AddDropdown(opts)
     opts = opts or {}
     local name = opts.Name or "Dropdown"
@@ -2501,7 +2362,7 @@ function Tab:AddDropdown(opts)
     step(function() arrow:Color(palette[3]) end)
 
     local ROW_H = 31
-    -- MaxRows = 0 (или false) — показывать все строки без ограничения
+    
     local maxRows = math.floor(tonumber(opts.MaxRows) or 5)
     if maxRows <= 0 then maxRows = math.max(1, #options) end
     local pop = createPopup(self.Window, control, controlW, math.min(#options, maxRows) * ROW_H, true, self.ParentPopup)
@@ -2670,9 +2531,6 @@ function Tab:AddDropdown(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 14. TextBox
-----------------------------------------------------------------------
 function Tab:AddTextBox(opts)
     opts = opts or {}
     local name = opts.Name or "Text field"
@@ -2707,7 +2565,6 @@ function Tab:AddTextBox(opts)
     })
     step(function() box.PlaceholderColor3 = palette[3] end)
 
-    -- ограничения по длине больше нет; MaxLength задаётся только по желанию
     local maxLength = math.floor(tonumber(opts.MaxLength) or 0)
     local api = baseApi(self, card, flag)
 
@@ -2746,9 +2603,6 @@ function Tab:AddTextBox(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15. Button
-----------------------------------------------------------------------
 function Tab:AddButton(opts)
     opts = opts or {}
     local name = opts.Name or "Button"
@@ -2816,11 +2670,6 @@ function Tab:AddButton(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15b. Мини-кнопка как элемент меню
-----------------------------------------------------------------------
--- Тумблер в меню включает плавающую кнопку на экране. Сама кнопка может
--- быть переключателем (Mode = "Toggle") или простым действием ("Action").
 function Tab:AddMiniButton(opts)
     opts = opts or {}
     local name = opts.Name or "Quick button"
@@ -2834,6 +2683,8 @@ function Tab:AddMiniButton(opts)
         Text = opts.Text,
         Mode = mode,
         Size = opts.Size,
+        Width = opts.ButtonWidth,
+        Height = opts.ButtonHeight or opts.Height,
         Enabled = opts.Default ~= false,
         Active = opts.Active,
         Transparency = opts.Transparency,
@@ -2857,9 +2708,6 @@ function Tab:AddMiniButton(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15c. Настройки элемента отдельным пунктом (шестерёнка)
-----------------------------------------------------------------------
 function Tab:AddSettings(opts)
     opts = opts or {}
     local name = opts.Name or "Settings"
@@ -2877,9 +2725,6 @@ function Tab:AddSettings(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15d. Числовое поле со шагом (без обязательных пределов)
-----------------------------------------------------------------------
 function Tab:AddStepper(opts)
     opts = opts or {}
     local name = opts.Name or "Value"
@@ -2948,9 +2793,6 @@ function Tab:AddStepper(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15e. Ряд вариантов (компактная замена дропдауну)
-----------------------------------------------------------------------
 function Tab:AddSegmented(opts)
     opts = opts or {}
     local name = opts.Name or "Mode"
@@ -3028,9 +2870,6 @@ function Tab:AddSegmented(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15f. Полоса прогресса
-----------------------------------------------------------------------
 function Tab:AddProgressBar(opts)
     opts = opts or {}
     local name = opts.Name or "Progress"
@@ -3067,9 +2906,6 @@ function Tab:AddProgressBar(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15g. Картинка
-----------------------------------------------------------------------
 function Tab:AddImage(opts)
     opts = opts or {}
     local w = self:_width(opts.Width)
@@ -3090,9 +2926,6 @@ function Tab:AddImage(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15h. Список значений (ники, цели, что угодно)
-----------------------------------------------------------------------
 function Tab:AddList(opts)
     opts = opts or {}
     local name = opts.Name or "List"
@@ -3155,7 +2988,7 @@ function Tab:AddList(opts)
             connect(remove.MouseEnter, function() hover = true end)
             connect(remove.MouseLeave, function() hover = false end)
             step(function(dt, k)
-                -- строки списка пересоздаются, старые апдейты выходят сразу
+                
                 if not row.Parent then return end
                 icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
                 caption:Color(white)
@@ -3250,9 +3083,6 @@ function Tab:AddList(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15i. Дропдаун со списком игроков (обновляется сам)
-----------------------------------------------------------------------
 function Tab:AddPlayerDropdown(opts)
     opts = opts or {}
     local function names()
@@ -3296,9 +3126,6 @@ function Tab:AddPlayerDropdown(opts)
     return api
 end
 
-----------------------------------------------------------------------
--- 15j. Менеджер конфигов (собран из готовых элементов)
-----------------------------------------------------------------------
 function Tab:AddConfigManager(opts)
     opts = opts or {}
     self:AddSection(opts.Name or "Configs")
@@ -3362,9 +3189,6 @@ function Tab:AddConfigManager(opts)
     return {Refresh = refresh, Name = nameBox, Picker = picker}
 end
 
-----------------------------------------------------------------------
--- 16. Уведомления и ватермарка
-----------------------------------------------------------------------
 function Library:Notify(opts)
     opts = type(opts) == "table" and opts or {Text = opts}
     local window = self.Window
@@ -3376,9 +3200,8 @@ function Library:Notify(opts)
     local bounds = TextService:GetTextSize(body, 11, Enum.Font.Gotham, Vector2.new(width - 46, 10000))
     local height = (title and 26 or 10) + math.max(14, bounds.Y) + 10
 
-    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "CanvasGroup")
+    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "Frame")
     object.Name = "Notification"
-    object.GroupTransparency = 1
     object.ClipsDescendants = true
 
     local bar = rect(object, 0, 0, 2, height, accent, nil)
@@ -3428,14 +3251,24 @@ function Library:SetOpenMode(opts)
     if not window then return end
     opts = type(opts) == "table" and opts or {Mode = opts}
     local config = window.OpenConfig
-    if opts.Mode ~= nil then config.Mode = tostring(opts.Mode) end
-    if opts.Size ~= nil then config.Size = math.max(24, math.floor(tonumber(opts.Size) or 32)) end
+    if opts.Mode ~= nil then
+        local mode = string.lower(tostring(opts.Mode))
+        assert(mode == "button" or mode == "watermark" or mode == "center" or mode == "none", "Invalid open mode")
+        config.Mode = mode
+        if mode == "watermark" then window.WatermarkConfig.Enabled = true; window.WatermarkConfig.Toggle = true end
+    end
+    if opts.Size ~= nil then
+        config.Size = math.max(24, math.floor(tonumber(opts.Size) or 32))
+        config.Width, config.Height = config.Size, config.Size
+    end
+    if opts.Width ~= nil then config.Width = math.max(24, math.floor(tonumber(opts.Width) or config.Width)) end
+    if opts.Height ~= nil then config.Height = math.max(24, math.floor(tonumber(opts.Height) or config.Height)) end
     if opts.Transparency ~= nil then
         config.Transparency = math.clamp(tonumber(opts.Transparency) or 0, 0, 1)
     end
     if opts.AlwaysVisible ~= nil then config.AlwaysVisible = opts.AlwaysVisible and true or false end
     if opts.Taps ~= nil then config.Taps = math.max(1, math.floor(tonumber(opts.Taps) or 2)) end
-    if opts.Interval ~= nil then config.Interval = tonumber(opts.Interval) or 0.4 end
+    if opts.Interval ~= nil then config.Interval = math.max(0.05, tonumber(opts.Interval) or 0.4) end
     if typeof(opts.Position) == "Vector2" then config.Position = opts.Position end
     if opts.X ~= nil and opts.Y ~= nil then
         config.Position = Vector2.new(tonumber(opts.X) or 8, tonumber(opts.Y) or 8)
@@ -3460,7 +3293,6 @@ function Library:GetMiniButtons()
     return window and window.Mini or {}
 end
 
--- Модальное окно с вопросом: подтверждения опасных действий
 function Library:Dialog(opts)
     local window = self.Window
     if not window then return end
@@ -3518,10 +3350,6 @@ function Library:Dialog(opts)
     return {Object = shade, Close = close}
 end
 
-----------------------------------------------------------------------
-----------------------------------------------------------------------
--- 17. Конфиги
-----------------------------------------------------------------------
 local function serialize(value)
     if typeof(value) == "Color3" then
         return {__type = "Color3", R = value.R, G = value.G, B = value.B}
@@ -3560,9 +3388,16 @@ function Library:GetConfig()
     for flag, value in pairs(self.Flags) do
         config.Flags[flag] = serialize(value)
     end
+    config.ThemePalette = {}
+    for i, color in ipairs(themes[state.Theme]) do config.ThemePalette[i] = serialize(color) end
+    config.ThemeName = self.ThemeNames[state.Theme]
     config.Accent = serialize(state.Accent)
     config.AccentAlpha = state.AccentAlpha
     if self.Window then
+        config.MiniStyle = {}
+        for _, mini in ipairs(self.Window.Mini) do
+            config.MiniStyle[mini.Key] = {Width = mini.Width, Height = mini.Height, Transparency = mini.Transparency}
+        end
         config.Mini = {}
         for key, position in pairs(self.Window.MiniPositions) do
             config.Mini[key] = {X = position.X, Y = position.Y}
@@ -3573,13 +3408,26 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
-    if config.Theme then self:SetTheme(config.Theme) end
+    if type(config.ThemePalette) == "table" then
+        local colors = {}
+        for i, color in ipairs(config.ThemePalette) do colors[i] = deserialize(color) end
+        self:SetTheme(self:RegisterTheme(config.ThemeName or "Custom", colors))
+    elseif config.Theme then self:SetTheme(config.Theme) end
+    if type(config.MiniStyle) == "table" and self.Window then
+        for _, mini in ipairs(self.Window.Mini) do
+            local style = config.MiniStyle[mini.Key]
+            if type(style) == "table" then
+                mini:SetSize(style.Width, style.Height)
+                mini:SetTransparency(style.Transparency)
+            end
+        end
+    end
     if config.Accent then self:SetAccent(deserialize(config.Accent), config.AccentAlpha) end
     if config.Scale and self.Window then self.Window:SetScale(config.Scale) end
     if type(config.Mini) == "table" and self.Window then
         for key, position in pairs(config.Mini) do
-            if tonumber(position.X) and tonumber(position.Y) then
-                self.Window.MiniPositions[key] = {X = position.X, Y = position.Y}
+            if type(position) == "table" and tonumber(position.X) and tonumber(position.Y) then
+                self.Window.MiniPositions[key] = {X = tonumber(position.X), Y = tonumber(position.Y)}
             end
         end
         for _, mini in ipairs(self.Window.Mini) do
@@ -3602,11 +3450,6 @@ function Library:LoadConfig(config)
     return true
 end
 
--- Файлы в памяти исполнителя: одна корневая папка WolfUi, внутри —
--- по папке на каждый скрипт, который использует библиотеку:
---   WolfUi/
---     MyScript/
---       configs/default.json
 local ROOT = "WolfUi"
 local LEGACY_ROOT = "WolfLib"
 local scriptFolder = "Default"
@@ -3627,8 +3470,6 @@ local function folderSupport()
     return type(isfolder) == "function" and type(makefolder) == "function"
 end
 
--- makefolder в части исполнителей не создаёт вложенные пути сам,
--- поэтому создаём папки по одной сверху вниз
 local function ensureFolder(path)
     if not folderSupport() then return false end
     local built = nil
@@ -3757,9 +3598,6 @@ function Library:DeleteConfigFile(name)
         self:GetConfigFolder() .. "/" .. safeName(name or "default") .. ".json")
 end
 
-----------------------------------------------------------------------
--- 18. Выгрузка
-----------------------------------------------------------------------
 function Library:Unload()
     Runtime.Alive = false
     for _, connection in ipairs(Runtime.Connections) do
@@ -3781,11 +3619,6 @@ function Library:Unload()
     changeListeners = {}
 end
 
-----------------------------------------------------------------------
--- Демо-меню: проверка, что библиотека загрузилась и рисует.
--- Одной строкой:
---   loadstring(game:HttpGet(URL))():Demo()
-----------------------------------------------------------------------
 function Library:Demo()
     local window = self:CreateWindow({Name = "Wolf", Icon = {"dog", "paw-print", "moon"}, Folder = "Demo"})
 
@@ -3911,8 +3744,6 @@ function Library:Demo()
     return window
 end
 
--- Подсказка в консоль: чаще всего "меню не появилось" значит, что запустили
--- саму библиотеку, а не скрипт, который вызывает CreateWindow.
 pcall(function()
     print("[WolfLib] v" .. tostring(Library.Version) ..
         " загружена. Это библиотека, меню появится после Library:CreateWindow(...)." ..
