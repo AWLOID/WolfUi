@@ -353,7 +353,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "3.3.0",
+    Version = "3.3.1",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -3587,8 +3587,10 @@ local LEGACY_ROOT = "WolfLib"
 local scriptFolder = "Default"
 local CONFIG_EXTENSION = ".wcfg"
 local LEGACY_CONFIG_EXTENSION = ".json"
-local CONFIG_PREFIX = "WOLFUI_CFG"
-local CONFIG_FORMAT_VERSION = "1"
+local CONFIG_MAGIC = "WCFG"
+local CONFIG_FORMAT_VERSION = 2
+local LEGACY_CONFIG_PREFIX = "WOLFUI_CFG"
+local LEGACY_CONFIG_FORMAT_VERSION = "1"
 local CONFIG_SECRET = "W0lfUi::Config::3.3::x9K2mQ7pL4sN8vR5"
 local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local BASE64_LOOKUP = {}
@@ -3605,13 +3607,17 @@ local function safeName(value)
     return string.sub(name, 1, 40)
 end
 
-local function checksum(value)
+local function checksumValue(value)
     local first, second = 1, 0
     for index = 1, #value do
         first = (first + string.byte(value, index)) % 65521
         second = (second + first) % 65521
     end
-    return string.format("%08x", second * 65536 + first)
+    return second * 65536 + first
+end
+
+local function checksum(value)
+    return string.format("%08x", checksumValue(value))
 end
 
 local function xorByte(left, right)
@@ -3692,34 +3698,67 @@ end
 local function createNonce()
     local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
     if ok and type(guid) == "string" then
-        return string.gsub(guid, "%-", "")
+        guid = string.gsub(guid, "%-", "")
+        if #guid == 32 then
+            local bytes = {}
+            for index = 1, #guid, 2 do
+                local byte = tonumber(string.sub(guid, index, index + 1), 16)
+                if not byte then bytes = nil; break end
+                bytes[#bytes + 1] = string.char(byte)
+            end
+            if bytes then return table.concat(bytes) end
+        end
     end
     local source = tostring(os.clock()) .. ":" .. tostring(math.random()) .. ":" .. tostring({})
-    return checksum(source) .. checksum(string.reverse(source))
+    local hex = checksum(source) .. checksum(string.reverse(source))
+        .. checksum(source .. ":wolf") .. checksum("ui:" .. source)
+    local bytes = {}
+    for index = 1, #hex, 2 do
+        bytes[#bytes + 1] = string.char(tonumber(string.sub(hex, index, index + 1), 16))
+    end
+    return table.concat(bytes)
 end
 
 local function configKey(nonce)
     return CONFIG_SECRET .. "\0" .. scriptFolder .. "\0" .. nonce
 end
 
-local function encodeConfig(json)
-    local nonce = createNonce()
-    local encrypted = xorTransform(json, configKey(nonce))
-    return table.concat({
-        CONFIG_PREFIX,
-        CONFIG_FORMAT_VERSION,
-        nonce,
-        checksum(json),
-        base64Encode(encrypted),
-    }, ":")
+local function packU32(value)
+    value = math.floor(tonumber(value) or 0) % 4294967296
+    return string.char(
+        value % 256,
+        math.floor(value / 256) % 256,
+        math.floor(value / 65536) % 256,
+        math.floor(value / 16777216) % 256
+    )
 end
 
-local function decodeConfig(value)
-    if type(value) ~= "string" then return nil, "config data is not a string" end
+local function unpackU32(value, index)
+    if index < 1 or index + 3 > #value then return nil end
+    local first, second, third, fourth = string.byte(value, index, index + 3)
+    return first + second * 256 + third * 65536 + fourth * 16777216
+end
+
+local function encodeConfig(json)
+    local nonce = createNonce()
+    local encoded = base64Encode(json)
+    local encrypted = xorTransform(encoded, configKey(nonce))
+    return CONFIG_MAGIC
+        .. packU32(CONFIG_FORMAT_VERSION)
+        .. packU32(#nonce)
+        .. packU32(#encrypted)
+        .. packU32(checksumValue(json))
+        .. nonce
+        .. encrypted
+end
+
+local function decodeLegacyConfig(value)
     local version, nonce, expected, payload = string.match(value,
-        "^" .. CONFIG_PREFIX .. ":([^:]+):([^:]+):([%x]+):([A-Za-z0-9+/=]+)$")
+        "^" .. LEGACY_CONFIG_PREFIX .. ":([^:]+):([^:]+):([%x]+):([A-Za-z0-9+/=]+)$")
     if not version then return nil, "unknown or damaged config format" end
-    if version ~= CONFIG_FORMAT_VERSION then return nil, "unsupported config version: " .. version end
+    if version ~= LEGACY_CONFIG_FORMAT_VERSION then
+        return nil, "unsupported legacy config version: " .. version
+    end
 
     local encrypted, decodeError = base64Decode(payload)
     if not encrypted then return nil, decodeError end
@@ -3727,7 +3766,44 @@ local function decodeConfig(value)
     if checksum(json) ~= string.lower(expected) then
         return nil, "config integrity check failed"
     end
-    return json
+    return json, nil, true
+end
+
+local function decodeConfig(value)
+    if type(value) ~= "string" then return nil, "config data is not a string" end
+    if string.sub(value, 1, #LEGACY_CONFIG_PREFIX + 1) == LEGACY_CONFIG_PREFIX .. ":" then
+        return decodeLegacyConfig(value)
+    end
+    if #value < 20 or string.sub(value, 1, 4) ~= CONFIG_MAGIC then
+        return nil, "unknown or damaged config format"
+    end
+
+    local version = unpackU32(value, 5)
+    local nonceLength = unpackU32(value, 9)
+    local payloadLength = unpackU32(value, 13)
+    local expected = unpackU32(value, 17)
+    if version ~= CONFIG_FORMAT_VERSION then
+        return nil, "unsupported config version: " .. tostring(version)
+    end
+    if not nonceLength or nonceLength < 8 or nonceLength > 64 or not payloadLength then
+        return nil, "invalid config header"
+    end
+
+    local nonceStart = 21
+    local payloadStart = nonceStart + nonceLength
+    if payloadStart - 1 + payloadLength ~= #value then
+        return nil, "invalid config length"
+    end
+
+    local nonce = string.sub(value, nonceStart, payloadStart - 1)
+    local encrypted = string.sub(value, payloadStart)
+    local encoded = xorTransform(encrypted, configKey(nonce))
+    local json, decodeError = base64Decode(encoded)
+    if not json then return nil, decodeError end
+    if checksumValue(json) ~= expected then
+        return nil, "config integrity check failed"
+    end
+    return json, nil, false
 end
 
 local function fileSupport()
@@ -3888,9 +3964,10 @@ function Library:LoadConfigFile(name)
         local json
         local legacy = false
         if pathExists(encryptedPath) then
-            local decodeError
-            json, decodeError = decodeConfig(readfile(encryptedPath))
+            local decodeError, upgrade
+            json, decodeError, upgrade = decodeConfig(readfile(encryptedPath))
             if not json then error(decodeError, 0) end
+            legacy = upgrade == true
         elseif pathExists(legacyPath) then
             json = readfile(legacyPath)
             legacy = true
