@@ -353,7 +353,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "3.2.0",
+    Version = "3.3.0",
     Flags = {},
     Elements = {},
     Themes = themes,
@@ -3431,7 +3431,7 @@ function Library:Dialog(opts)
     return {Object = shade, Close = close}
 end
 
-local function serialize(value)
+local function serialize(value, seen)
     if typeof(value) == "Color3" then
         return {__type = "Color3", R = value.R, G = value.G, B = value.B}
     end
@@ -3439,12 +3439,47 @@ local function serialize(value)
         return {__type = "Key", Name = value.Name}
     end
     if type(value) == "table" then
+        seen = seen or {}
+        if seen[value] then error("config contains a recursive table", 2) end
+        seen[value] = true
+
         local indices = {}
-        for key, flagValue in pairs(value) do
-            if type(key) == "number" and flagValue then indices[#indices + 1] = key end
+        local isSet = next(value) ~= nil
+        for key, item in pairs(value) do
+            if type(key) ~= "number" or key < 1 or key % 1 ~= 0 or item ~= true then
+                isSet = false
+                break
+            end
+            indices[#indices + 1] = key
         end
-        table.sort(indices)
-        return {__type = "Set", Values = indices}
+        if isSet then
+            table.sort(indices)
+            seen[value] = nil
+            return {__type = "Set", Values = indices}
+        end
+
+        local count, maximum, isArray = 0, 0, true
+        for key in pairs(value) do
+            if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+                isArray = false
+                break
+            end
+            count = count + 1
+            maximum = math.max(maximum, key)
+        end
+        if isArray and count == maximum then
+            local values = {}
+            for index = 1, maximum do values[index] = serialize(value[index], seen) end
+            seen[value] = nil
+            return {__type = "Array", Values = values}
+        end
+
+        local entries = {}
+        for key, item in pairs(value) do
+            entries[#entries + 1] = {Key = serialize(key, seen), Value = serialize(item, seen)}
+        end
+        seen[value] = nil
+        return {__type = "Map", Entries = entries}
     end
     return value
 end
@@ -3459,7 +3494,21 @@ local function deserialize(value)
             local set = {}
             for _, index in ipairs(value.Values or {}) do set[index] = true end
             return set
+        elseif value.__type == "Array" then
+            local array = {}
+            for index, item in ipairs(value.Values or {}) do array[index] = deserialize(item) end
+            return array
+        elseif value.__type == "Map" then
+            local map = {}
+            for _, entry in ipairs(value.Entries or {}) do
+                map[deserialize(entry.Key)] = deserialize(entry.Value)
+            end
+            return map
         end
+
+        local copy = {}
+        for key, item in pairs(value) do copy[key] = deserialize(item) end
+        return copy
     end
     return value
 end
@@ -3536,6 +3585,17 @@ end
 local ROOT = "WolfUi"
 local LEGACY_ROOT = "WolfLib"
 local scriptFolder = "Default"
+local CONFIG_EXTENSION = ".wcfg"
+local LEGACY_CONFIG_EXTENSION = ".json"
+local CONFIG_PREFIX = "WOLFUI_CFG"
+local CONFIG_FORMAT_VERSION = "1"
+local CONFIG_SECRET = "W0lfUi::Config::3.3::x9K2mQ7pL4sN8vR5"
+local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local BASE64_LOOKUP = {}
+
+for index = 1, #BASE64_ALPHABET do
+    BASE64_LOOKUP[string.sub(BASE64_ALPHABET, index, index)] = index - 1
+end
 
 local function safeName(value)
     local name = string.gsub(tostring(value or ""), "[^%w%-%. ]", "_")
@@ -3545,12 +3605,148 @@ local function safeName(value)
     return string.sub(name, 1, 40)
 end
 
+local function checksum(value)
+    local first, second = 1, 0
+    for index = 1, #value do
+        first = (first + string.byte(value, index)) % 65521
+        second = (second + first) % 65521
+    end
+    return string.format("%08x", second * 65536 + first)
+end
+
+local function xorByte(left, right)
+    local result, place = 0, 1
+    for _ = 1, 8 do
+        if left % 2 ~= right % 2 then result = result + place end
+        left = math.floor(left / 2)
+        right = math.floor(right / 2)
+        place = place * 2
+    end
+    return result
+end
+
+local function xorTransform(value, key)
+    assert(type(key) == "string" and #key > 0, "config key is empty")
+    local output = {}
+    for index = 1, #value do
+        local keyIndex = ((index - 1) % #key) + 1
+        output[index] = string.char(xorByte(string.byte(value, index), string.byte(key, keyIndex)))
+    end
+    return table.concat(output)
+end
+
+local function base64Encode(value)
+    local output = {}
+    for index = 1, #value, 3 do
+        local first = string.byte(value, index)
+        local second = string.byte(value, index + 1) or 0
+        local third = string.byte(value, index + 2) or 0
+        local packed = first * 65536 + second * 256 + third
+
+        output[#output + 1] = string.sub(BASE64_ALPHABET, math.floor(packed / 262144) % 64 + 1,
+            math.floor(packed / 262144) % 64 + 1)
+        output[#output + 1] = string.sub(BASE64_ALPHABET, math.floor(packed / 4096) % 64 + 1,
+            math.floor(packed / 4096) % 64 + 1)
+        output[#output + 1] = index + 1 <= #value
+            and string.sub(BASE64_ALPHABET, math.floor(packed / 64) % 64 + 1,
+                math.floor(packed / 64) % 64 + 1) or "="
+        output[#output + 1] = index + 2 <= #value
+            and string.sub(BASE64_ALPHABET, packed % 64 + 1, packed % 64 + 1) or "="
+    end
+    return table.concat(output)
+end
+
+local function base64Decode(value)
+    if type(value) ~= "string" or #value % 4 ~= 0 then
+        return nil, "invalid base64 length"
+    end
+
+    local output = {}
+    for index = 1, #value, 4 do
+        local first = string.sub(value, index, index)
+        local second = string.sub(value, index + 1, index + 1)
+        local third = string.sub(value, index + 2, index + 2)
+        local fourth = string.sub(value, index + 3, index + 3)
+        local a, b = BASE64_LOOKUP[first], BASE64_LOOKUP[second]
+        local c = third == "=" and 0 or BASE64_LOOKUP[third]
+        local d = fourth == "=" and 0 or BASE64_LOOKUP[fourth]
+
+        if a == nil or b == nil or c == nil or d == nil then
+            return nil, "invalid base64 data"
+        end
+        if third == "=" and fourth ~= "=" then
+            return nil, "invalid base64 padding"
+        end
+        if (third == "=" or fourth == "=") and index + 3 ~= #value then
+            return nil, "invalid base64 padding"
+        end
+
+        local packed = a * 262144 + b * 4096 + c * 64 + d
+        output[#output + 1] = string.char(math.floor(packed / 65536) % 256)
+        if third ~= "=" then output[#output + 1] = string.char(math.floor(packed / 256) % 256) end
+        if fourth ~= "=" then output[#output + 1] = string.char(packed % 256) end
+    end
+    return table.concat(output)
+end
+
+local function createNonce()
+    local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
+    if ok and type(guid) == "string" then
+        return string.gsub(guid, "%-", "")
+    end
+    local source = tostring(os.clock()) .. ":" .. tostring(math.random()) .. ":" .. tostring({})
+    return checksum(source) .. checksum(string.reverse(source))
+end
+
+local function configKey(nonce)
+    return CONFIG_SECRET .. "\0" .. scriptFolder .. "\0" .. nonce
+end
+
+local function encodeConfig(json)
+    local nonce = createNonce()
+    local encrypted = xorTransform(json, configKey(nonce))
+    return table.concat({
+        CONFIG_PREFIX,
+        CONFIG_FORMAT_VERSION,
+        nonce,
+        checksum(json),
+        base64Encode(encrypted),
+    }, ":")
+end
+
+local function decodeConfig(value)
+    if type(value) ~= "string" then return nil, "config data is not a string" end
+    local version, nonce, expected, payload = string.match(value,
+        "^" .. CONFIG_PREFIX .. ":([^:]+):([^:]+):([%x]+):([A-Za-z0-9+/=]+)$")
+    if not version then return nil, "unknown or damaged config format" end
+    if version ~= CONFIG_FORMAT_VERSION then return nil, "unsupported config version: " .. version end
+
+    local encrypted, decodeError = base64Decode(payload)
+    if not encrypted then return nil, decodeError end
+    local json = xorTransform(encrypted, configKey(nonce))
+    if checksum(json) ~= string.lower(expected) then
+        return nil, "config integrity check failed"
+    end
+    return json
+end
+
 local function fileSupport()
     return type(writefile) == "function" and type(readfile) == "function"
 end
 
 local function folderSupport()
     return type(isfolder) == "function" and type(makefolder) == "function"
+end
+
+local function pathExists(path)
+    if type(isfile) == "function" then
+        local ok, exists = pcall(isfile, path)
+        if ok then return exists end
+    end
+    if type(readfile) == "function" then
+        return pcall(readfile, path)
+    end
+    return false
 end
 
 local function ensureFolder(path)
@@ -3572,13 +3768,36 @@ local function migrateLegacy(target)
     pcall(function()
         if folderSupport() and not isfolder(LEGACY_ROOT) then return end
         for _, path in ipairs(listfiles(LEGACY_ROOT)) do
-            local name = string.match(path, "([^/\\]+%.json)$")
+            local name = string.match(path, "([^/\\]+)%.json$")
             if name then
-                local destination = target .. "/" .. name
-                local exists = type(isfile) == "function" and isfile(destination)
-                if not exists then
-                    writefile(destination, readfile(path))
-                end
+                pcall(function()
+                    local destination = target .. "/" .. name .. CONFIG_EXTENSION
+                    if not pathExists(destination) then
+                        local json = readfile(path)
+                        HttpService:JSONDecode(json)
+                        writefile(destination, encodeConfig(json))
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+local function migratePlainConfigs(target)
+    if not fileSupport() or type(listfiles) ~= "function" then return end
+    pcall(function()
+        for _, path in ipairs(listfiles(target)) do
+            local name = string.match(path, "([^/\\]+)%.json$")
+            if name then
+                pcall(function()
+                    local destination = target .. "/" .. name .. CONFIG_EXTENSION
+                    if not pathExists(destination) then
+                        local json = readfile(path)
+                        HttpService:JSONDecode(json)
+                        writefile(destination, encodeConfig(json))
+                        if type(delfile) == "function" then pcall(delfile, path) end
+                    end
+                end)
             end
         end
     end)
@@ -3591,6 +3810,7 @@ function Library:SetScriptName(value)
     self.ConfigFolder = self.Folder .. "/configs"
     if ensureFolder(self.ConfigFolder) then
         migrateLegacy(self.ConfigFolder)
+        migratePlainConfigs(self.ConfigFolder)
     end
     return self.Folder
 end
@@ -3644,31 +3864,60 @@ end
 function Library:SaveConfigFile(name)
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
+    local base = safeName(name or "default")
     local ok, err = pcall(function()
-        ensureFolder(folder)
-        writefile(folder .. "/" .. safeName(name or "default") .. ".json",
-            HttpService:JSONEncode(self:GetConfig()))
+        if not ensureFolder(folder) then error("cannot create config folder", 0) end
+        local json = HttpService:JSONEncode(self:GetConfig())
+        writefile(folder .. "/" .. base .. CONFIG_EXTENSION, encodeConfig(json))
+
+        local legacyPath = folder .. "/" .. base .. LEGACY_CONFIG_EXTENSION
+        if type(delfile) == "function" and pathExists(legacyPath) then
+            pcall(delfile, legacyPath)
+        end
     end)
     return ok, err
 end
 
 function Library:LoadConfigFile(name)
     if not fileSupport() then return false, "executor has no file API" end
-    local path = self:GetConfigFolder() .. "/" .. safeName(name or "default") .. ".json"
-    local ok, result = pcall(function()
-        return HttpService:JSONDecode(readfile(path))
+    local folder = self:GetConfigFolder()
+    local base = safeName(name or "default")
+    local encryptedPath = folder .. "/" .. base .. CONFIG_EXTENSION
+    local legacyPath = folder .. "/" .. base .. LEGACY_CONFIG_EXTENSION
+    local ok, result, wasLegacy = pcall(function()
+        local json
+        local legacy = false
+        if pathExists(encryptedPath) then
+            local decodeError
+            json, decodeError = decodeConfig(readfile(encryptedPath))
+            if not json then error(decodeError, 0) end
+        elseif pathExists(legacyPath) then
+            json = readfile(legacyPath)
+            legacy = true
+        else
+            error("config not found: " .. base, 0)
+        end
+        return HttpService:JSONDecode(json), legacy
     end)
     if not ok then return false, result end
-    return self:LoadConfig(result)
+    local applyOk, loaded, loadError = pcall(self.LoadConfig, self, result)
+    if not applyOk then return false, loaded end
+    if loaded and wasLegacy then self:SaveConfigFile(base) end
+    return loaded, loadError
 end
 
 function Library:ListConfigs()
     local names = {}
+    local seen = {}
     if type(listfiles) ~= "function" then return names end
     pcall(function()
         for _, path in ipairs(listfiles(self:GetConfigFolder())) do
-            local name = string.match(path, "([^/\\]+)%.json$")
-            if name then names[#names + 1] = name end
+            local name = string.match(path, "([^/\\]+)%.wcfg$")
+                or string.match(path, "([^/\\]+)%.json$")
+            if name and not seen[name] then
+                seen[name] = true
+                names[#names + 1] = name
+            end
         end
     end)
     table.sort(names)
@@ -3677,8 +3926,18 @@ end
 
 function Library:DeleteConfigFile(name)
     if type(delfile) ~= "function" then return false, "executor has no delfile" end
-    return pcall(delfile,
-        self:GetConfigFolder() .. "/" .. safeName(name or "default") .. ".json")
+    local folder = self:GetConfigFolder()
+    local base = safeName(name or "default")
+    local deleted, lastError = false, nil
+    for _, extension in ipairs({CONFIG_EXTENSION, LEGACY_CONFIG_EXTENSION}) do
+        local path = folder .. "/" .. base .. extension
+        if pathExists(path) then
+            local ok, err = pcall(delfile, path)
+            if ok then deleted = true else lastError = err end
+        end
+    end
+    if deleted then return true end
+    return false, lastError or ("config not found: " .. base)
 end
 
 function Library:Unload()
@@ -3703,135 +3962,9 @@ function Library:Unload()
     changeListeners = {}
 end
 
-function Library:Demo()
-    local window = self:CreateWindow({Name = "Wolf", Icon = {"dog", "paw-print", "moon"}, Folder = "Demo"})
-
-    local assist = window:CreateTab({Name = "ASSIST", Icon = {"crosshair", "target"}})
-    assist:AddSection("Aimbot")
-    assist:AddToggle({
-        Name = "Enable aimbot", Description = "Тумблер со всеми аддонами",
-        Flag = "demo_aim", Default = true, Width = 0.5,
-        Tooltip = "Палитра, бинд, шестерёнка и кнопка на экране",
-        ColorPicker = {Flag = "demo_aim_color"},
-        Keybind = Enum.KeyCode.E,
-        MiniButton = {Icon = {"crosshair", "target"}, Text = "AIM"},
-        Settings = {
-            Width = 240,
-            Build = function(menu)
-                menu:AddSlider({Name = "Smoothness", Flag = "demo_aim_smooth",
-                    Min = 1, Max = 100, Default = 35})
-                menu:AddSegmented({Name = "Часть тела", Flag = "demo_aim_part",
-                    Options = {"Head", "Torso", "Ближайшая"}})
-                menu:AddToggle({Name = "Только видимых", Flag = "demo_aim_visible", Default = true})
-                menu:AddColorPicker({Name = "Цвет FOV", Flag = "demo_aim_fov_color"})
-            end,
-        },
-    })
-    assist:AddToggle({Name = "Silent aim", Flag = "demo_silent", Width = 0.5})
-    assist:AddSlider({
-        Name = "Field of view", Flag = "demo_fov",
-        Min = 0, Max = 500, Default = 120, Suffix = " px", Width = 0.5,
-    })
-    assist:AddStepper({
-        Name = "Hit chance", Flag = "demo_chance",
-        Min = 0, Max = 100, Step = 5, Default = 85, Suffix = " %", Width = 0.5,
-    })
-    assist:AddDropdown({
-        Name = "Target part", Flag = "demo_part",
-        Options = {"Head", "Torso", "Nearest"}, Default = "Head", Width = 0.5,
-    })
-    assist:AddPlayerDropdown({Name = "Приоритет", Flag = "demo_priority", Width = 0.5})
-    assist:AddSection("Быстрый доступ")
-    assist:AddMiniButton({
-        Name = "Кнопка на экране", Flag = "demo_mini",
-        Icon = {"zap", "circle"}, Text = "GO", Mode = "Action", Width = 0.5,
-        Callback = function()
-            Library:Notify({Title = "Mini", Text = "Нажата плавающая кнопка"})
-        end,
-    })
-    assist:AddSettings({
-        Name = "Настройки предсказания", Width = 0.5,
-        Build = function(menu)
-            menu:AddSlider({Name = "Prediction", Flag = "demo_pred",
-                Min = 0, Max = 1, Default = 0.14, Decimals = 2})
-            menu:AddToggle({Name = "Учитывать пинг", Flag = "demo_pred_ping", Default = true})
-        end,
-    })
-
-    local visuals = window:CreateTab({Name = "VISUALS", Icon = {"eye", "scan-eye"}})
-    visuals:AddSection("ESP")
-    visuals:AddToggle({
-        Name = "Boxes", Flag = "demo_boxes", Default = true, Width = 0.5,
-        MiniButton = {Icon = {"square", "box"}, Text = "BOX"},
-        Settings = {Build = function(menu)
-            menu:AddSegmented({Name = "Вид", Flag = "demo_box_kind", Options = {"2D", "Corner"}})
-            menu:AddSlider({Name = "Толщина", Flag = "demo_box_thick", Min = 1, Max = 5, Default = 2})
-        end},
-    })
-    visuals:AddToggle({Name = "Names", Flag = "demo_names", Width = 0.5})
-    visuals:AddColorPicker({
-        Name = "Box color", Flag = "demo_box_color",
-        Default = Color3.fromRGB(126, 139, 209),
-    })
-    visuals:AddKeybind({Name = "Toggle ESP", Flag = "demo_esp_key", Default = Enum.KeyCode.X, Width = 0.5})
-    visuals:AddProgressBar({Name = "Загрузка моделей", Flag = "demo_progress", Default = 0.6, Width = 0.5})
-    visuals:AddList({Name = "Белый список ников", Flag = "demo_whitelist", Items = {"Nick1"}})
-
-    local misc = window:CreateTab({Name = "MISC", Icon = {"settings", "sliders-horizontal"}})
-    misc:AddParagraph({
-        Name = "Это демо",
-        Text = "Библиотека загрузилась и работает. RightShift — скрыть/показать меню, " ..
-            "F1/F2 — масштаб. Мини-кнопки на экране можно тащить, короткий тап — нажатие. " ..
-            "Шестерёнка рядом с пунктом открывает его настройки.",
-    })
-    misc:AddTextBox({Name = "Ник", Placeholder = "введите текст", ShowName = true, Width = 0.5})
-    misc:AddSegmented({Name = "Открывать меню", Flag = "demo_open_mode",
-        Options = {"Кнопкой", "Ватермаркой", "Тап по центру"}, Width = 0.5,
-        Callback = function(_, index)
-            Library:SetOpenMode({Mode = (index == 1 and "button")
-                or (index == 2 and "watermark") or "center"})
-        end,
-    })
-    misc:AddSlider({
-        Name = "Прозрачность ватермарки", Flag = "demo_wm_alpha",
-        Min = 0, Max = 1, Default = 0, Decimals = 2, Width = 0.5,
-        Callback = function(value) Library:SetWatermark({Transparency = value}) end,
-    })
-    misc:AddButton({
-        Name = "Уведомление", Text = "Показать", Width = 0.5,
-        MiniButton = {Icon = {"bell"}, Text = "MSG"},
-        Callback = function()
-            Library:Notify({
-                Title = "WolfLib",
-                Text = "Всё работает, версия " .. tostring(Library.Version),
-                Duration = 4,
-            })
-        end,
-    })
-    misc:AddButton({
-        Name = "Диалог", Text = "Спросить", Compact = true, Width = 0.5,
-        Callback = function()
-            Library:Dialog({
-                Title = "Выгрузить меню?",
-                Text = "Меню будет закрыто и удалено.",
-                Confirm = function() Library:Unload() end,
-            })
-        end,
-    })
-    misc:AddConfigManager({Name = "Configs"})
-
-    self:SetWatermark({
-        Text = "WolfLib " .. tostring(self.Version),
-        ShowFPS = true, ShowPing = true, AlwaysVisible = true,
-    })
-    self:Notify({Title = "WolfLib", Text = "Демо-меню создано", Duration = 5})
-    return window
-end
-
 pcall(function()
     print("[WolfLib] v" .. tostring(Library.Version) ..
-        " загружена. Это библиотека, меню появится после Library:CreateWindow(...)." ..
-        " Быстрая проверка: Library:Demo()")
+        " загружена. Меню появится после Library:CreateWindow(...).")
 end)
 
 Library.Runtime = Runtime
