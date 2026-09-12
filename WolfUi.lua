@@ -150,12 +150,48 @@ local function connect(signal, callback)
     return connection
 end
 
-local function step(callback)
-    Runtime.Updates[#Runtime.Updates + 1] = callback
+local function isRendered(object)
+    if not object or not object.Parent then return false end
+    local current = object
+    while current do
+        if current:IsA("GuiObject") and not current.Visible then return false end
+        if current:IsA("LayerCollector") and not current.Enabled then return false end
+        current = current.Parent
+    end
+    return true
 end
 
-local function overlayStep(callback)
-    Runtime.Overlay[#Runtime.Overlay + 1] = callback
+local function addUpdate(collection, callback, object)
+    local update = {Callback = callback, Object = object}
+    collection[#collection + 1] = update
+    return update
+end
+
+local function step(callback, object)
+    return addUpdate(Runtime.Updates, callback, object)
+end
+
+local function overlayStep(callback, object)
+    return addUpdate(Runtime.Overlay, callback, object)
+end
+
+local function runUpdates(collection, dt, k)
+    local count = #collection
+    local writeIndex = 1
+    for readIndex = 1, count do
+        local update = collection[readIndex]
+        local object = update.Object
+        if not object or object.Parent then
+            collection[writeIndex] = update
+            writeIndex = writeIndex + 1
+            if not object or isRendered(object) then
+                update.Callback(dt, k)
+            end
+        end
+    end
+    for index = count, writeIndex, -1 do
+        collection[index] = nil
+    end
 end
 
 local function approach(a, b, k)
@@ -171,38 +207,8 @@ local function roundPixel(value)
     return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
 end
 
-local fadeValues = setmetatable({}, {__mode = "k"})
-local function restoreFades()
-    for object, values in pairs(fadeValues) do
-        if object.Parent then
-            for property, value in pairs(values) do object[property] = value end
-        end
-        fadeValues[object] = nil
-    end
-end
 local function fadeGroup(root, alpha)
-    if alpha >= 1 then return end
-    local objects = root:GetDescendants()
-    objects[#objects + 1] = root
-    for _, object in ipairs(objects) do
-        local properties = {}
-        if object:IsA("GuiObject") then properties[#properties + 1] = "BackgroundTransparency" end
-        if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
-            properties[#properties + 1] = "TextTransparency"
-            properties[#properties + 1] = "TextStrokeTransparency"
-        elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
-            properties[#properties + 1] = "ImageTransparency"
-        elseif object:IsA("UIStroke") then properties[#properties + 1] = "Transparency" end
-        if object:IsA("ScrollingFrame") then properties[#properties + 1] = "ScrollBarImageTransparency" end
-        if #properties > 0 then
-            local values = fadeValues[object] or {}
-            for _, property in ipairs(properties) do
-                if values[property] == nil then values[property] = object[property] end
-                object[property] = 1 - (1 - object[property]) * alpha
-            end
-            fadeValues[object] = values
-        end
-    end
+    root.GroupTransparency = math.clamp(1 - alpha, 0, 1)
 end
 
 local function new(class, parent, props)
@@ -333,13 +339,13 @@ local accent = Color3.fromRGB(126, 139, 209)
 
 local function paint(object, index)
     object.BackgroundColor3 = palette[index]
-    step(function() object.BackgroundColor3 = palette[index] end)
+    step(function() object.BackgroundColor3 = palette[index] end, object)
     return object
 end
 
 local function muted(parent, value, x, y, w, h, size, align, opts)
     local api = text(parent, value, x, y, w, h, size, palette[3], align, opts)
-    step(function() api:Color(palette[3]) end)
+    step(function() api:Color(palette[3]) end, api.Object)
     return api
 end
 
@@ -357,7 +363,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "4.0.0",
+    Version = "4.0.1",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -428,19 +434,22 @@ function Library:SetFadeAnimations(enabled, duration)
     self.FadeAnimations = enabled == true
     if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.16, 0.05, 2) end
     if not self.FadeAnimations then
-        restoreFades()
         local window = self.Window
         if window then
             window.Alpha = window.Visible and 1 or 0
             window.Frame.Visible = window.Visible
             window.PopupLayer.Visible = window.Visible
+            fadeGroup(window.Frame, window.Alpha)
+            fadeGroup(window.PopupLayer, window.Alpha)
             for _, tab in ipairs(window.TabList) do
                 tab.Alpha = window.Current == tab and 1 or 0
                 tab.Page.Visible = tab.Alpha == 1
+                fadeGroup(tab.Page, tab.Alpha)
             end
             for _, pop in ipairs(window.Popups) do
                 pop.Alpha = pop:IsActive() and 1 or 0
                 pop.Object.Visible = pop.Alpha == 1 and pop.Anchor ~= nil
+                fadeGroup(pop.Object, pop.Alpha)
             end
         end
     end
@@ -589,7 +598,7 @@ local Window = {}
 Window.__index = Window
 
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
-    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "Frame")
+    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "CanvasGroup")
     object.Name = "Popup"
     object.Visible = false
     object.Active = true
@@ -714,7 +723,7 @@ function Library:CreateWindow(opts)
     window.TabChanged = new("BindableEvent", events, {Name = "TabChanged"})
     window.ButtonPressed = new("BindableEvent", events, {Name = "ButtonPressed"})
 
-    local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5), 1)
+    local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5, "CanvasGroup"), 1)
     frame.Name = "Window"
     frame.Active = true
     frame.ClipsDescendants = true
@@ -723,7 +732,7 @@ function Library:CreateWindow(opts)
     local scale = new("UIScale", frame, {Scale = 1})
     window.UIScale = scale
 
-    local popupLayer = transparent(gui, 0, 0, WINDOW_W, WINDOW_H)
+    local popupLayer = transparent(gui, 0, 0, WINDOW_W, WINDOW_H, "CanvasGroup")
     popupLayer.Name = "Popups"
     popupLayer.ZIndex = 10
     window.PopupLayer = popupLayer
@@ -832,7 +841,7 @@ function Library:CreateWindow(opts)
     step(function()
         logoIcon:Color(accent)
         logoIcon:Alpha(state.AccentAlpha)
-    end)
+    end, logoHit)
 
     window.LogoIcon = logoIcon
     window.Icon = opts.Icon or {"dog", "paw-print", "moon"}
@@ -878,7 +887,7 @@ function Library:CreateWindow(opts)
         Active = true,
     })
     window.Scroll = scroll
-    step(function() scroll.ScrollBarImageColor3 = palette[4] end)
+    step(function() scroll.ScrollBarImageColor3 = palette[4] end, scroll)
 
     local rail = transparent(frame, WINDOW_W - RAIL_W, 0, RAIL_W, WINDOW_H)
     rail.Name = "Rail"
@@ -916,7 +925,7 @@ function Library:CreateWindow(opts)
         step(function(dt, k)
             tint = tint:Lerp(hover and white or palette[3], k)
             icon:Color(tint)
-        end)
+        end, hit)
         if config.Callback then
             connect(hit.Activated, function() config.Callback(hit) end)
         end
@@ -960,13 +969,12 @@ function Library:CreateWindow(opts)
             connect(button.MouseEnter, function() hover = true end)
             connect(button.MouseLeave, function() hover = false end)
             step(function(dt, k)
-                if not button.Parent then return end
                 local active = state.Scale == option
                 a = approach(a, active and 1 or 0, k)
                 button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 1 or 0)
                 tint = tint:Lerp(active and white or palette[3], k)
                 caption:Color(tint)
-            end)
+            end, button)
             scaleButtons[#scaleButtons + 1] = button
         end
         scaleHolder.Size = UDim2.fromOffset(180, rows * 40 - 9)
@@ -993,7 +1001,7 @@ function Library:CreateWindow(opts)
         local dock = window.MiniDock
         local x, y, columnWidth = dock.X, dock.Y, 0
         for _, mini in ipairs(window.Mini) do
-            if not mini.Destroyed then
+            if not mini.Destroyed and mini.Enabled then
                 local width, height = mini.Width, mini.Height
                 do
                     if y > dock.Y and y + height > viewport.Y - MINI_MARGIN then
@@ -1019,7 +1027,6 @@ function Library:CreateWindow(opts)
         end
     end
     window.LayoutMini = layoutMini
-    overlayStep(layoutMini)
 
     local reopen = rect(miniLayer, 8, 8, 32, 32, palette[2], 5, "TextButton")
     reopen.Name = "Open"
@@ -1295,7 +1302,6 @@ function Library:CreateWindow(opts)
 
     connect(RunService.RenderStepped, function(dt)
         if not Runtime.Alive then return end
-        restoreFades()
         dt = math.min(dt, 0.1)
         local k = motionFactor(18, dt)
 
@@ -1318,11 +1324,12 @@ function Library:CreateWindow(opts)
         end
 
         local camera = workspace.CurrentCamera
-        if camera and camera.ViewportSize ~= window.Viewport then layout() end
-
-        for _, update in ipairs(Runtime.Overlay) do
-            update(dt, k)
+        if camera and camera.ViewportSize ~= window.Viewport then
+            layout()
+            window.LayoutMini()
         end
+
+        runUpdates(Runtime.Overlay, dt, k)
 
         for index = #window.Notifications, 1, -1 do
             local notif = window.Notifications[index]
@@ -1351,9 +1358,7 @@ function Library:CreateWindow(opts)
         window.PopupLayer.Visible = frame.Visible
         if not frame.Visible then return end
 
-        for _, update in ipairs(Runtime.Updates) do
-            update(dt, k)
-        end
+        runUpdates(Runtime.Updates, dt, k)
 
         for _, tab in ipairs(window.TabList) do
             local active = window.Current == tab
@@ -1368,28 +1373,34 @@ function Library:CreateWindow(opts)
 
         for _, pop in ipairs(window.Popups) do
             local show = pop:IsActive()
-            pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, dt)
-            if pop.AnimateHeight then
-                pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, dt))
-            else
-                pop.CurrentHeight = pop.Height
-            end
             local object = pop.Object
-            object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
-            object.Interactable = show and window.Visible
-            fadeGroup(object, pop.Alpha)
-            object.BackgroundColor3 = palette[1]
-            object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
-            if object.Visible then
-                local s = math.max(0.001, scale.Scale)
-                local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
-                local minX, minY = -window.Position.X / s, -window.Position.Y / s
-                local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
-                local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
-                object.Position = UDim2.fromOffset(
-                    roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
-                    roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
-                )
+            if not show and pop.Alpha == 0 then
+                object.Visible = false
+                object.Interactable = false
+                if pop.AnimateHeight then pop.CurrentHeight = 1 end
+            else
+                pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, dt)
+                if pop.AnimateHeight then
+                    pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, dt))
+                else
+                    pop.CurrentHeight = pop.Height
+                end
+                object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
+                object.Interactable = show and window.Visible
+                if object.Visible then
+                    fadeGroup(object, pop.Alpha)
+                    object.BackgroundColor3 = palette[1]
+                    object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
+                    local s = math.max(0.001, scale.Scale)
+                    local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
+                    local minX, minY = -window.Position.X / s, -window.Position.Y / s
+                    local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
+                    local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
+                    object.Position = UDim2.fromOffset(
+                        roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
+                        roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
+                    )
+                end
             end
         end
         fadeGroup(frame, window.Alpha)
@@ -1463,7 +1474,7 @@ function Window:CreateTab(opts)
     local name = opts.Name or ("Tab" .. tostring(#self.TabList + 1))
     local index = #self.TabList + 1
 
-    local page = new("Frame", self.Scroll, {
+    local page = new("CanvasGroup", self.Scroll, {
         Name = name,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
@@ -1508,7 +1519,7 @@ function Window:CreateTab(opts)
         title:Color(tint)
         icon:Alpha(1 - alpha * (1 - state.AccentAlpha))
         title:Alpha(1 - alpha * (1 - state.AccentAlpha))
-    end)
+    end, hit)
 
     tab.Button = hit
 
@@ -1662,13 +1673,17 @@ local function createMiniButton(window, config)
     function mini:Get() return self.Active end
     function mini:SetActive(value) self.Active = value and true or false end
     function mini:SetVisible(value)
-        self.Enabled = value and true or false
+        local enabled = value and true or false
+        if self.Enabled == enabled then return end
+        self.Enabled = enabled
         if not self.Enabled and window.Drag and window.Drag.Object == button then window.CancelDrag() end
+        window.LayoutMini()
     end
     function mini:SetSize(width, height)
         self.Width = math.max(24, math.floor(tonumber(width) or self.Width))
         self.Height = math.max(24, math.floor(tonumber(height) or tonumber(width) or self.Height))
         self.Size = math.min(self.Width, self.Height)
+        window.LayoutMini()
     end
     function mini:SetWidth(value) self:SetSize(value, self.Height) end
     function mini:SetHeight(value) self:SetSize(self.Width, value) end
@@ -1708,6 +1723,7 @@ local function createMiniButton(window, config)
             end
         end
         button:Destroy()
+        window.LayoutMini()
     end
 
     window.Floating(button, mini, function() mini:Press() end, function()
@@ -1754,8 +1770,7 @@ local function createMiniButton(window, config)
         if mini.Custom then window.MiniPositions[mini.Key] = {X = mini.Position.X, Y = mini.Position.Y} end
         button.Position = UDim2.fromOffset(math.floor(target.X + 0.5), math.floor(target.Y + 0.5))
     end
-    mini.Update = updateMini
-    overlayStep(updateMini)
+    mini.Update = overlayStep(updateMini)
     window.LayoutMini()
     updateMini(0, 1)
 
@@ -1850,7 +1865,7 @@ local function attachSettings(tab, parent, x, y, size, opts)
     step(function(dt, k)
         tint = tint:Lerp((hover or menu:IsOpen()) and white or palette[3], k)
         icon:Color(tint)
-    end)
+    end, anchor)
     if type(opts.Build) == "function" then
         opts.Build(menu)
     end
@@ -2136,7 +2151,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
             local hexText = "#" .. toHex(current)
             if hexBox.Text ~= hexText then hexBox.Text = hexText end
         end
-    end)
+    end, preview)
 
     Library.Flags[flag] = color
     if useAlpha then Library.Flags[flag .. ".Alpha"] = alphaValue end
@@ -2159,7 +2174,7 @@ function Tab:AddColorPicker(opts)
     api.Get = function(_) return picker:Get() end
     api.Set = function(_, color, alpha) picker:Set(color, alpha) end
     api.SetName = function(_, value) title:SetText(value) end
-    step(function(dt, k) title:Color(palette[3]:Lerp(white, 0.35)) end)
+    step(function() title:Color(palette[3]:Lerp(white, 0.35)) end, card)
     return api
 end
 
@@ -2206,7 +2221,7 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
         tint = tint:Lerp((hover or waiting) and white or palette[3], k)
         caption:Color(tint)
         button.BackgroundColor3 = palette[1]:Lerp(palette[4], waiting and 1 or 0)
-    end)
+    end, button)
 
     Library.Flags[flag] = key and keyName(key) or "NONE"
     Library.Elements[flag] = bind
@@ -2227,7 +2242,7 @@ function Tab:AddKeybind(opts)
     api.Get = function(_) return bind:Get() end
     api.Set = function(_, value) bind:Set(value) end
     api.SetName = function(_, value) title:SetText(value) end
-    step(function() title:Color(palette[3]:Lerp(white, 0.35)) end)
+    step(function() title:Color(palette[3]:Lerp(white, 0.35)) end, card)
     return api
 end
 
@@ -2251,9 +2266,12 @@ function Tab:AddToggle(opts)
         return edge
     end
 
+    local colorPicker, keybind, settings, mini
+
     local function push(fire)
         Library.Flags[flag] = value
         fireChange(flag, value)
+        if mini and mini.Config.ShowWhenActive then mini:SetVisible(value) end
         if fire and opts.Callback then task.spawn(opts.Callback, value) end
     end
 
@@ -2263,8 +2281,6 @@ function Tab:AddToggle(opts)
         push(not silent)
     end
     function api:Toggle() self:Set(not value) end
-
-    local colorPicker, keybind, settings, mini
 
     if opts.ColorPicker then
         local config = type(opts.ColorPicker) == "table" and opts.ColorPicker or {}
@@ -2304,9 +2320,7 @@ function Tab:AddToggle(opts)
         config.Enabled = config.Enabled ~= false
         mini = self.Window:AddMiniButton(config)
         if config.ShowWhenActive then
-
-            mini.Enabled = value
-            overlayStep(function() mini.Enabled = value end)
+            mini:SetVisible(value)
         end
     end
 
@@ -2325,7 +2339,7 @@ function Tab:AddToggle(opts)
         mark:Alpha(a)
         tint = tint:Lerp(value and white or palette[3], k)
         title:Color(tint)
-    end)
+    end, card)
 
     push(false)
     if opts.Callback and value then task.spawn(opts.Callback, value) end
@@ -2407,7 +2421,7 @@ local function makeSlider(tab, parent, x, y, w, opts)
         fill.BackgroundTransparency = 1 - state.AccentAlpha
         thumb.Position = UDim2.fromOffset(roundPixel(math.clamp((w - 20) * a, 5, w - 25) - 5), 0)
         valueLabel:SetText(string.format("%." .. tostring(decimals) .. "f", value) .. suffix)
-    end)
+    end, card)
 
     Library.Elements[flag] = api
     push(false)
@@ -2445,7 +2459,7 @@ function Tab:AddDropdown(opts)
     local preview = muted(control, "", 10, 0, controlW - 40, 31, 11)
     local arrow = iconLabel(control, {"chevron-down", "chevrons-down", "arrow-down"},
         controlW - 22, 11.5, 10, palette[3], "v")
-    step(function() arrow:Color(palette[3]) end)
+    step(function() arrow:Color(palette[3]) end, control)
 
     local ROW_H = 31
 
@@ -2561,7 +2575,7 @@ function Tab:AddDropdown(opts)
             entry.Mark:Color(accent)
             entry.Mark:Alpha(entry.Alpha * state.AccentAlpha)
         end
-    end)
+    end, pop.Object)
 
     connect(control.Activated, function() pop:Toggle(control) end)
 
@@ -2651,7 +2665,7 @@ function Tab:AddTextBox(opts)
     })
     step(function()
         box.PlaceholderColor3 = palette[3]
-    end)
+    end, box)
 
     local maxLength = math.max(0, math.floor(tonumber(opts.MaxLength) or 0))
     local api = baseApi(self, card, flag)
@@ -2761,7 +2775,7 @@ function Tab:AddButton(opts)
         end
         color = color:Lerp(target, math.min(1, 10 * dt))
         control.BackgroundColor3 = color
-    end)
+    end, control)
     return api
 end
 
@@ -2816,7 +2830,7 @@ function Tab:AddSettings(opts)
     local api = baseApi(self, card, nil)
     api.Menu = menu
     api.SetName = function(_, value) title:SetText(value) end
-    step(function() title:Color(palette[3]:Lerp(white, 0.35)) end)
+    step(function() title:Color(palette[3]:Lerp(white, 0.35)) end, card)
     return api
 end
 
@@ -2881,7 +2895,7 @@ function Tab:AddStepper(opts)
         minus.BackgroundColor3 = palette[4]:Lerp(palette[5], hoverMinus and 1 or 0)
         plus.BackgroundColor3 = palette[4]:Lerp(palette[5], hoverPlus and 1 or 0)
         title:Color(palette[3]:Lerp(white, 0.35))
-    end)
+    end, card)
 
     push(false)
     if opts.Callback then task.spawn(opts.Callback, value) end
@@ -2953,7 +2967,7 @@ function Tab:AddSegmented(opts)
                 :Lerp(accent, a * 0.55 * state.AccentAlpha)
             tint = tint:Lerp(active and white or palette[3], k)
             caption:Color(tint)
-        end)
+        end, cell)
         cells[index] = cell
     end
 
@@ -2997,7 +3011,7 @@ function Tab:AddProgressBar(opts)
         if opts.ShowPercent ~= false then
             valueLabel:SetText(tostring(math.floor(shown * 100 + 0.5)) .. "%")
         end
-    end)
+    end, card)
     return api
 end
 
@@ -3053,7 +3067,7 @@ function Tab:AddList(opts)
         Active = true,
         ZIndex = 2,
     })
-    step(function() holder.ScrollBarImageColor3 = palette[4] end)
+    step(function() holder.ScrollBarImageColor3 = palette[4] end, holder)
 
     local empty = muted(holder, opts.Empty or "empty", 10, 0, w - 40, ROW_H, 11)
 
@@ -3083,11 +3097,9 @@ function Tab:AddList(opts)
             connect(remove.MouseEnter, function() hover = true end)
             connect(remove.MouseLeave, function() hover = false end)
             step(function(dt, k)
-
-                if not row.Parent then return end
                 icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
                 caption:Color(white)
-            end)
+            end, row)
             rows[#rows + 1] = row
         end
         holder.CanvasSize = UDim2.fromOffset(0, #items * ROW_H)
@@ -3114,7 +3126,7 @@ function Tab:AddList(opts)
         step(function()
             box.BackgroundColor3 = palette[4]
             box.PlaceholderColor3 = palette[3]
-        end)
+        end, box)
         local add = paint(rect(card, w - 46, 28, 36, 31, palette[4], 3, "TextButton"), 4)
         local addIcon = iconLabel(add, {"plus"}, 12, 9, 13, white, "+")
         local function commit()
@@ -3136,7 +3148,7 @@ function Tab:AddList(opts)
         step(function()
             add.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 1 or 0)
             addIcon:Color(white)
-        end)
+        end, add)
     end
 
     function api:Get()
@@ -3331,7 +3343,7 @@ function Library:Notify(opts)
     local bounds = TextService:GetTextSize(body, 11, Enum.Font.Gotham, Vector2.new(width - 46, 10000))
     local height = (title and 26 or 10) + math.max(14, bounds.Y) + 10
 
-    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "Frame")
+    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "CanvasGroup")
     object.Name = "Notification"
     object.ClipsDescendants = true
 
@@ -3474,11 +3486,10 @@ function Library:Dialog(opts)
         connect(button.MouseEnter, function() hover = true end)
         connect(button.MouseLeave, function() hover = false end)
         overlayStep(function()
-            if not button.Parent then return end
             button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 1 or 0)
             caption:Color(white)
             card.BackgroundColor3 = palette[2]
-        end)
+        end, button)
         connect(button.Activated, function()
             close()
             if index == 1 and opts.Confirm then task.spawn(opts.Confirm) end
@@ -3842,7 +3853,6 @@ end
 
 function Library:Unload()
     Runtime.Alive = false
-    restoreFades()
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
     end
