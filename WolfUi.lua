@@ -123,17 +123,42 @@ local function iconData(name)
     return image, Vector2.new(offset[1], offset[2]), Vector2.new(size[1], size[2])
 end
 
-local function resolveIcon(names)
-    if type(names) == "number" then names = "rbxassetid://" .. tostring(names) end
-    if type(names) == "string" and (string.find(names, "://", 1, true) or string.match(names, "^%d+$")) then
-        return string.find(names, "://", 1, true) and names or "rbxassetid://" .. names, Vector2.zero, Vector2.zero
+local function directIcon(value)
+    if type(value) == "number" then
+        if value <= 0 then return nil end
+        return "rbxassetid://" .. tostring(math.floor(value))
     end
-    if type(names) == "string" then names = {names} end
-    for _, name in ipairs(names or {}) do
+    if type(value) ~= "string" then return nil end
+    local normalized = string.match(value, "^%s*(.-)%s*$")
+    if string.match(normalized, "^%d+$") then return "rbxassetid://" .. normalized end
+    if string.find(normalized, "://", 1, true) then return normalized end
+    return nil
+end
+
+local function resolveIcon(value)
+    if type(value) == "table" and (value.Id ~= nil or value.AssetId ~= nil or value.Image ~= nil
+        or value.Url ~= nil or value.URL ~= nil) then
+        local image = directIcon(value.Id or value.AssetId or value.Image or value.Url or value.URL)
+        if image then
+            local offset = typeof(value.RectOffset) == "Vector2" and value.RectOffset or Vector2.zero
+            local size = typeof(value.RectSize) == "Vector2" and value.RectSize or Vector2.zero
+            local tint = value.Tint == true
+            local color = typeof(value.Color) == "Color3" and value.Color or nil
+            return image, offset, size, tint, color
+        end
+    end
+
+    local image = directIcon(value)
+    if image then return image, Vector2.zero, Vector2.zero, false, nil end
+
+    local names = type(value) == "table" and value or {value}
+    for _, name in ipairs(names) do
+        local direct = directIcon(name)
+        if direct then return direct, Vector2.zero, Vector2.zero, false, nil end
         if type(name) == "string" then
             for _, variant in ipairs(nameVariants(name)) do
-                local image, offset, size = iconData(variant)
-                if image then return image, offset, size end
+                local atlasImage, offset, size = iconData(variant)
+                if atlasImage then return atlasImage, offset, size, true, nil end
             end
         end
     end
@@ -207,8 +232,73 @@ local function roundPixel(value)
     return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
 end
 
+local fadeValues = setmetatable({}, {__mode = "k"})
+local fadeCaches = setmetatable({}, {__mode = "k"})
+
+local function restoreFades()
+    for object, values in pairs(fadeValues) do
+        if object.Parent then
+            for property, value in pairs(values) do
+                object[property] = value
+            end
+        end
+        fadeValues[object] = nil
+    end
+end
+
+local function fadeProperties(object)
+    local properties = {}
+    if object:IsA("GuiObject") then properties[#properties + 1] = "BackgroundTransparency" end
+    if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+        properties[#properties + 1] = "TextTransparency"
+        properties[#properties + 1] = "TextStrokeTransparency"
+    elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
+        properties[#properties + 1] = "ImageTransparency"
+    elseif object:IsA("UIStroke") then
+        properties[#properties + 1] = "Transparency"
+    end
+    if object:IsA("ScrollingFrame") then
+        properties[#properties + 1] = "ScrollBarImageTransparency"
+    end
+    return properties
+end
+
+local function fadeTargets(root)
+    local cache = fadeCaches[root]
+    if not cache then
+        cache = {Dirty = true, Targets = {}}
+        fadeCaches[root] = cache
+        connect(root.DescendantAdded, function() cache.Dirty = true end)
+        connect(root.DescendantRemoving, function() cache.Dirty = true end)
+    end
+    if cache.Dirty then
+        local objects = root:GetDescendants()
+        objects[#objects + 1] = root
+        cache.Targets = {}
+        for _, object in ipairs(objects) do
+            local properties = fadeProperties(object)
+            if #properties > 0 then
+                cache.Targets[#cache.Targets + 1] = {Object = object, Properties = properties}
+            end
+        end
+        cache.Dirty = false
+    end
+    return cache.Targets
+end
+
 local function fadeGroup(root, alpha)
-    root.GroupTransparency = math.clamp(1 - alpha, 0, 1)
+    if alpha >= 1 then return end
+    for _, target in ipairs(fadeTargets(root)) do
+        local object = target.Object
+        if object == root or object.Parent then
+            local values = fadeValues[object] or {}
+            for _, property in ipairs(target.Properties) do
+                if values[property] == nil then values[property] = object[property] end
+                object[property] = 1 - (1 - object[property]) * alpha
+            end
+            fadeValues[object] = values
+        end
+    end
 end
 
 local function new(class, parent, props)
@@ -274,7 +364,7 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
 end
 
 local function iconLabel(parent, names, x, y, size, color, fallback)
-    local image, offset, sheetSize = resolveIcon(names)
+    local image, offset, sheetSize, tinted, customColor = resolveIcon(names)
     local object, isImage
     if image then
         isImage = true
@@ -285,7 +375,7 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
             Image = image,
             ImageRectOffset = offset,
             ImageRectSize = sheetSize,
-            ImageColor3 = color or white,
+            ImageColor3 = customColor or (tinted and (color or white) or white),
             ScaleType = Enum.ScaleType.Fit,
             ZIndex = 2,
         })
@@ -304,9 +394,13 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
             ZIndex = 2,
         })
     end
-    local api = {Object = object, IsImage = isImage}
+    local api = {Object = object, IsImage = isImage, Tinted = tinted == true}
     function api:Color(v)
-        if isImage then object.ImageColor3 = v else object.TextColor3 = v end
+        if isImage then
+            if self.Tinted then object.ImageColor3 = v end
+        else
+            object.TextColor3 = v
+        end
     end
     function api:Alpha(v)
         if isImage then object.ImageTransparency = 1 - v else object.TextTransparency = 1 - v end
@@ -316,7 +410,7 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
         replacement.Object.Position, replacement.Object.Size = object.Position, object.Size
         object:Destroy()
         object, isImage = replacement.Object, replacement.IsImage
-        self.Object, self.IsImage = object, isImage
+        self.Object, self.IsImage, self.Tinted = object, isImage, replacement.Tinted
     end
     return api
 end
@@ -363,7 +457,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "4.0.1",
+    Version = "4.1.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -434,22 +528,19 @@ function Library:SetFadeAnimations(enabled, duration)
     self.FadeAnimations = enabled == true
     if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.16, 0.05, 2) end
     if not self.FadeAnimations then
+        restoreFades()
         local window = self.Window
         if window then
             window.Alpha = window.Visible and 1 or 0
             window.Frame.Visible = window.Visible
             window.PopupLayer.Visible = window.Visible
-            fadeGroup(window.Frame, window.Alpha)
-            fadeGroup(window.PopupLayer, window.Alpha)
             for _, tab in ipairs(window.TabList) do
                 tab.Alpha = window.Current == tab and 1 or 0
                 tab.Page.Visible = tab.Alpha == 1
-                fadeGroup(tab.Page, tab.Alpha)
             end
             for _, pop in ipairs(window.Popups) do
                 pop.Alpha = pop:IsActive() and 1 or 0
                 pop.Object.Visible = pop.Alpha == 1 and pop.Anchor ~= nil
-                fadeGroup(pop.Object, pop.Alpha)
             end
         end
     end
@@ -598,7 +689,7 @@ local Window = {}
 Window.__index = Window
 
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
-    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "CanvasGroup")
+    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "Frame")
     object.Name = "Popup"
     object.Visible = false
     object.Active = true
@@ -671,6 +762,11 @@ function Library:CreateWindow(opts)
     Library.Theme, Library.Scale = state.Theme, state.Scale
     Library.Accent, Library.AccentAlpha = state.Accent, state.AccentAlpha
 
+    local defaultIcon = {"dog", "paw-print", "moon"}
+    local mainIcon = opts.MainIcon or opts.Icon or defaultIcon
+    local watermarkIconValue = opts.WatermarkIcon or mainIcon
+    local openIcon = opts.OpenIcon or opts.OpenButtonIcon or mainIcon
+
     local window = setmetatable({
         Visible = true,
         Alpha = 1,
@@ -723,7 +819,7 @@ function Library:CreateWindow(opts)
     window.TabChanged = new("BindableEvent", events, {Name = "TabChanged"})
     window.ButtonPressed = new("BindableEvent", events, {Name = "ButtonPressed"})
 
-    local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5, "CanvasGroup"), 1)
+    local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5, "Frame"), 1)
     frame.Name = "Window"
     frame.Active = true
     frame.ClipsDescendants = true
@@ -732,7 +828,7 @@ function Library:CreateWindow(opts)
     local scale = new("UIScale", frame, {Scale = 1})
     window.UIScale = scale
 
-    local popupLayer = transparent(gui, 0, 0, WINDOW_W, WINDOW_H, "CanvasGroup")
+    local popupLayer = transparent(gui, 0, 0, WINDOW_W, WINDOW_H, "Frame")
     popupLayer.Name = "Popups"
     popupLayer.ZIndex = 10
     window.PopupLayer = popupLayer
@@ -836,7 +932,7 @@ function Library:CreateWindow(opts)
     window.Sidebar = sidebar
 
     local logoHit = transparent(sidebar, 0, 0, SIDEBAR_W, TAB_SLOT, "TextButton")
-    local logoIcon = iconLabel(logoHit, opts.Icon or {"dog", "paw-print", "moon"},
+    local logoIcon = iconLabel(logoHit, mainIcon,
         (SIDEBAR_W - 22) / 2, 24, 22, accent, string.sub(opts.Name or "W", 1, 1))
     step(function()
         logoIcon:Color(accent)
@@ -844,7 +940,10 @@ function Library:CreateWindow(opts)
     end, logoHit)
 
     window.LogoIcon = logoIcon
-    window.Icon = opts.Icon or {"dog", "paw-print", "moon"}
+    window.Icon = mainIcon
+    window.MainIcon = mainIcon
+    window.WatermarkIconValue = watermarkIconValue
+    window.OpenIcon = openIcon
     window.IconFallback = string.sub(opts.Name or "W", 1, 1)
 
     local dragStart, windowStart
@@ -1033,7 +1132,7 @@ function Library:CreateWindow(opts)
     reopen.Visible = false
     reopen.ZIndex = 3
     local reopenStroke = new("UIStroke", reopen, {Color = palette[5], Thickness = 1, Transparency = 0.4})
-    local reopenIcon = iconLabel(reopen, opts.Icon or {"dog", "paw-print", "moon"}, 5, 5, 22, accent,
+    local reopenIcon = iconLabel(reopen, openIcon, 5, 5, 22, accent,
         string.sub(opts.Name or "W", 1, 1))
     window.Reopen = reopen
     window.ReopenIcon = reopenIcon
@@ -1043,7 +1142,7 @@ function Library:CreateWindow(opts)
     watermark.Visible = false
     watermark.ZIndex = 41
     local watermarkText = text(watermark, "", 28, 0, 144, 22, 11, white)
-    local watermarkIcon = iconLabel(watermark, window.Icon, 7, 3, 16, accent, window.IconFallback)
+    local watermarkIcon = iconLabel(watermark, watermarkIconValue, 7, 3, 16, accent, window.IconFallback)
     window.WatermarkIcon = watermarkIcon
     window.Watermark = watermark
     window.WatermarkText = watermarkText
@@ -1164,6 +1263,11 @@ function Library:CreateWindow(opts)
     end)
     connect(UIS.WindowFocusReleased, function() centerInput = nil; tapCount = 0 end)
 
+    local watermarkCaption = nil
+    local watermarkWidth = 160
+    local tooltipCaption = nil
+    local tooltipWidth = 0
+
     overlayStep(function(dt, k)
         local viewport = window.Viewport
         local oc = window.OpenConfig
@@ -1178,13 +1282,16 @@ function Library:CreateWindow(opts)
             if wm.ShowPing then parts[#parts + 1] = tostring(window.Ping) .. " ms" end
             if wm.ShowTime then parts[#parts + 1] = os.date("%H:%M:%S") end
             local caption = table.concat(parts, "  |  ")
-            watermarkText:SetText(caption)
-            local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 22))
-            local width = math.max(60, bounds.X + 38)
-            watermark.Size = UDim2.fromOffset(roundPixel(width), 22)
-            watermarkText:Width(math.max(40, bounds.X + 2))
+            if caption ~= watermarkCaption then
+                watermarkCaption = caption
+                watermarkText:SetText(caption)
+                local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 22))
+                watermarkWidth = math.max(60, bounds.X + 38)
+                watermark.Size = UDim2.fromOffset(roundPixel(watermarkWidth), 22)
+                watermarkText:Width(math.max(40, bounds.X + 2))
+            end
             local pos = Vector2.new(
-                math.clamp(wm.Position.X, 0, math.max(0, viewport.X - width)),
+                math.clamp(wm.Position.X, 0, math.max(0, viewport.X - watermarkWidth)),
                 math.clamp(wm.Position.Y, 0, math.max(0, viewport.Y - 22))
             )
             wm.Position = pos
@@ -1222,16 +1329,19 @@ function Library:CreateWindow(opts)
         if window.Visible and window.TooltipText and window.TooltipObject
             and window.TooltipObject.Parent then
             local caption = window.TooltipText
-            local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 20))
-            local width = bounds.X + 12
+            if caption ~= tooltipCaption then
+                tooltipCaption = caption
+                local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 20))
+                tooltipWidth = bounds.X + 12
+                tooltipText:SetText(caption)
+                tooltipText:Width(bounds.X + 2)
+                tooltip.Size = UDim2.fromOffset(roundPixel(tooltipWidth), 20)
+            end
             tooltip.Visible = true
-            tooltipText:SetText(caption)
-            tooltipText:Width(bounds.X + 2)
-            tooltip.Size = UDim2.fromOffset(roundPixel(width), 20)
             tooltip.BackgroundColor3 = palette[1]
             local origin = window.TooltipObject.AbsolutePosition
             tooltip.Position = UDim2.fromOffset(
-                math.clamp(origin.X, 0, math.max(0, viewport.X - width)),
+                math.clamp(origin.X, 0, math.max(0, viewport.X - tooltipWidth)),
                 math.clamp(origin.Y - 24, 0, math.max(0, viewport.Y - 20))
             )
         else
@@ -1302,6 +1412,7 @@ function Library:CreateWindow(opts)
 
     connect(RunService.RenderStepped, function(dt)
         if not Runtime.Alive then return end
+        restoreFades()
         dt = math.min(dt, 0.1)
         local k = motionFactor(18, dt)
 
@@ -1442,15 +1553,46 @@ function Window:SetScale(value, exact)
     return snapped
 end
 
-function Window:SetIcon(value)
+function Window:SetMainIcon(value)
     self.Icon = value
+    self.MainIcon = value
     self.LogoIcon:SetIcon(value)
-    self.ReopenIcon:SetIcon(value)
+    return value
+end
+
+function Window:SetWatermarkIcon(value)
+    self.WatermarkIconValue = value
     self.WatermarkIcon:SetIcon(value)
+    return value
+end
+
+function Window:SetOpenIcon(value)
+    self.OpenIcon = value
+    self.ReopenIcon:SetIcon(value)
+    return value
+end
+
+function Window:SetIcon(value)
+    self:SetMainIcon(value)
+    self:SetWatermarkIcon(value)
+    self:SetOpenIcon(value)
+    return value
+end
+
+function Library:SetMainIcon(value)
+    if self.Window then return self.Window:SetMainIcon(value) end
+end
+
+function Library:SetWatermarkIcon(value)
+    if self.Window then return self.Window:SetWatermarkIcon(value) end
+end
+
+function Library:SetOpenIcon(value)
+    if self.Window then return self.Window:SetOpenIcon(value) end
 end
 
 function Library:SetIcon(value)
-    if self.Window then self.Window:SetIcon(value) end
+    if self.Window then return self.Window:SetIcon(value) end
 end
 
 function Window:SetTheme(index)
@@ -1474,7 +1616,7 @@ function Window:CreateTab(opts)
     local name = opts.Name or ("Tab" .. tostring(#self.TabList + 1))
     local index = #self.TabList + 1
 
-    local page = new("CanvasGroup", self.Scroll, {
+    local page = new("Frame", self.Scroll, {
         Name = name,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
@@ -1799,6 +1941,7 @@ end
 local function createSubMenu(window, anchor, opts)
     opts = opts or {}
     local width = math.max(160, math.floor(tonumber(opts.Width) or 240))
+    local maxHeight = math.clamp(math.floor(tonumber(opts.MaxHeight) or SUB_MAX_HEIGHT), 120, 600)
     local pop = createPopup(window, anchor, width, 41, false, opts.ParentPopup)
     local holder = new("ScrollingFrame", pop.Object, {
         Name = "Body",
@@ -1832,7 +1975,7 @@ local function createSubMenu(window, anchor, opts)
 
     menu.OnResize = function(height)
         local total = math.max(31, height + PAD * 2)
-        local shown = math.min(SUB_MAX_HEIGHT, total)
+        local shown = math.min(maxHeight, total)
         pop.Height = shown
         holder.Size = UDim2.fromOffset(width, shown)
         holder.CanvasSize = UDim2.fromOffset(0, total)
@@ -1855,6 +1998,7 @@ local function attachSettings(tab, parent, x, y, size, opts)
         0, 0, size, palette[3], "*")
     local menu = createSubMenu(tab.Window, anchor, {
         Width = opts.Width,
+        MaxHeight = opts.MaxHeight,
         Name = opts.Name or "Settings",
         ParentPopup = tab.ParentPopup,
     })
@@ -1866,8 +2010,16 @@ local function attachSettings(tab, parent, x, y, size, opts)
         tint = tint:Lerp((hover or menu:IsOpen()) and white or palette[3], k)
         icon:Color(tint)
     end, anchor)
+    menu.Controls = {}
+    local function addElements(items)
+        if type(items) ~= "table" then return end
+        local controls = menu:AddElements(items)
+        for key, control in pairs(controls) do menu.Controls[key] = control end
+    end
+    addElements(opts.Items or opts.Elements)
     if type(opts.Build) == "function" then
-        opts.Build(menu)
+        local built = opts.Build(menu)
+        if type(built) == "table" and built[1] ~= nil then addElements(built) end
     end
     menu.Icon = icon
     menu.AnchorObject = anchor
@@ -3233,6 +3385,67 @@ function Tab:AddPlayerDropdown(opts)
     return api
 end
 
+local elementMethods = {
+    section = "AddSection",
+    divider = "AddDivider",
+    label = "AddLabel",
+    paragraph = "AddParagraph",
+    toggle = "AddToggle",
+    slider = "AddSlider",
+    range = "AddSlider",
+    stepper = "AddStepper",
+    segmented = "AddSegmented",
+    tabs = "AddSegmented",
+    dropdown = "AddDropdown",
+    select = "AddDropdown",
+    playerdropdown = "AddPlayerDropdown",
+    playerselect = "AddPlayerDropdown",
+    colorpicker = "AddColorPicker",
+    color = "AddColorPicker",
+    keybind = "AddKeybind",
+    hotkey = "AddKeybind",
+    textbox = "AddTextBox",
+    input = "AddTextBox",
+    button = "AddButton",
+    minibutton = "AddMiniButton",
+    settings = "AddSettings",
+    progressbar = "AddProgressBar",
+    progress = "AddProgressBar",
+    image = "AddImage",
+    list = "AddList",
+    configmanager = "AddConfigManager",
+    configs = "AddConfigManager",
+}
+
+function Tab:AddElements(items)
+    assert(type(items) == "table", "WolfUi: AddElements expects a table")
+    local controls = {}
+    for index, definition in ipairs(items) do
+        assert(type(definition) == "table", "WolfUi: every element definition must be a table")
+        local kind = string.lower(tostring(definition.Type or definition.Kind or definition.Control or ""))
+        kind = string.gsub(kind, "[%s_%-]", "")
+        local method = elementMethods[kind]
+        assert(method and type(self[method]) == "function", "WolfUi: unsupported element type " .. tostring(kind))
+        local control = self[method](self, definition)
+        controls[index] = control
+        local key = definition.Key or definition.Id or definition.Flag
+        if key ~= nil then controls[key] = control end
+    end
+    return controls
+end
+
+function Tab:AddSelect(opts)
+    return self:AddDropdown(opts)
+end
+
+function Tab:AddColor(opts)
+    return self:AddColorPicker(opts)
+end
+
+function Tab:AddInput(opts)
+    return self:AddTextBox(opts)
+end
+
 function Tab:AddConfigManager(opts)
     opts = opts or {}
     self:AddSection(opts.Name or "Configs")
@@ -3343,7 +3556,7 @@ function Library:Notify(opts)
     local bounds = TextService:GetTextSize(body, 11, Enum.Font.Gotham, Vector2.new(width - 46, 10000))
     local height = (title and 26 or 10) + math.max(14, bounds.Y) + 10
 
-    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "CanvasGroup")
+    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "Frame")
     object.Name = "Notification"
     object.ClipsDescendants = true
 
@@ -3387,6 +3600,7 @@ function Library:SetWatermark(opts)
     end
     if opts.Toggle ~= nil then config.Toggle = opts.Toggle and true or false end
     if opts.AlwaysVisible ~= nil then config.AlwaysVisible = opts.AlwaysVisible and true or false end
+    if opts.Icon ~= nil then window:SetWatermarkIcon(opts.Icon) end
     if typeof(opts.Position) == "Vector2" then config.Position = opts.Position end
     if opts.X ~= nil and opts.Y ~= nil then
         config.Position = Vector2.new(tonumber(opts.X) or 8, tonumber(opts.Y) or 8)
@@ -3417,6 +3631,8 @@ function Library:SetOpenMode(opts)
     if opts.Transparency ~= nil then
         config.Transparency = math.clamp(tonumber(opts.Transparency) or 0, 0, 1)
     end
+    if opts.Icon ~= nil then window:SetOpenIcon(opts.Icon) end
+    if opts.OpenIcon ~= nil then window:SetOpenIcon(opts.OpenIcon) end
     if opts.AlwaysVisible ~= nil then config.AlwaysVisible = opts.AlwaysVisible and true or false end
     if opts.Taps ~= nil then config.Taps = math.max(1, math.floor(tonumber(opts.Taps) or 2)) end
     if opts.Interval ~= nil then config.Interval = math.max(0.05, tonumber(opts.Interval) or 0.4) end
@@ -3853,6 +4069,7 @@ end
 
 function Library:Unload()
     Runtime.Alive = false
+    restoreFades()
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
     end
