@@ -3,6 +3,8 @@ local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
 local HttpService = game:GetService("HttpService")
+local StarterGui = game:GetService("StarterGui")
+local ContextActionService = game:GetService("ContextActionService")
 
 local player = Players.LocalPlayer
 while not player do
@@ -306,6 +308,15 @@ local function new(class, parent, props)
     for key, value in pairs(props or {}) do
         object[key] = value
     end
+    if class == "ScrollingFrame" then
+        object.ScrollBarThickness = 0
+        object.ScrollBarImageTransparency = 1
+        object.VerticalScrollBarInset = Enum.ScrollBarInset.None
+        object.HorizontalScrollBarInset = Enum.ScrollBarInset.None
+        object.TopImage = ""
+        object.MidImage = ""
+        object.BottomImage = ""
+    end
     object.Parent = parent
     return object
 end
@@ -457,7 +468,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 220
 
 local Library = {
-    Version = "4.2.0",
+    Version = "4.3.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -521,56 +532,39 @@ local function fireChange(flag, value)
 end
 
 local function fadeAlpha(current, target, dt)
-    if not Library.FadeAnimations then return target end
     local nextValue = approach(current, target, motionFactor(5 / Library.FadeDuration, dt))
     if math.abs(target - nextValue) < 0.001 then return target end
     return nextValue
 end
 
-function Library:SetFadeAnimations(enabled, duration)
-    self.FadeAnimations = enabled == true
+function Library:SetFadeAnimations(_, duration)
+    self.FadeAnimations = true
     if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.16, 0.05, 2) end
-    if not self.FadeAnimations then
-        restoreFades()
-        local window = self.Window
-        if window then
-            window.Alpha = window.Visible and 1 or 0
-            window.Frame.Visible = window.Visible
-            window.PopupLayer.Visible = window.Visible
-            for _, tab in ipairs(window.TabList) do
-                tab.Alpha = window.Current == tab and 1 or 0
-                tab.Page.Visible = tab.Alpha == 1
-            end
-            for _, pop in ipairs(window.Popups) do
-                pop.Alpha = pop:IsActive() and 1 or 0
-                pop.Object.Visible = pop.Alpha == 1 and pop.Anchor ~= nil
-            end
-        end
-    end
-    fireChange("FadeAnimations", self.FadeAnimations)
-    return self.FadeAnimations
+    fireChange("FadeAnimations", true)
+    return true
 end
 
 function Library:GetFadeAnimations()
-    return self.FadeAnimations, self.FadeDuration
+    return true, self.FadeDuration
 end
 
-function Library:SetScaleAnimations(enabled, duration)
-    self.ScaleAnimations = enabled == true
+function Library:SetFadeDuration(duration)
+    return self:SetFadeAnimations(true, duration)
+end
+
+function Library:SetScaleAnimations(_, duration)
+    self.ScaleAnimations = true
     if duration ~= nil then self.ScaleDuration = math.clamp(tonumber(duration) or 0.18, 0.05, 2) end
-    local window = self.Window
-    if window and not self.ScaleAnimations then
-        window.ScaleCurrent = window.ScaleTarget
-        window.UIScale.Scale = window.ScaleCurrent
-        window.PopupScale.Scale = window.ScaleCurrent
-        window.Layout()
-    end
-    fireChange("ScaleAnimations", self.ScaleAnimations)
-    return self.ScaleAnimations
+    fireChange("ScaleAnimations", true)
+    return true
 end
 
 function Library:GetScaleAnimations()
-    return self.ScaleAnimations, self.ScaleDuration
+    return true, self.ScaleDuration
+end
+
+function Library:SetScaleDuration(duration)
+    return self:SetScaleAnimations(true, duration)
 end
 
 function Library:OnChange(callback)
@@ -765,12 +759,9 @@ function Library:CreateWindow(opts)
 
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive = {}, {}, {}, true
     Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
-    if opts.FadeAnimations ~= nil or opts.FadeDuration ~= nil then
-        self:SetFadeAnimations(opts.FadeAnimations == nil and self.FadeAnimations or opts.FadeAnimations, opts.FadeDuration)
-    end
-    if opts.ScaleAnimations ~= nil or opts.ScaleDuration ~= nil then
-        self:SetScaleAnimations(opts.ScaleAnimations == nil and self.ScaleAnimations or opts.ScaleAnimations, opts.ScaleDuration)
-    end
+    self.FadeAnimations, self.ScaleAnimations = true, true
+    if opts.FadeDuration ~= nil then self:SetFadeDuration(opts.FadeDuration) end
+    if opts.ScaleDuration ~= nil then self:SetScaleDuration(opts.ScaleDuration) end
 
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
@@ -875,7 +866,7 @@ function Library:CreateWindow(opts)
     local function layout(immediate)
         window.ScaleTarget = targetScale()
         local viewport = window.Viewport
-        if not window.Initialized or immediate or not Library.ScaleAnimations then
+        if not window.Initialized or immediate then
             window.ScaleCurrent = window.ScaleTarget
         end
         local s = window.ScaleCurrent
@@ -905,10 +896,7 @@ function Library:CreateWindow(opts)
         window.ScaleTarget = target
         local current = window.ScaleCurrent
         local changed = false
-        if not Library.ScaleAnimations then
-            changed = current ~= target
-            window.ScaleCurrent = target
-        elseif math.abs(target - current) > 0.0005 then
+        if math.abs(target - current) > 0.0005 then
             local duration = math.max(0.05, Library.ScaleDuration)
             local nextScale = approach(current, target, motionFactor(5 / duration, dt))
             if math.abs(target - nextScale) < 0.0005 then nextScale = target end
@@ -1035,7 +1023,6 @@ function Library:CreateWindow(opts)
         Size = UDim2.fromOffset(CONTENT_W, WINDOW_H),
         CanvasSize = UDim2.fromOffset(0, 0),
         ScrollBarThickness = 0,
-        ScrollBarImageColor3 = palette[4],
         ScrollingDirection = Enum.ScrollingDirection.Y,
         ElasticBehavior = Enum.ElasticBehavior.Never,
         ClipsDescendants = true,
@@ -1443,6 +1430,15 @@ function Library:CreateWindow(opts)
 
     connect(gui.Destroying, function()
         Runtime.Alive = false
+        local gate = window.KeyGate
+        if gate then
+            if gate.Restore then gate.Restore() end
+            window.KeyGate = nil
+            if not gate.Finished and gate.Completed then
+                gate.Finished = true
+                gate.Completed:Fire(false)
+            end
+        end
     end)
 
     local fpsTimer, fpsFrames = 0, 0
@@ -1560,13 +1556,21 @@ function Library:CreateWindow(opts)
         self:ShowKeySystem()
     end
 
+    local gate = window.KeyGate
+    if gate and gate.Completed then
+        local authorized = gate.Completed.Event:Wait()
+        if authorized ~= true then
+            self:Unload()
+            error("WolfUi: key verification was cancelled", 0)
+        end
+    end
+
     return window
 end
 
 function Window:SetVisible(value)
     if value == true and self.KeyLocked then return false end
     self.Visible = value == true
-    if not Library.FadeAnimations then self.Alpha = self.Visible and 1 or 0 end
     self.Frame.Visible = self.Visible or self.Alpha > 0
     self.Frame.Interactable = self.Visible
     self.PopupLayer.Visible = self.Frame.Visible
@@ -2078,9 +2082,7 @@ local function createSubMenu(window, anchor, opts)
         Position = UDim2.fromOffset(0, 0),
         Size = UDim2.fromOffset(width, 41),
         CanvasSize = UDim2.fromOffset(0, 0),
-        ScrollBarThickness = 3,
-        ScrollBarImageColor3 = palette[5],
-        ScrollBarImageTransparency = 0.25,
+        ScrollBarThickness = 0,
         ScrollingDirection = Enum.ScrollingDirection.Y,
         ElasticBehavior = Enum.ElasticBehavior.Never,
         ScrollingEnabled = false,
@@ -2110,7 +2112,6 @@ local function createSubMenu(window, anchor, opts)
         holder.Size = UDim2.fromOffset(width, shown)
         holder.CanvasSize = UDim2.fromOffset(0, total)
         holder.ScrollingEnabled = total > shown
-        holder.ScrollBarImageColor3 = palette[5]
     end
 
     function menu:Open(anchorOverride) pop:Open(anchorOverride or anchor) end
@@ -3353,15 +3354,12 @@ function Tab:AddList(opts)
         Position = UDim2.fromOffset(10, listY),
         Size = UDim2.fromOffset(w - 20, listH),
         CanvasSize = UDim2.fromOffset(0, 0),
-        ScrollBarThickness = 4,
-        ScrollBarImageColor3 = palette[4],
+        ScrollBarThickness = 0,
         ScrollingDirection = Enum.ScrollingDirection.Y,
         ElasticBehavior = Enum.ElasticBehavior.Never,
         Active = true,
         ZIndex = 2,
     })
-    step(function() holder.ScrollBarImageColor3 = palette[4] end, holder)
-
     local empty = muted(holder, opts.Empty or "empty", 10, 0, w - 40, ROW_H, 11)
 
     local function push(fire)
@@ -3982,7 +3980,15 @@ function Library:HideKeySystem(authorized)
     local window = self.Window
     if not window then return end
     if authorized ~= nil then window.KeyLocked = not authorized end
-    if window.KeyGate and window.KeyGate.Object then window.KeyGate.Object:Destroy() end
+    local gate = window.KeyGate
+    if gate then
+        if gate.Restore then gate.Restore() end
+        if gate.Object then gate.Object:Destroy() end
+        if not gate.Finished and gate.Completed then
+            gate.Finished = true
+            gate.Completed:Fire(authorized == true)
+        end
+    end
     window.KeyGate = nil
     if window.UpdateOpenVisibility then window.UpdateOpenVisibility() end
 end
@@ -3991,19 +3997,30 @@ function Library:ShowKeySystem()
     local window = self.Window
     local config = self.KeySystem or {}
     if not window or config.Enabled == false then return end
+    local displayOrder = window.Gui.DisplayOrder
+    local frameVisible = window.Frame.Visible
+    local popupVisible = window.PopupLayer.Visible
+    local miniVisible = window.MiniLayer.Visible
+    local notifyVisible = window.NotifyHolder.Visible
     self:HideKeySystem(false)
     window.KeyLocked = true
     window.Visible = false
     window.Alpha = 0
     window.Frame.Visible = false
     window.PopupLayer.Visible = false
+    window.MiniLayer.Visible = false
+    window.NotifyHolder.Visible = false
 
-    local shade = rect(window.Gui, 0, 0, 10, 10, black)
+    local shade = rect(window.Gui, 0, 0, 10, 10, black, nil, "TextButton")
     shade.Name = "KeySystem"
     shade.Size = UDim2.fromScale(1, 1)
-    shade.BackgroundTransparency = 0.18
+    shade.BackgroundTransparency = math.clamp(
+        tonumber(config.BackgroundTransparency) or 0, 0, 1)
     shade.ZIndex = 100
     shade.Active = true
+    shade.Modal = true
+    shade.AutoButtonColor = false
+    shade.Text = ""
 
     local width = math.clamp(math.floor(tonumber(config.Width) or 340), 260, 460)
     local hasLink = config.GetKeyUrl ~= nil or config.Link ~= nil or type(config.OnGetKey) == "function"
@@ -4058,18 +4075,117 @@ function Library:ShowKeySystem()
     local busy = false
     local attempts = 0
     local lastAttempt = 0
-    local gate = {Object = shade, Card = card, Input = input, Button = submit, Authorized = false}
+    local completed = new("BindableEvent", window.Events, {Name = "KeyResolved"})
+    local gate = {
+        Object = shade,
+        Card = card,
+        Input = input,
+        Button = submit,
+        Completed = completed,
+        Authorized = false,
+        Finished = false,
+    }
     window.KeyGate = gate
+
+    local coreStates = {}
+    local actionNames = {}
+    local controls
+    local controlsEnabled
+    local restored = false
+
+    pcall(function() window.Gui.DisplayOrder = 2147483647 end)
+    for _, coreType in ipairs(Enum.CoreGuiType:GetEnumItems()) do
+        if coreType ~= Enum.CoreGuiType.All then
+            local ok, enabled = pcall(function()
+                return StarterGui:GetCoreGuiEnabled(coreType)
+            end)
+            if ok then
+                coreStates[coreType] = enabled
+                pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
+            end
+        end
+    end
+
+    local topbarKnown, topbarEnabled = pcall(function()
+        return StarterGui:GetCore("TopbarEnabled")
+    end)
+    if topbarKnown then
+        pcall(function() StarterGui:SetCore("TopbarEnabled", false) end)
+    end
+
+    pcall(function()
+        local playerScripts = player:FindFirstChild("PlayerScripts")
+        local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+        if not playerModule then return end
+        controls = require(playerModule):GetControls()
+        controlsEnabled = controls.controlsEnabled ~= false
+        controls:Disable()
+    end)
+
+    local function consumeInput()
+        if window.KeyGate ~= gate then return Enum.ContextActionResult.Pass end
+        if UIS:GetFocusedTextBox() == input then return Enum.ContextActionResult.Pass end
+        return Enum.ContextActionResult.Sink
+    end
+
+    local keyCodes = {}
+    for _, keyCode in ipairs(Enum.KeyCode:GetEnumItems()) do
+        if keyCode ~= Enum.KeyCode.Unknown then keyCodes[#keyCodes + 1] = keyCode end
+    end
+    local chunkSize = 48
+    for first = 1, #keyCodes, chunkSize do
+        local inputs = {}
+        for index = first, math.min(first + chunkSize - 1, #keyCodes) do
+            inputs[#inputs + 1] = keyCodes[index]
+        end
+        local actionName = "WolfUiKeyGate_" .. HttpService:GenerateGUID(false)
+        local ok = pcall(function()
+            ContextActionService:BindActionAtPriority(actionName, consumeInput, false, 10000,
+                table.unpack(inputs))
+        end)
+        if ok then actionNames[#actionNames + 1] = actionName end
+    end
+
+    gate.Restore = function()
+        if restored then return end
+        restored = true
+        for _, actionName in ipairs(actionNames) do
+            pcall(function() ContextActionService:UnbindAction(actionName) end)
+        end
+        for coreType, enabled in pairs(coreStates) do
+            pcall(function() StarterGui:SetCoreGuiEnabled(coreType, enabled) end)
+        end
+        if topbarKnown then
+            pcall(function() StarterGui:SetCore("TopbarEnabled", topbarEnabled) end)
+        end
+        if controls then
+            pcall(function()
+                if controlsEnabled then controls:Enable() else controls:Disable() end
+            end)
+        end
+        if window.Gui and window.Gui.Parent then
+            pcall(function() window.Gui.DisplayOrder = displayOrder end)
+        end
+        if window.Frame then window.Frame.Visible = frameVisible end
+        if window.PopupLayer then window.PopupLayer.Visible = popupVisible end
+        if window.MiniLayer then window.MiniLayer.Visible = miniVisible end
+        if window.NotifyHolder then window.NotifyHolder.Visible = notifyVisible end
+    end
 
     local function authorize(data)
         if window.KeyGate ~= gate then return end
         gate.Authorized = true
         window.KeyLocked = false
+        gate.Restore()
         if type(config.OnSuccess) == "function" then task.spawn(config.OnSuccess, input.Text, data) end
         shade:Destroy()
         window.KeyGate = nil
         if config.OpenOnSuccess == false then window:SetVisible(false) else window:SetVisible(true) end
         window.UpdateOpenVisibility()
+        if not gate.Finished then
+            gate.Finished = true
+            completed:Fire(true, data)
+        end
     end
 
     local function submitKey()
@@ -4263,8 +4379,8 @@ function Library:GetConfig()
             config.Flags[flag] = serialize(value)
         end
     end
-    config.FadeAnimations, config.FadeDuration = self.FadeAnimations, self.FadeDuration
-    config.ScaleAnimations, config.ScaleDuration = self.ScaleAnimations, self.ScaleDuration
+    config.FadeDuration = self.FadeDuration
+    config.ScaleDuration = self.ScaleDuration
     config.ThemePalette = {}
     for i, color in ipairs(themes[state.Theme]) do config.ThemePalette[i] = serialize(color) end
     config.ThemeName = self.ThemeNames[state.Theme]
@@ -4285,8 +4401,8 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
-    if config.FadeAnimations ~= nil then self:SetFadeAnimations(config.FadeAnimations, config.FadeDuration) end
-    if config.ScaleAnimations ~= nil then self:SetScaleAnimations(config.ScaleAnimations, config.ScaleDuration) end
+    if config.FadeDuration ~= nil then self:SetFadeDuration(config.FadeDuration) end
+    if config.ScaleDuration ~= nil then self:SetScaleDuration(config.ScaleDuration) end
     if type(config.ThemePalette) == "table" then
         local colors = {}
         for i, color in ipairs(config.ThemePalette) do colors[i] = deserialize(color) end
@@ -4528,6 +4644,7 @@ end
 
 function Library:Unload()
     Runtime.Alive = false
+    self:HideKeySystem(false)
     restoreFades()
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
