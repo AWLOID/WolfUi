@@ -353,9 +353,11 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "3.3.1",
+    Version = "3.4.0",
     Flags = {},
     Elements = {},
+    NoSaveFlags = {},
+    ConfigPassword = nil,
     Themes = themes,
     ThemeNames = {"Wolf", "Slate", "Black"},
     FadeAnimations = false,
@@ -637,6 +639,10 @@ function Library:CreateWindow(opts)
 
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive = {}, {}, {}, true
     Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
+    if opts.ConfigPassword ~= nil then
+        local passwordOk, passwordError = Library:SetConfigPassword(opts.ConfigPassword)
+        if not passwordOk then error(passwordError, 0) end
+    end
     if opts.FadeAnimations ~= nil or opts.FadeDuration ~= nil then
         self:SetFadeAnimations(opts.FadeAnimations == nil and self.FadeAnimations or opts.FadeAnimations, opts.FadeDuration)
     end
@@ -2615,6 +2621,8 @@ function Tab:AddTextBox(opts)
     local flag = opts.Flag or (self.Name .. "." .. name)
     local w = self:_width(opts.Width)
     local withTitle = opts.ShowName and true or false
+    local private = opts.Private == true
+    local placeholder = tostring(opts.Placeholder or name)
     local height = withTitle and 58 or 31
     local card = self:_card(w, height, name)
     if withTitle then
@@ -2628,12 +2636,13 @@ function Tab:AddTextBox(opts)
         Position = UDim2.fromOffset(10, withTitle and 27 or 0),
         Size = UDim2.fromOffset(w - 20, 31),
         Text = tostring(opts.Default or ""),
-        PlaceholderText = opts.Placeholder or name,
+        PlaceholderText = private and "" or placeholder,
         PlaceholderColor3 = palette[3],
         ClearTextOnFocus = false,
         Font = Enum.Font.Gotham,
         TextSize = 12,
         TextColor3 = white,
+        TextTransparency = private and 1 or 0,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center,
         TextTruncate = Enum.TextTruncate.AtEnd,
@@ -2641,7 +2650,25 @@ function Tab:AddTextBox(opts)
         ClipsDescendants = true,
         ZIndex = 2,
     })
-    step(function() box.PlaceholderColor3 = palette[3] end)
+    local privateLabel
+    local function updatePrivateLabel()
+        if not privateLabel then return end
+        local length = utf8.len(box.Text) or #box.Text
+        privateLabel:SetText(length > 0 and string.rep("•", length) or placeholder)
+        privateLabel:Color(length > 0 and white or palette[3])
+    end
+    if private then
+        box.ZIndex = 3
+        privateLabel = text(card, "", 10, withTitle and 27 or 0, w - 20, 31, 12, white)
+        privateLabel.Object.ZIndex = 2
+        updatePrivateLabel()
+    end
+    step(function()
+        box.PlaceholderColor3 = palette[3]
+        if privateLabel then
+            privateLabel:Color(box.Text ~= "" and white or palette[3])
+        end
+    end)
 
     local maxLength = math.floor(tonumber(opts.MaxLength) or 0)
     local api = baseApi(self, card, flag)
@@ -2653,6 +2680,7 @@ function Tab:AddTextBox(opts)
     end
 
     connect(box:GetPropertyChangedSignal("Text"), function()
+        updatePrivateLabel()
         local length = maxLength > 0 and utf8.len(box.Text) or nil
         if length and length > maxLength then
             local offset = utf8.offset(box.Text, maxLength + 1)
@@ -2675,8 +2703,13 @@ function Tab:AddTextBox(opts)
         box.Text = tostring(value or "")
         if silent then Library.Flags[flag] = box.Text end
     end
-    function api:SetName(value) box.PlaceholderText = tostring(value) end
+    function api:SetName(value)
+        placeholder = tostring(value)
+        box.PlaceholderText = private and "" or placeholder
+        updatePrivateLabel()
+    end
 
+    if opts.NoSave then Library.NoSaveFlags[flag] = true end
     push(false)
     return api
 end
@@ -3208,18 +3241,34 @@ function Tab:AddConfigManager(opts)
     opts = opts or {}
     self:AddSection(opts.Name or "Configs")
 
+    local passwordBox
+    if opts.Password == nil then
+        passwordBox = self:AddTextBox({
+            Name = opts.PasswordName or "Пароль конфига",
+            Flag = (self.Name .. ".ConfigPassword"),
+            Placeholder = opts.PasswordPlaceholder or "минимум 8 символов",
+            MaxLength = tonumber(opts.PasswordMaxLength) or 128,
+            ShowName = true,
+            Private = true,
+            NoSave = true,
+        })
+    end
     local nameBox = self:AddTextBox({
         Name = opts.Placeholder or "Имя конфига",
         Flag = (self.Name .. ".ConfigName"),
         Placeholder = opts.Placeholder or "default",
         Width = 0.5,
+        NoSave = true,
     })
+    local pickerFlag = self.Name .. ".ConfigPick"
     local picker = self:AddDropdown({
         Name = "Сохранённые",
-        Flag = (self.Name .. ".ConfigPick"),
+        Flag = pickerFlag,
         Options = Library:ListConfigs(),
         Width = 0.5,
     })
+    Library.NoSaveFlags[pickerFlag] = true
+    Library.NoSaveFlags[pickerFlag .. ".Text"] = true
 
     local function refresh()
         picker:SetOptions(Library:ListConfigs())
@@ -3231,10 +3280,24 @@ function Tab:AddConfigManager(opts)
         return value
     end
 
+    local function password()
+        local value = opts.Password
+        if type(value) == "function" then value = value() end
+        if value == nil and passwordBox then value = passwordBox:Get() end
+        return value
+    end
+
+    local function clearPassword(ok)
+        if ok and passwordBox and opts.RememberPassword ~= true then
+            passwordBox:Set("", true)
+        end
+    end
+
     self:AddButton({
         Name = "Сохранить", Text = "Сохранить", Compact = true, Width = 0.33,
         Callback = function()
-            local ok, err = Library:SaveConfigFile(chosen())
+            local ok, err = Library:SaveConfigFile(chosen(), password())
+            clearPassword(ok)
             refresh()
             Library:Notify({
                 Title = "Configs",
@@ -3245,7 +3308,8 @@ function Tab:AddConfigManager(opts)
     self:AddButton({
         Name = "Загрузить", Text = "Загрузить", Compact = true, Width = 0.33,
         Callback = function()
-            local ok, err = Library:LoadConfigFile(chosen())
+            local ok, err = Library:LoadConfigFile(chosen(), password())
+            clearPassword(ok)
             Library:Notify({
                 Title = "Configs",
                 Text = ok and ("Загружено: " .. tostring(chosen())) or tostring(err),
@@ -3264,7 +3328,7 @@ function Tab:AddConfigManager(opts)
         Callback = refresh,
     })
 
-    return {Refresh = refresh, Name = nameBox, Picker = picker}
+    return {Refresh = refresh, Name = nameBox, Picker = picker, Password = passwordBox}
 end
 
 function Library:Notify(opts)
@@ -3516,7 +3580,9 @@ end
 function Library:GetConfig()
     local config = {__version = self.Version, Flags = {}, Theme = state.Theme, Scale = state.Scale}
     for flag, value in pairs(self.Flags) do
-        config.Flags[flag] = serialize(value)
+        if not self.NoSaveFlags[flag] then
+            config.Flags[flag] = serialize(value)
+        end
     end
     config.FadeAnimations, config.FadeDuration = self.FadeAnimations, self.FadeDuration
     config.ThemePalette = {}
@@ -3587,11 +3653,15 @@ local LEGACY_ROOT = "WolfLib"
 local scriptFolder = "Default"
 local CONFIG_EXTENSION = ".wcfg"
 local LEGACY_CONFIG_EXTENSION = ".json"
-local CONFIG_MAGIC = "WCFG"
-local CONFIG_FORMAT_VERSION = 2
+local CONFIG_MAGIC = "WCF3"
+local CONFIG_FORMAT_VERSION = 3
+local CONFIG_KDF_ITERATIONS = 8192
+local CONFIG_TAG_SIZE = 32
+local OBFUSCATED_CONFIG_MAGIC = "WCFG"
+local OBFUSCATED_CONFIG_VERSION = 2
 local LEGACY_CONFIG_PREFIX = "WOLFUI_CFG"
 local LEGACY_CONFIG_FORMAT_VERSION = "1"
-local CONFIG_SECRET = "W0lfUi::Config::3.3::x9K2mQ7pL4sN8vR5"
+local LEGACY_CONFIG_SECRET = "W0lfUi::Config::3.3::x9K2mQ7pL4sN8vR5"
 local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local BASE64_LOOKUP = {}
 
@@ -3695,32 +3765,8 @@ local function base64Decode(value)
     return table.concat(output)
 end
 
-local function createNonce()
-    local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
-    if ok and type(guid) == "string" then
-        guid = string.gsub(guid, "%-", "")
-        if #guid == 32 then
-            local bytes = {}
-            for index = 1, #guid, 2 do
-                local byte = tonumber(string.sub(guid, index, index + 1), 16)
-                if not byte then bytes = nil; break end
-                bytes[#bytes + 1] = string.char(byte)
-            end
-            if bytes then return table.concat(bytes) end
-        end
-    end
-    local source = tostring(os.clock()) .. ":" .. tostring(math.random()) .. ":" .. tostring({})
-    local hex = checksum(source) .. checksum(string.reverse(source))
-        .. checksum(source .. ":wolf") .. checksum("ui:" .. source)
-    local bytes = {}
-    for index = 1, #hex, 2 do
-        bytes[#bytes + 1] = string.char(tonumber(string.sub(hex, index, index + 1), 16))
-    end
-    return table.concat(bytes)
-end
-
-local function configKey(nonce)
-    return CONFIG_SECRET .. "\0" .. scriptFolder .. "\0" .. nonce
+local function legacyConfigKey(nonce)
+    return LEGACY_CONFIG_SECRET .. "\0" .. scriptFolder .. "\0" .. nonce
 end
 
 local function packU32(value)
@@ -3739,17 +3785,345 @@ local function unpackU32(value, index)
     return first + second * 256 + third * 65536 + fourth * 16777216
 end
 
-local function encodeConfig(json)
-    local nonce = createNonce()
+local BIT = bit32
+local BAND = BIT and BIT.band
+local BOR = BIT and BIT.bor
+local BXOR = BIT and BIT.bxor
+local BNOT = BIT and BIT.bnot
+local RSHIFT = BIT and BIT.rshift
+local RROTATE = BIT and BIT.rrotate
+
+local SHA256_CONSTANTS = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+}
+
+local function requireCryptoBits()
+    if not (BAND and BOR and BXOR and BNOT and RSHIFT and RROTATE) then
+        error("WolfUi configs require bit32 support", 0)
+    end
+end
+
+local function add32(...)
+    local result = 0
+    for index = 1, select("#", ...) do
+        result = (result + select(index, ...)) % 4294967296
+    end
+    return result
+end
+
+local function packU32BE(value)
+    value = math.floor(tonumber(value) or 0) % 4294967296
+    return string.char(
+        math.floor(value / 16777216) % 256,
+        math.floor(value / 65536) % 256,
+        math.floor(value / 256) % 256,
+        value % 256
+    )
+end
+
+local function sha256(value)
+    requireCryptoBits()
+    local bitLength = #value * 8
+    local highLength = math.floor(bitLength / 4294967296)
+    local lowLength = bitLength % 4294967296
+    local paddingLength = (56 - ((#value + 1) % 64)) % 64
+    local message = value .. string.char(0x80) .. string.rep("\0", paddingLength)
+        .. packU32BE(highLength) .. packU32BE(lowLength)
+
+    local h0, h1, h2, h3 = 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a
+    local h4, h5, h6, h7 = 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    local words = {}
+
+    for offset = 1, #message, 64 do
+        for index = 0, 15 do
+            local position = offset + index * 4
+            local a, b, c, d = string.byte(message, position, position + 3)
+            words[index + 1] = a * 16777216 + b * 65536 + c * 256 + d
+        end
+        for index = 17, 64 do
+            local before15 = words[index - 15]
+            local before2 = words[index - 2]
+            local sigma0 = BXOR(RROTATE(before15, 7), RROTATE(before15, 18), RSHIFT(before15, 3))
+            local sigma1 = BXOR(RROTATE(before2, 17), RROTATE(before2, 19), RSHIFT(before2, 10))
+            words[index] = add32(words[index - 16], sigma0, words[index - 7], sigma1)
+        end
+
+        local a, b, c, d = h0, h1, h2, h3
+        local e, f, g, h = h4, h5, h6, h7
+        for index = 1, 64 do
+            local sum1 = BXOR(RROTATE(e, 6), RROTATE(e, 11), RROTATE(e, 25))
+            local choice = BXOR(BAND(e, f), BAND(BNOT(e), g))
+            local temp1 = add32(h, sum1, choice, SHA256_CONSTANTS[index], words[index])
+            local sum0 = BXOR(RROTATE(a, 2), RROTATE(a, 13), RROTATE(a, 22))
+            local majority = BXOR(BAND(a, b), BAND(a, c), BAND(b, c))
+            local temp2 = add32(sum0, majority)
+            h, g, f, e = g, f, e, add32(d, temp1)
+            d, c, b, a = c, b, a, add32(temp1, temp2)
+        end
+
+        h0, h1, h2, h3 = add32(h0, a), add32(h1, b), add32(h2, c), add32(h3, d)
+        h4, h5, h6, h7 = add32(h4, e), add32(h5, f), add32(h6, g), add32(h7, h)
+    end
+
+    return packU32BE(h0) .. packU32BE(h1) .. packU32BE(h2) .. packU32BE(h3)
+        .. packU32BE(h4) .. packU32BE(h5) .. packU32BE(h6) .. packU32BE(h7)
+end
+
+local function hmacSha256(key, value)
+    if #key > 64 then key = sha256(key) end
+    key = key .. string.rep("\0", 64 - #key)
+    local innerPad, outerPad = {}, {}
+    for index = 1, 64 do
+        local byte = string.byte(key, index)
+        innerPad[index] = string.char(BXOR(byte, 0x36))
+        outerPad[index] = string.char(BXOR(byte, 0x5c))
+    end
+    return sha256(table.concat(outerPad) .. sha256(table.concat(innerPad) .. value))
+end
+
+local function xorBytes(left, right)
+    assert(#left == #right, "XOR buffers must have equal length")
+    local output = {}
+    for index = 1, #left do
+        output[index] = string.char(BXOR(string.byte(left, index), string.byte(right, index)))
+    end
+    return table.concat(output)
+end
+
+local function pbkdf2Sha256(password, salt, iterations)
+    local current = hmacSha256(password, salt .. packU32BE(1))
+    local result = current
+    for iteration = 2, iterations do
+        current = hmacSha256(password, current)
+        result = xorBytes(result, current)
+        if iteration % 256 == 0 and type(task) == "table" and type(task.wait) == "function" then
+            task.wait()
+        end
+    end
+    return result
+end
+
+local function deriveConfigKeys(password, salt, iterations)
+    local master = pbkdf2Sha256(password, salt, iterations)
+    local encryptionKey = sha256(master .. "\0WolfUi AES-256" .. salt)
+    local authenticationKey = sha256(master .. "\0WolfUi HMAC-SHA-256" .. salt)
+    return encryptionKey, authenticationKey
+end
+
+local AES_SBOX = {
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+}
+
+local AES_RCON = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36}
+
+local function expandAes256Key(key)
+    assert(type(key) == "string" and #key == 32, "AES-256 requires a 32-byte key")
+    local expanded = {}
+    for index = 1, 32 do expanded[index] = string.byte(key, index) end
+
+    local generated, rconIndex = 32, 1
+    while generated < 240 do
+        local temporary = {
+            expanded[generated - 3], expanded[generated - 2],
+            expanded[generated - 1], expanded[generated],
+        }
+        if generated % 32 == 0 then
+            temporary = {temporary[2], temporary[3], temporary[4], temporary[1]}
+            for index = 1, 4 do temporary[index] = AES_SBOX[temporary[index] + 1] end
+            temporary[1] = BXOR(temporary[1], AES_RCON[rconIndex])
+            rconIndex = rconIndex + 1
+        elseif generated % 32 == 16 then
+            for index = 1, 4 do temporary[index] = AES_SBOX[temporary[index] + 1] end
+        end
+
+        for index = 1, 4 do
+            expanded[generated + index] = BXOR(expanded[generated - 32 + index], temporary[index])
+        end
+        generated = generated + 4
+    end
+    return expanded
+end
+
+local function aesAddRoundKey(state, expanded, round)
+    local offset = round * 16
+    for index = 1, 16 do state[index] = BXOR(state[index], expanded[offset + index]) end
+end
+
+local function aesSubBytes(state)
+    for index = 1, 16 do state[index] = AES_SBOX[state[index] + 1] end
+end
+
+local function aesShiftRows(state)
+    state[2], state[6], state[10], state[14] = state[6], state[10], state[14], state[2]
+    state[3], state[7], state[11], state[15] = state[11], state[15], state[3], state[7]
+    state[4], state[8], state[12], state[16] = state[16], state[4], state[8], state[12]
+end
+
+local function aesXtime(value)
+    local shifted = (value * 2) % 256
+    return value >= 128 and BXOR(shifted, 0x1b) or shifted
+end
+
+local function aesMixColumns(state)
+    for column = 0, 3 do
+        local index = column * 4 + 1
+        local a, b, c, d = state[index], state[index + 1], state[index + 2], state[index + 3]
+        local total = BXOR(a, b, c, d)
+        state[index] = BXOR(a, total, aesXtime(BXOR(a, b)))
+        state[index + 1] = BXOR(b, total, aesXtime(BXOR(b, c)))
+        state[index + 2] = BXOR(c, total, aesXtime(BXOR(c, d)))
+        state[index + 3] = BXOR(d, total, aesXtime(BXOR(d, a)))
+    end
+end
+
+local function aes256EncryptBlock(block, expanded)
+    assert(#block == 16, "AES block must contain 16 bytes")
+    local state = {string.byte(block, 1, 16)}
+    aesAddRoundKey(state, expanded, 0)
+    for round = 1, 13 do
+        aesSubBytes(state)
+        aesShiftRows(state)
+        aesMixColumns(state)
+        aesAddRoundKey(state, expanded, round)
+    end
+    aesSubBytes(state)
+    aesShiftRows(state)
+    aesAddRoundKey(state, expanded, 14)
+    return string.char(table.unpack(state))
+end
+
+local function incrementCounter(counter)
+    for index = 16, 1, -1 do
+        counter[index] = (counter[index] + 1) % 256
+        if counter[index] ~= 0 then break end
+    end
+end
+
+local function aes256Ctr(value, key, iv)
+    assert(type(iv) == "string" and #iv == 16, "AES-CTR requires a 16-byte IV")
+    local expanded = expandAes256Key(key)
+    local counter = {string.byte(iv, 1, 16)}
+    local output = {}
+    for offset = 1, #value, 16 do
+        local stream = aes256EncryptBlock(string.char(table.unpack(counter)), expanded)
+        local length = math.min(16, #value - offset + 1)
+        local block = {}
+        for index = 1, length do
+            block[index] = string.char(BXOR(string.byte(value, offset + index - 1), string.byte(stream, index)))
+        end
+        output[#output + 1] = table.concat(block)
+        incrementCounter(counter)
+    end
+    return table.concat(output)
+end
+
+local function secureRandomBytes(length)
+    local providers = {}
+    if type(crypt) == "table" then providers[#providers + 1] = crypt end
+    if type(syn) == "table" and type(syn.crypt) == "table" then providers[#providers + 1] = syn.crypt end
+    for _, provider in ipairs(providers) do
+        local generator = provider.generatebytes or provider.generate_bytes or provider.random
+        if type(generator) == "function" then
+            local ok, generated = pcall(generator, length)
+            if ok and type(generated) == "string" then
+                local decoded = base64Decode(generated)
+                if decoded and #decoded >= length then return string.sub(decoded, 1, length) end
+                if #generated >= length then return string.sub(generated, 1, length) end
+            end
+        end
+    end
+
+    local chunks, total = {}, 0
+    while total < length do
+        local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
+        local chunk
+        if ok and type(guid) == "string" then
+            local hex = string.gsub(guid, "%-", "")
+            if #hex == 32 then
+                local bytes = {}
+                for index = 1, #hex, 2 do
+                    local byte = tonumber(string.sub(hex, index, index + 1), 16)
+                    if not byte then bytes = nil; break end
+                    bytes[#bytes + 1] = string.char(byte)
+                end
+                if bytes then chunk = table.concat(bytes) end
+            end
+        end
+        if not chunk then
+            chunk = sha256(tostring(os.clock()) .. ":" .. tostring(math.random())
+                .. ":" .. tostring({}) .. ":" .. tostring(total))
+        end
+        chunks[#chunks + 1] = chunk
+        total = total + #chunk
+    end
+    return string.sub(table.concat(chunks), 1, length)
+end
+
+local function constantTimeEqual(left, right)
+    if type(left) ~= "string" or type(right) ~= "string" or #left ~= #right then return false end
+    local difference = 0
+    for index = 1, #left do
+        difference = BOR(difference, BXOR(string.byte(left, index), string.byte(right, index)))
+    end
+    return difference == 0
+end
+
+local function normalizeConfigPassword(password)
+    if password == nil then return nil, "config password is required" end
+    password = tostring(password)
+    local length = utf8.len(password) or #password
+    if length < 8 then return nil, "config password must contain at least 8 characters" end
+    return password
+end
+
+local function encodeConfig(json, password)
+    local passwordError
+    password, passwordError = normalizeConfigPassword(password)
+    if not password then error(passwordError, 0) end
+
+    local salt = secureRandomBytes(16)
+    local iv = secureRandomBytes(16)
+    local encryptionKey, authenticationKey = deriveConfigKeys(password, salt, CONFIG_KDF_ITERATIONS)
     local encoded = base64Encode(json)
-    local encrypted = xorTransform(encoded, configKey(nonce))
-    return CONFIG_MAGIC
+    local encrypted = aes256Ctr(encoded, encryptionKey, iv)
+    local header = CONFIG_MAGIC
         .. packU32(CONFIG_FORMAT_VERSION)
-        .. packU32(#nonce)
+        .. packU32(CONFIG_KDF_ITERATIONS)
+        .. packU32(#salt)
+        .. packU32(#iv)
         .. packU32(#encrypted)
-        .. packU32(checksumValue(json))
-        .. nonce
-        .. encrypted
+    local authenticated = header .. salt .. iv .. encrypted
+    return authenticated .. hmacSha256(authenticationKey, authenticated)
 end
 
 local function decodeLegacyConfig(value)
@@ -3762,19 +4136,19 @@ local function decodeLegacyConfig(value)
 
     local encrypted, decodeError = base64Decode(payload)
     if not encrypted then return nil, decodeError end
-    local json = xorTransform(encrypted, configKey(nonce))
+    local json = xorTransform(encrypted, legacyConfigKey(nonce))
     if checksum(json) ~= string.lower(expected) then
         return nil, "config integrity check failed"
     end
     return json, nil, true
 end
 
-local function decodeConfig(value)
+local function decodeObfuscatedConfig(value)
     if type(value) ~= "string" then return nil, "config data is not a string" end
     if string.sub(value, 1, #LEGACY_CONFIG_PREFIX + 1) == LEGACY_CONFIG_PREFIX .. ":" then
         return decodeLegacyConfig(value)
     end
-    if #value < 20 or string.sub(value, 1, 4) ~= CONFIG_MAGIC then
+    if #value < 20 or string.sub(value, 1, 4) ~= OBFUSCATED_CONFIG_MAGIC then
         return nil, "unknown or damaged config format"
     end
 
@@ -3782,7 +4156,7 @@ local function decodeConfig(value)
     local nonceLength = unpackU32(value, 9)
     local payloadLength = unpackU32(value, 13)
     local expected = unpackU32(value, 17)
-    if version ~= CONFIG_FORMAT_VERSION then
+    if version ~= OBFUSCATED_CONFIG_VERSION then
         return nil, "unsupported config version: " .. tostring(version)
     end
     if not nonceLength or nonceLength < 8 or nonceLength > 64 or not payloadLength then
@@ -3797,12 +4171,66 @@ local function decodeConfig(value)
 
     local nonce = string.sub(value, nonceStart, payloadStart - 1)
     local encrypted = string.sub(value, payloadStart)
-    local encoded = xorTransform(encrypted, configKey(nonce))
+    local encoded = xorTransform(encrypted, legacyConfigKey(nonce))
     local json, decodeError = base64Decode(encoded)
     if not json then return nil, decodeError end
     if checksumValue(json) ~= expected then
         return nil, "config integrity check failed"
     end
+    return json, nil, false
+end
+
+local function decodeConfig(value, password)
+    if type(value) ~= "string" then return nil, "config data is not a string" end
+    if string.sub(value, 1, 4) == OBFUSCATED_CONFIG_MAGIC
+        or string.sub(value, 1, #LEGACY_CONFIG_PREFIX + 1) == LEGACY_CONFIG_PREFIX .. ":" then
+        local json, decodeError = decodeObfuscatedConfig(value)
+        return json, decodeError, json ~= nil
+    end
+    if #value < 24 + CONFIG_TAG_SIZE or string.sub(value, 1, 4) ~= CONFIG_MAGIC then
+        return nil, "unknown or damaged config format"
+    end
+
+    local version = unpackU32(value, 5)
+    local iterations = unpackU32(value, 9)
+    local saltLength = unpackU32(value, 13)
+    local ivLength = unpackU32(value, 17)
+    local payloadLength = unpackU32(value, 21)
+    if version ~= CONFIG_FORMAT_VERSION then
+        return nil, "unsupported config version: " .. tostring(version)
+    end
+    if not iterations or iterations < 1024 or iterations > 200000
+        or not saltLength or saltLength < 16 or saltLength > 64
+        or ivLength ~= 16 or not payloadLength then
+        return nil, "invalid config header"
+    end
+
+    local saltStart = 25
+    local ivStart = saltStart + saltLength
+    local payloadStart = ivStart + ivLength
+    local tagStart = payloadStart + payloadLength
+    if tagStart - 1 + CONFIG_TAG_SIZE ~= #value then
+        return nil, "invalid config length"
+    end
+
+    local passwordError
+    password, passwordError = normalizeConfigPassword(password)
+    if not password then return nil, passwordError end
+
+    local salt = string.sub(value, saltStart, ivStart - 1)
+    local iv = string.sub(value, ivStart, payloadStart - 1)
+    local encrypted = string.sub(value, payloadStart, tagStart - 1)
+    local actualTag = string.sub(value, tagStart)
+    local encryptionKey, authenticationKey = deriveConfigKeys(password, salt, iterations)
+    local authenticated = string.sub(value, 1, tagStart - 1)
+    local expectedTag = hmacSha256(authenticationKey, authenticated)
+    if not constantTimeEqual(actualTag, expectedTag) then
+        return nil, "wrong password or damaged config"
+    end
+
+    local encoded = aes256Ctr(encrypted, encryptionKey, iv)
+    local json, decodeError = base64Decode(encoded)
+    if not json then return nil, decodeError end
     return json, nil, false
 end
 
@@ -3839,7 +4267,7 @@ local function ensureFolder(path)
     return true
 end
 
-local function migrateLegacy(target)
+local function migrateLegacy(target, password)
     if not fileSupport() or type(listfiles) ~= "function" then return end
     pcall(function()
         if folderSupport() and not isfolder(LEGACY_ROOT) then return end
@@ -3851,7 +4279,7 @@ local function migrateLegacy(target)
                     if not pathExists(destination) then
                         local json = readfile(path)
                         HttpService:JSONDecode(json)
-                        writefile(destination, encodeConfig(json))
+                        writefile(destination, encodeConfig(json, password))
                     end
                 end)
             end
@@ -3859,7 +4287,7 @@ local function migrateLegacy(target)
     end)
 end
 
-local function migratePlainConfigs(target)
+local function migratePlainConfigs(target, password)
     if not fileSupport() or type(listfiles) ~= "function" then return end
     pcall(function()
         for _, path in ipairs(listfiles(target)) do
@@ -3870,7 +4298,7 @@ local function migratePlainConfigs(target)
                     if not pathExists(destination) then
                         local json = readfile(path)
                         HttpService:JSONDecode(json)
-                        writefile(destination, encodeConfig(json))
+                        writefile(destination, encodeConfig(json, password))
                         if type(delfile) == "function" then pcall(delfile, path) end
                     end
                 end)
@@ -3879,14 +4307,30 @@ local function migratePlainConfigs(target)
     end)
 end
 
+function Library:SetConfigPassword(password)
+    if password == nil or tostring(password) == "" then
+        self.ConfigPassword = nil
+        return true
+    end
+    local normalized, passwordError = normalizeConfigPassword(password)
+    if not normalized then return false, passwordError end
+    self.ConfigPassword = normalized
+    local folder = self:GetConfigFolder()
+    if ensureFolder(folder) then
+        migrateLegacy(folder, normalized)
+        migratePlainConfigs(folder, normalized)
+    end
+    return true
+end
+
 function Library:SetScriptName(value)
     scriptFolder = safeName(value)
     self.ScriptName = scriptFolder
     self.Folder = ROOT .. "/" .. scriptFolder
     self.ConfigFolder = self.Folder .. "/configs"
-    if ensureFolder(self.ConfigFolder) then
-        migrateLegacy(self.ConfigFolder)
-        migratePlainConfigs(self.ConfigFolder)
+    if ensureFolder(self.ConfigFolder) and self.ConfigPassword then
+        migrateLegacy(self.ConfigFolder, self.ConfigPassword)
+        migratePlainConfigs(self.ConfigFolder, self.ConfigPassword)
     end
     return self.Folder
 end
@@ -3937,14 +4381,15 @@ function Library:ListFiles(subFolder)
     return names
 end
 
-function Library:SaveConfigFile(name)
+function Library:SaveConfigFile(name, password)
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
     local ok, err = pcall(function()
         if not ensureFolder(folder) then error("cannot create config folder", 0) end
         local json = HttpService:JSONEncode(self:GetConfig())
-        writefile(folder .. "/" .. base .. CONFIG_EXTENSION, encodeConfig(json))
+        writefile(folder .. "/" .. base .. CONFIG_EXTENSION,
+            encodeConfig(json, password or self.ConfigPassword))
 
         local legacyPath = folder .. "/" .. base .. LEGACY_CONFIG_EXTENSION
         if type(delfile) == "function" and pathExists(legacyPath) then
@@ -3954,32 +4399,43 @@ function Library:SaveConfigFile(name)
     return ok, err
 end
 
-function Library:LoadConfigFile(name)
+function Library:LoadConfigFile(name, password)
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
     local encryptedPath = folder .. "/" .. base .. CONFIG_EXTENSION
     local legacyPath = folder .. "/" .. base .. LEGACY_CONFIG_EXTENSION
-    local ok, result, wasLegacy = pcall(function()
+    local rootLegacyPath = LEGACY_ROOT .. "/" .. base .. LEGACY_CONFIG_EXTENSION
+    local ok, result, wasLegacy, migrationSource = pcall(function()
         local json
         local legacy = false
+        local sourceToDelete = nil
         if pathExists(encryptedPath) then
             local decodeError, upgrade
-            json, decodeError, upgrade = decodeConfig(readfile(encryptedPath))
+            json, decodeError, upgrade = decodeConfig(readfile(encryptedPath), password or self.ConfigPassword)
             if not json then error(decodeError, 0) end
             legacy = upgrade == true
         elseif pathExists(legacyPath) then
             json = readfile(legacyPath)
             legacy = true
+        elseif pathExists(rootLegacyPath) then
+            json = readfile(rootLegacyPath)
+            legacy = true
+            sourceToDelete = rootLegacyPath
         else
             error("config not found: " .. base, 0)
         end
-        return HttpService:JSONDecode(json), legacy
+        return HttpService:JSONDecode(json), legacy, sourceToDelete
     end)
     if not ok then return false, result end
     local applyOk, loaded, loadError = pcall(self.LoadConfig, self, result)
     if not applyOk then return false, loaded end
-    if loaded and wasLegacy then self:SaveConfigFile(base) end
+    if loaded and wasLegacy then
+        local saved = self:SaveConfigFile(base, password or self.ConfigPassword)
+        if saved and migrationSource and type(delfile) == "function" and pathExists(migrationSource) then
+            pcall(delfile, migrationSource)
+        end
+    end
     return loaded, loadError
 end
 
@@ -3991,6 +4447,15 @@ function Library:ListConfigs()
         for _, path in ipairs(listfiles(self:GetConfigFolder())) do
             local name = string.match(path, "([^/\\]+)%.wcfg$")
                 or string.match(path, "([^/\\]+)%.json$")
+            if name and not seen[name] then
+                seen[name] = true
+                names[#names + 1] = name
+            end
+        end
+    end)
+    pcall(function()
+        for _, path in ipairs(listfiles(LEGACY_ROOT)) do
+            local name = string.match(path, "([^/\\]+)%.json$")
             if name and not seen[name] then
                 seen[name] = true
                 names[#names + 1] = name
@@ -4013,6 +4478,11 @@ function Library:DeleteConfigFile(name)
             if ok then deleted = true else lastError = err end
         end
     end
+    local rootLegacyPath = LEGACY_ROOT .. "/" .. base .. LEGACY_CONFIG_EXTENSION
+    if pathExists(rootLegacyPath) then
+        local ok, err = pcall(delfile, rootLegacyPath)
+        if ok then deleted = true else lastError = err end
+    end
     if deleted then return true end
     return false, lastError or ("config not found: " .. base)
 end
@@ -4032,6 +4502,8 @@ function Library:Unload()
     end
     self.Window = nil
     self.Elements = {}
+    self.NoSaveFlags = {}
+    self.ConfigPassword = nil
     for _, listener in ipairs(unloadListeners) do
         pcall(listener)
     end
