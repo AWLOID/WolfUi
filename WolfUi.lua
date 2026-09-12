@@ -162,9 +162,13 @@ local function approach(a, b, k)
     return a + (b - a) * k
 end
 
-local function move(a, b, amount)
-    if a < b then return math.min(a + amount, b) end
-    return math.max(a - amount, b)
+local function motionFactor(speed, dt)
+    return 1 - math.exp(-math.max(0, speed) * math.min(dt, 0.1))
+end
+
+local function roundPixel(value)
+    value = tonumber(value) or 0
+    return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
 end
 
 local fadeValues = setmetatable({}, {__mode = "k"})
@@ -212,8 +216,8 @@ end
 
 local function rect(parent, x, y, w, h, color, radius, class)
     local object = Instance.new(class or "Frame")
-    object.Position = UDim2.fromOffset(x, y)
-    object.Size = UDim2.fromOffset(w, h)
+    object.Position = UDim2.fromOffset(roundPixel(x), roundPixel(y))
+    object.Size = UDim2.fromOffset(math.max(0, roundPixel(w)), math.max(0, roundPixel(h)))
     object.BorderSizePixel = 0
     object.BackgroundColor3 = color or white
     if object:IsA("TextButton") then
@@ -239,8 +243,8 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
     opts = opts or {}
     local label = new("TextLabel", parent, {
         BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(x, y),
-        Size = UDim2.fromOffset(w, h),
+        Position = UDim2.fromOffset(roundPixel(x), roundPixel(y)),
+        Size = UDim2.fromOffset(math.max(0, roundPixel(w)), math.max(0, roundPixel(h))),
         Text = tostring(value or ""),
         Font = opts.Font or Enum.Font.Gotham,
         TextSize = size or 12,
@@ -259,7 +263,7 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
     function api:GetText() return label.Text end
     function api:Color(v) label.TextColor3 = v end
     function api:Alpha(v) label.TextTransparency = 1 - v end
-    function api:Width(v) label.Size = UDim2.fromOffset(v, label.Size.Y.Offset) end
+    function api:Width(v) label.Size = UDim2.fromOffset(math.max(0, roundPixel(v)), label.Size.Y.Offset) end
     return api
 end
 
@@ -270,8 +274,8 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
         isImage = true
         object = new("ImageLabel", parent, {
             BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(size, size),
+            Position = UDim2.fromOffset(roundPixel(x), roundPixel(y)),
+            Size = UDim2.fromOffset(roundPixel(size), roundPixel(size)),
             Image = image,
             ImageRectOffset = offset,
             ImageRectSize = sheetSize,
@@ -283,8 +287,8 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
         isImage = false
         object = new("TextLabel", parent, {
             BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(size, size),
+            Position = UDim2.fromOffset(roundPixel(x), roundPixel(y)),
+            Size = UDim2.fromOffset(roundPixel(size), roundPixel(size)),
             Text = fallback or "*",
             Font = Enum.Font.GothamBold,
             TextSize = math.max(8, size - 4),
@@ -341,9 +345,9 @@ end
 
 local WINDOW_W, WINDOW_H = 590, 350
 local SIDEBAR_W, RAIL_W = 70, 30
-local CONTENT_W = WINDOW_W - SIDEBAR_W - RAIL_W 
+local CONTENT_W = WINDOW_W - SIDEBAR_W - RAIL_W
 local PAD = 10
-local W = CONTENT_W - PAD * 3 
+local W = CONTENT_W - PAD * 3
 local GAP = 10
 local TAB_SLOT = 70
 
@@ -353,21 +357,20 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 300
 
 local Library = {
-    Version = "3.4.0",
+    Version = "4.0.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
-    ConfigPassword = nil,
     Themes = themes,
     ThemeNames = {"Wolf", "Slate", "Black"},
-    FadeAnimations = false,
-    FadeDuration = 0.18,
+    FadeAnimations = true,
+    FadeDuration = 0.16,
     ScaleOptions = {100, 75, 50},
     Theme = 1,
     Scale = 100,
     Accent = accent,
     AccentAlpha = 1,
-    
+
     Limits = {
         ClampWindow = true,
         Margin = 24,
@@ -416,12 +419,14 @@ end
 
 local function fadeAlpha(current, target, dt)
     if not Library.FadeAnimations then return target end
-    return move(current, target, dt / Library.FadeDuration)
+    local nextValue = approach(current, target, motionFactor(5 / Library.FadeDuration, dt))
+    if math.abs(target - nextValue) < 0.001 then return target end
+    return nextValue
 end
 
 function Library:SetFadeAnimations(enabled, duration)
     self.FadeAnimations = enabled == true
-    if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.18, 0.01, 5) end
+    if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.16, 0.05, 2) end
     if not self.FadeAnimations then
         restoreFades()
         local window = self.Window
@@ -639,10 +644,6 @@ function Library:CreateWindow(opts)
 
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive = {}, {}, {}, true
     Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
-    if opts.ConfigPassword ~= nil then
-        local passwordOk, passwordError = Library:SetConfigPassword(opts.ConfigPassword)
-        if not passwordOk then error(passwordError, 0) end
-    end
     if opts.FadeAnimations ~= nil or opts.FadeDuration ~= nil then
         self:SetFadeAnimations(opts.FadeAnimations == nil and self.FadeAnimations or opts.FadeAnimations, opts.FadeDuration)
     end
@@ -695,7 +696,7 @@ function Library:CreateWindow(opts)
     gui.IgnoreGuiInset = true
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.DisplayOrder = opts.DisplayOrder or 10000
-    
+
     if type(syn) == "table" and type(syn.protect_gui) == "function" then
         pcall(function() syn.protect_gui(gui) end)
     elseif type(protectgui) == "function" then
@@ -744,7 +745,7 @@ function Library:CreateWindow(opts)
             window.Position = (viewport - Vector2.new(WINDOW_W * s, WINDOW_H * s)) / 2
             window.Initialized = true
         end
-        
+
         local limitsClamp = Library.Limits
         if limitsClamp.ClampWindow ~= false then
             local keep = tonumber(limitsClamp.Margin) or 24
@@ -892,7 +893,7 @@ function Library:CreateWindow(opts)
     connect(UIS.InputBegan, function(input)
         if primary(input) and window.Opened then
             local point = Vector2.new(input.Position.X, input.Position.Y)
-            
+
             local current = window.Opened
             while current do
                 if inside(point, current.Object) or inside(point, current.Anchor) then break end
@@ -969,7 +970,7 @@ function Library:CreateWindow(opts)
             scaleButtons[#scaleButtons + 1] = button
         end
         scaleHolder.Size = UDim2.fromOffset(180, rows * 40 - 9)
-        
+
         settingsPopup.Height = 26 + rows * 40 - 9 + 15
     end
     window.RebuildScaleButtons = rebuildScaleButtons
@@ -1092,7 +1093,7 @@ function Library:CreateWindow(opts)
             )
             config.Position = target
             if onDrop then config.Custom, config.Target = true, target end
-            object.Position = UDim2.fromOffset(target.X, target.Y)
+            object.Position = UDim2.fromOffset(roundPixel(target.X), roundPixel(target.Y))
         end, function(cancelled, moved)
             if cancelled then return end
             if moved then
@@ -1173,7 +1174,7 @@ function Library:CreateWindow(opts)
             watermarkText:SetText(caption)
             local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 22))
             local width = math.max(60, bounds.X + 38)
-            watermark.Size = UDim2.fromOffset(width, 22)
+            watermark.Size = UDim2.fromOffset(roundPixel(width), 22)
             watermarkText:Width(math.max(40, bounds.X + 2))
             local pos = Vector2.new(
                 math.clamp(wm.Position.X, 0, math.max(0, viewport.X - width)),
@@ -1194,7 +1195,7 @@ function Library:CreateWindow(opts)
         if showOpen then
             local width, height = oc.Width, oc.Height
             local size = math.min(width, height)
-            reopen.Size = UDim2.fromOffset(width, height)
+            reopen.Size = UDim2.fromOffset(roundPixel(width), roundPixel(height))
             local pos = Vector2.new(
                 math.clamp(oc.Position.X, 0, math.max(0, viewport.X - width)),
                 math.clamp(oc.Position.Y, 0, math.max(0, viewport.Y - height))
@@ -1219,7 +1220,7 @@ function Library:CreateWindow(opts)
             tooltip.Visible = true
             tooltipText:SetText(caption)
             tooltipText:Width(bounds.X + 2)
-            tooltip.Size = UDim2.fromOffset(width, 20)
+            tooltip.Size = UDim2.fromOffset(roundPixel(width), 20)
             tooltip.BackgroundColor3 = palette[1]
             local origin = window.TooltipObject.AbsolutePosition
             tooltip.Position = UDim2.fromOffset(
@@ -1239,7 +1240,7 @@ function Library:CreateWindow(opts)
     window.NotifyHolder = notifyHolder
 
     connect(UIS.InputBegan, function(input, processed)
-        
+
         if window.PendingKeybind then
             local pending = window.PendingKeybind
             if input.UserInputType == Enum.UserInputType.Keyboard then
@@ -1296,7 +1297,7 @@ function Library:CreateWindow(opts)
         if not Runtime.Alive then return end
         restoreFades()
         dt = math.min(dt, 0.1)
-        local k = math.min(24 * dt, 1)
+        local k = motionFactor(18, dt)
 
         local theme = themes[state.Theme] or themes[1]
         for i, target in ipairs(theme) do
@@ -1328,11 +1329,12 @@ function Library:CreateWindow(opts)
             notif.Life = notif.Life - dt
             local target = (notif.Life > 0) and 1 or 0
             notif.Alpha = fadeAlpha(notif.Alpha, target, dt)
+            notif.Y = approach(notif.Y, notif.TargetY, motionFactor(20, dt))
             fadeGroup(notif.Object, notif.Alpha)
             notif.Object.BackgroundColor3 = palette[2]
             notif.Bar.BackgroundColor3 = accent
             notif.Icon:Color(accent)
-            notif.Object.Position = UDim2.fromOffset(math.floor(260 * (1 - notif.Alpha) + 0.5), notif.Y)
+            notif.Object.Position = UDim2.fromOffset(roundPixel(260 * (1 - notif.Alpha)), roundPixel(notif.Y))
             if notif.Life <= 0 and notif.Alpha <= 0.01 then
                 notif.Object:Destroy()
                 table.remove(window.Notifications, index)
@@ -1340,7 +1342,7 @@ function Library:CreateWindow(opts)
         end
         local offset = 0
         for _, notif in ipairs(window.Notifications) do
-            notif.Y = offset
+            notif.TargetY = offset
             offset = offset + notif.Height + 8
         end
 
@@ -1368,7 +1370,7 @@ function Library:CreateWindow(opts)
             local show = pop:IsActive()
             pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, dt)
             if pop.AnimateHeight then
-                pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, math.min(16 * dt, 1))
+                pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, dt))
             else
                 pop.CurrentHeight = pop.Height
             end
@@ -1377,7 +1379,7 @@ function Library:CreateWindow(opts)
             object.Interactable = show and window.Visible
             fadeGroup(object, pop.Alpha)
             object.BackgroundColor3 = palette[1]
-            object.Size = UDim2.fromOffset(pop.Width, math.max(1, pop.CurrentHeight))
+            object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
             if object.Visible then
                 local s = math.max(0.001, scale.Scale)
                 local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
@@ -1385,8 +1387,8 @@ function Library:CreateWindow(opts)
                 local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
                 local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
                 object.Position = UDim2.fromOffset(
-                    math.clamp(origin.X, minX, math.max(minX, maxX)),
-                    math.clamp(origin.Y, minY, math.max(minY, maxY))
+                    roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
+                    roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
                 )
             end
         end
@@ -1684,7 +1686,7 @@ local function createMiniButton(window, config)
         self.Custom = true
         self.Position = Vector2.new(tonumber(x) or MINI_MARGIN, tonumber(y) or MINI_MARGIN)
         window.LayoutMini()
-        button.Position = UDim2.fromOffset(self.Position.X, self.Position.Y)
+        button.Position = UDim2.fromOffset(roundPixel(self.Position.X), roundPixel(self.Position.Y))
         window.MiniPositions[self.Key] = {X = self.Position.X, Y = self.Position.Y}
     end
     function mini:Reset()
@@ -1692,7 +1694,7 @@ local function createMiniButton(window, config)
         self.Custom = false
         window.MiniPositions[self.Key] = nil
         window.LayoutMini()
-        button.Position = UDim2.fromOffset(self.Target.X, self.Target.Y)
+        button.Position = UDim2.fromOffset(roundPixel(self.Target.X), roundPixel(self.Target.Y))
     end
     function mini:Destroy()
         if self.Destroyed then return end
@@ -1961,7 +1963,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     local HUE_TOP = SV_TOP + SV_H + 10
     local ALPHA_TOP = HUE_TOP + BAR_H + 8
     local ROW_TOP = (useAlpha and (ALPHA_TOP + BAR_H) or (HUE_TOP + BAR_H)) + 12
-    
+
     local presets = {}
     for _, swatch in ipairs(type(opts.Presets) == "table" and opts.Presets or DEFAULT_PRESETS) do
         if typeof(swatch) == "Color3" then presets[#presets + 1] = swatch end
@@ -2113,11 +2115,11 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         svX = approach(svX, math.clamp(INNER * saturation, 5, INNER - 5), k)
         svY = approach(svY, math.clamp(SV_H * (1 - value), 5, SV_H - 5), k)
         hueX = approach(hueX, math.clamp(INNER * hue, 0, INNER - 6), k)
-        svDot.Position = UDim2.fromOffset(svX - 5, svY - 5)
-        hueThumb.Position = UDim2.fromOffset(hueX, -3)
+        svDot.Position = UDim2.fromOffset(roundPixel(svX - 5), roundPixel(svY - 5))
+        hueThumb.Position = UDim2.fromOffset(roundPixel(hueX), -3)
         if useAlpha then
             alphaX = approach(alphaX, math.clamp(INNER * alphaValue, 0, INNER - 6), k)
-            alphaThumb.Position = UDim2.fromOffset(alphaX, -3)
+            alphaThumb.Position = UDim2.fromOffset(roundPixel(alphaX), -3)
         end
         if hue ~= lastHue then
             svGradient.Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))
@@ -2302,7 +2304,7 @@ function Tab:AddToggle(opts)
         config.Enabled = config.Enabled ~= false
         mini = self.Window:AddMiniButton(config)
         if config.ShowWhenActive then
-            
+
             mini.Enabled = value
             overlayStep(function() mini.Enabled = value end)
         end
@@ -2316,8 +2318,8 @@ function Tab:AddToggle(opts)
     local a, tint = value and 1 or 0, palette[3]
     step(function(dt, k)
         a = approach(a, value and 1 or 0, k)
-        fill.Position = UDim2.fromOffset(7 * (1 - a), 7 * (1 - a))
-        fill.Size = UDim2.fromOffset(14 * a, 14 * a)
+        fill.Position = UDim2.fromOffset(roundPixel(7 * (1 - a)), roundPixel(7 * (1 - a)))
+        fill.Size = UDim2.fromOffset(roundPixel(14 * a), roundPixel(14 * a))
         fill.BackgroundColor3 = accent
         fill.BackgroundTransparency = 1 - a * state.AccentAlpha
         mark:Alpha(a)
@@ -2400,10 +2402,10 @@ local function makeSlider(tab, parent, x, y, w, opts)
     local a = (value - min) / span
     step(function(dt, k)
         a = approach(a, (value - min) / span, k)
-        fillClip.Size = UDim2.fromOffset((w - 20) * a, 10)
+        fillClip.Size = UDim2.fromOffset(roundPixel((w - 20) * a), 10)
         fill.BackgroundColor3 = accent
         fill.BackgroundTransparency = 1 - state.AccentAlpha
-        thumb.Position = UDim2.fromOffset(math.clamp((w - 20) * a, 5, w - 25) - 5, 0)
+        thumb.Position = UDim2.fromOffset(roundPixel(math.clamp((w - 20) * a, 5, w - 25) - 5), 0)
         valueLabel:SetText(string.format("%." .. tostring(decimals) .. "f", value) .. suffix)
     end)
 
@@ -2446,7 +2448,7 @@ function Tab:AddDropdown(opts)
     step(function() arrow:Color(palette[3]) end)
 
     local ROW_H = 31
-    
+
     local maxRows = math.floor(tonumber(opts.MaxRows) or 5)
     if maxRows <= 0 then maxRows = math.max(1, #options) end
     local pop = createPopup(self.Window, control, controlW, math.min(#options, maxRows) * ROW_H, true, self.ParentPopup)
@@ -2553,9 +2555,9 @@ function Tab:AddDropdown(opts)
             entry.Alpha = approach(entry.Alpha, selected and 1 or 0, k)
             entry.Object.BackgroundColor3 = palette[5]
             entry.Object.BackgroundTransparency = 1 - entry.Alpha
-            entry.Title.Object.Position = UDim2.fromOffset(10 + 20 * entry.Alpha, 0)
+            entry.Title.Object.Position = UDim2.fromOffset(roundPixel(10 + 20 * entry.Alpha), 0)
             entry.Title:Color(palette[3]:Lerp(white, entry.Alpha))
-            entry.Mark.Object.Position = UDim2.fromOffset(10 * entry.Alpha, 9.5)
+            entry.Mark.Object.Position = UDim2.fromOffset(roundPixel(10 * entry.Alpha), 10)
             entry.Mark:Color(accent)
             entry.Mark:Alpha(entry.Alpha * state.AccentAlpha)
         end
@@ -2620,9 +2622,7 @@ function Tab:AddTextBox(opts)
     local name = opts.Name or "Text field"
     local flag = opts.Flag or (self.Name .. "." .. name)
     local w = self:_width(opts.Width)
-    local withTitle = opts.ShowName and true or false
-    local private = opts.Private == true
-    local placeholder = tostring(opts.Placeholder or name)
+    local withTitle = opts.ShowName == true
     local height = withTitle and 58 or 31
     local card = self:_card(w, height, name)
     if withTitle then
@@ -2636,13 +2636,12 @@ function Tab:AddTextBox(opts)
         Position = UDim2.fromOffset(10, withTitle and 27 or 0),
         Size = UDim2.fromOffset(w - 20, 31),
         Text = tostring(opts.Default or ""),
-        PlaceholderText = private and "" or placeholder,
+        PlaceholderText = tostring(opts.Placeholder or name),
         PlaceholderColor3 = palette[3],
         ClearTextOnFocus = false,
         Font = Enum.Font.Gotham,
         TextSize = 12,
         TextColor3 = white,
-        TextTransparency = private and 1 or 0,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center,
         TextTruncate = Enum.TextTruncate.AtEnd,
@@ -2650,27 +2649,11 @@ function Tab:AddTextBox(opts)
         ClipsDescendants = true,
         ZIndex = 2,
     })
-    local privateLabel
-    local function updatePrivateLabel()
-        if not privateLabel then return end
-        local length = utf8.len(box.Text) or #box.Text
-        privateLabel:SetText(length > 0 and string.rep("•", length) or placeholder)
-        privateLabel:Color(length > 0 and white or palette[3])
-    end
-    if private then
-        box.ZIndex = 3
-        privateLabel = text(card, "", 10, withTitle and 27 or 0, w - 20, 31, 12, white)
-        privateLabel.Object.ZIndex = 2
-        updatePrivateLabel()
-    end
     step(function()
         box.PlaceholderColor3 = palette[3]
-        if privateLabel then
-            privateLabel:Color(box.Text ~= "" and white or palette[3])
-        end
     end)
 
-    local maxLength = math.floor(tonumber(opts.MaxLength) or 0)
+    local maxLength = math.max(0, math.floor(tonumber(opts.MaxLength) or 0))
     local api = baseApi(self, card, flag)
 
     local function push(fire)
@@ -2680,7 +2663,6 @@ function Tab:AddTextBox(opts)
     end
 
     connect(box:GetPropertyChangedSignal("Text"), function()
-        updatePrivateLabel()
         local length = maxLength > 0 and utf8.len(box.Text) or nil
         if length and length > maxLength then
             local offset = utf8.offset(box.Text, maxLength + 1)
@@ -2693,20 +2675,22 @@ function Tab:AddTextBox(opts)
     end)
 
     if opts.OnEnter then
-        connect(box.FocusLost, function(enter)
-            if enter then task.spawn(opts.OnEnter, box.Text) end
+        connect(box.FocusLost, function(enterPressed)
+            if enterPressed then task.spawn(opts.OnEnter, box.Text) end
         end)
     end
 
-    function api:Get() return box.Text end
+    function api:Get()
+        return box.Text
+    end
+
     function api:Set(value, silent)
         box.Text = tostring(value or "")
         if silent then Library.Flags[flag] = box.Text end
     end
+
     function api:SetName(value)
-        placeholder = tostring(value)
-        box.PlaceholderText = private and "" or placeholder
-        updatePrivateLabel()
+        box.PlaceholderText = tostring(value)
     end
 
     if opts.NoSave then Library.NoSaveFlags[flag] = true end
@@ -2804,7 +2788,7 @@ function Tab:AddMiniButton(opts)
 
     local api = self:AddToggle({
         Name = name,
-        Description = opts.Description or (mode == "Toggle" and "Кнопка на экране" or "Кнопка-действие"),
+        Description = opts.Description or (mode == "Toggle" and "On-screen toggle" or "On-screen action"),
         Flag = flag,
         Default = opts.Default ~= false,
         Width = opts.Width,
@@ -3007,7 +2991,7 @@ function Tab:AddProgressBar(opts)
 
     step(function(dt, k)
         shown = approach(shown, value, k)
-        fillClip.Size = UDim2.fromOffset((w - 20) * shown, 8)
+        fillClip.Size = UDim2.fromOffset(roundPixel((w - 20) * shown), 8)
         fill.BackgroundColor3 = accent
         fill.BackgroundTransparency = 1 - state.AccentAlpha
         if opts.ShowPercent ~= false then
@@ -3071,7 +3055,7 @@ function Tab:AddList(opts)
     })
     step(function() holder.ScrollBarImageColor3 = palette[4] end)
 
-    local empty = muted(holder, opts.Empty or "пусто", 10, 0, w - 40, ROW_H, 11)
+    local empty = muted(holder, opts.Empty or "empty", 10, 0, w - 40, ROW_H, 11)
 
     local function push(fire)
         local copy = {}
@@ -3099,7 +3083,7 @@ function Tab:AddList(opts)
             connect(remove.MouseEnter, function() hover = true end)
             connect(remove.MouseLeave, function() hover = false end)
             step(function(dt, k)
-                
+
                 if not row.Parent then return end
                 icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
                 caption:Color(white)
@@ -3116,7 +3100,7 @@ function Tab:AddList(opts)
             Position = UDim2.fromOffset(10, 28),
             Size = UDim2.fromOffset(w - 62, 31),
             Text = "",
-            PlaceholderText = opts.Placeholder or "добавить",
+            PlaceholderText = opts.Placeholder or "Add item",
             PlaceholderColor3 = palette[3],
             ClearTextOnFocus = false,
             Font = Enum.Font.Gotham,
@@ -3241,28 +3225,17 @@ function Tab:AddConfigManager(opts)
     opts = opts or {}
     self:AddSection(opts.Name or "Configs")
 
-    local passwordBox
-    if opts.Password == nil then
-        passwordBox = self:AddTextBox({
-            Name = opts.PasswordName or "Пароль конфига",
-            Flag = (self.Name .. ".ConfigPassword"),
-            Placeholder = opts.PasswordPlaceholder or "минимум 8 символов",
-            MaxLength = tonumber(opts.PasswordMaxLength) or 128,
-            ShowName = true,
-            Private = true,
-            NoSave = true,
-        })
-    end
+    local nameFlag = self.Name .. ".ConfigName"
+    local pickerFlag = self.Name .. ".ConfigPick"
     local nameBox = self:AddTextBox({
-        Name = opts.Placeholder or "Имя конфига",
-        Flag = (self.Name .. ".ConfigName"),
+        Name = opts.NameLabel or "Config name",
+        Flag = nameFlag,
         Placeholder = opts.Placeholder or "default",
         Width = 0.5,
         NoSave = true,
     })
-    local pickerFlag = self.Name .. ".ConfigPick"
     local picker = self:AddDropdown({
-        Name = "Сохранённые",
+        Name = opts.ListLabel or "Saved configs",
         Flag = pickerFlag,
         Options = Library:ListConfigs(),
         Width = 0.5,
@@ -3277,58 +3250,74 @@ function Tab:AddConfigManager(opts)
     local function chosen()
         local value = nameBox:Get()
         if value == nil or value == "" then value = picker:Get() end
+        if value == nil or value == "" then value = "default" end
         return value
-    end
-
-    local function password()
-        local value = opts.Password
-        if type(value) == "function" then value = value() end
-        if value == nil and passwordBox then value = passwordBox:Get() end
-        return value
-    end
-
-    local function clearPassword(ok)
-        if ok and passwordBox and opts.RememberPassword ~= true then
-            passwordBox:Set("", true)
-        end
     end
 
     self:AddButton({
-        Name = "Сохранить", Text = "Сохранить", Compact = true, Width = 0.33,
+        Name = "Save config",
+        Text = "Save",
+        Compact = true,
+        Width = 0.33,
         Callback = function()
-            local ok, err = Library:SaveConfigFile(chosen(), password())
-            clearPassword(ok)
-            refresh()
+            local name = chosen()
+            local ok, result = Library:SaveConfigFile(name)
+            if ok then refresh() end
             Library:Notify({
                 Title = "Configs",
-                Text = ok and ("Сохранено: " .. tostring(chosen())) or tostring(err),
+                Text = ok and ("Saved: " .. tostring(name)) or tostring(result),
             })
         end,
     })
     self:AddButton({
-        Name = "Загрузить", Text = "Загрузить", Compact = true, Width = 0.33,
+        Name = "Load config",
+        Text = "Load",
+        Compact = true,
+        Width = 0.33,
         Callback = function()
-            local ok, err = Library:LoadConfigFile(chosen(), password())
-            clearPassword(ok)
+            local name = chosen()
+            local ok, result = Library:LoadConfigFile(name)
             Library:Notify({
                 Title = "Configs",
-                Text = ok and ("Загружено: " .. tostring(chosen())) or tostring(err),
+                Text = ok and ("Loaded: " .. tostring(name)) or tostring(result),
             })
         end,
     })
     self:AddButton({
-        Name = "Удалить", Text = "Удалить", Compact = true, Width = 0.33,
+        Name = "Delete config",
+        Text = "Delete",
+        Compact = true,
+        Width = 0.33,
         Callback = function()
-            Library:DeleteConfigFile(chosen())
-            refresh()
+            local name = chosen()
+            Library:Dialog({
+                Title = "Delete config?",
+                Text = "This will permanently delete " .. tostring(name) .. ".json.",
+                ConfirmText = "Delete",
+                CancelText = "Cancel",
+                Confirm = function()
+                    local ok, result = Library:DeleteConfigFile(name)
+                    if ok then refresh() end
+                    Library:Notify({
+                        Title = "Configs",
+                        Text = ok and ("Deleted: " .. tostring(name)) or tostring(result),
+                    })
+                end,
+            })
         end,
     })
     self:AddButton({
-        Name = "Обновить список", Text = "Обновить список", Compact = true,
+        Name = "Refresh configs",
+        Text = "Refresh",
+        Compact = true,
         Callback = refresh,
     })
 
-    return {Refresh = refresh, Name = nameBox, Picker = picker, Password = passwordBox}
+    return {
+        Refresh = refresh,
+        Name = nameBox,
+        Picker = picker,
+    }
 end
 
 function Library:Notify(opts)
@@ -3353,13 +3342,19 @@ function Library:Notify(opts)
     end
     muted(object, body, 34, title and 26 or 10, width - 46, math.max(14, bounds.Y), 11, nil, {Wrap = true})
 
+    local targetY = 0
+    for _, existing in ipairs(window.Notifications) do
+        targetY = targetY + existing.Height + 8
+    end
+
     local notif = {
         Object = object,
         Bar = bar,
         Icon = icon,
         Height = height,
         Alpha = 0,
-        Y = 0,
+        Y = targetY,
+        TargetY = targetY,
         Life = tonumber(opts.Duration) or 4,
     }
     window.Notifications[#window.Notifications + 1] = notif
@@ -3460,14 +3455,14 @@ function Library:Dialog(opts)
     card.ZIndex = 81
     new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = 0.4})
 
-    text(card, opts.Title or "Вопрос", 20, 16, width - 40, 16, 13, white)
+    text(card, opts.Title or "Confirm action", 20, 16, width - 40, 16, 13, white)
     muted(card, body, 20, 44, width - 40, math.max(16, bounds.Y), 12, nil, {Wrap = true})
 
     local function close()
         shade:Destroy()
     end
 
-    local labels = opts.Buttons or {opts.ConfirmText or "Ок", opts.CancelText or "Отмена"}
+    local labels = opts.Buttons or {opts.ConfirmText or "Confirm", opts.CancelText or "Cancel"}
     local count = math.max(1, #labels)
     local buttonW = math.floor((width - 40 - 10 * (count - 1)) / count)
     for index, label in ipairs(labels) do
@@ -3650,24 +3645,8 @@ end
 
 local ROOT = "WolfUi"
 local LEGACY_ROOT = "WolfLib"
+local CONFIG_EXTENSION = ".json"
 local scriptFolder = "Default"
-local CONFIG_EXTENSION = ".wcfg"
-local LEGACY_CONFIG_EXTENSION = ".json"
-local CONFIG_MAGIC = "WCF3"
-local CONFIG_FORMAT_VERSION = 3
-local CONFIG_KDF_ITERATIONS = 8192
-local CONFIG_TAG_SIZE = 32
-local OBFUSCATED_CONFIG_MAGIC = "WCFG"
-local OBFUSCATED_CONFIG_VERSION = 2
-local LEGACY_CONFIG_PREFIX = "WOLFUI_CFG"
-local LEGACY_CONFIG_FORMAT_VERSION = "1"
-local LEGACY_CONFIG_SECRET = "W0lfUi::Config::3.3::x9K2mQ7pL4sN8vR5"
-local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local BASE64_LOOKUP = {}
-
-for index = 1, #BASE64_ALPHABET do
-    BASE64_LOOKUP[string.sub(BASE64_ALPHABET, index, index)] = index - 1
-end
 
 local function safeName(value)
     local name = string.gsub(tostring(value or ""), "[^%w%-%. ]", "_")
@@ -3675,563 +3654,6 @@ local function safeName(value)
     name = string.gsub(name, " +$", "")
     if name == "" then name = "Default" end
     return string.sub(name, 1, 40)
-end
-
-local function checksumValue(value)
-    local first, second = 1, 0
-    for index = 1, #value do
-        first = (first + string.byte(value, index)) % 65521
-        second = (second + first) % 65521
-    end
-    return second * 65536 + first
-end
-
-local function checksum(value)
-    return string.format("%08x", checksumValue(value))
-end
-
-local function xorByte(left, right)
-    local result, place = 0, 1
-    for _ = 1, 8 do
-        if left % 2 ~= right % 2 then result = result + place end
-        left = math.floor(left / 2)
-        right = math.floor(right / 2)
-        place = place * 2
-    end
-    return result
-end
-
-local function xorTransform(value, key)
-    assert(type(key) == "string" and #key > 0, "config key is empty")
-    local output = {}
-    for index = 1, #value do
-        local keyIndex = ((index - 1) % #key) + 1
-        output[index] = string.char(xorByte(string.byte(value, index), string.byte(key, keyIndex)))
-    end
-    return table.concat(output)
-end
-
-local function base64Encode(value)
-    local output = {}
-    for index = 1, #value, 3 do
-        local first = string.byte(value, index)
-        local second = string.byte(value, index + 1) or 0
-        local third = string.byte(value, index + 2) or 0
-        local packed = first * 65536 + second * 256 + third
-
-        output[#output + 1] = string.sub(BASE64_ALPHABET, math.floor(packed / 262144) % 64 + 1,
-            math.floor(packed / 262144) % 64 + 1)
-        output[#output + 1] = string.sub(BASE64_ALPHABET, math.floor(packed / 4096) % 64 + 1,
-            math.floor(packed / 4096) % 64 + 1)
-        output[#output + 1] = index + 1 <= #value
-            and string.sub(BASE64_ALPHABET, math.floor(packed / 64) % 64 + 1,
-                math.floor(packed / 64) % 64 + 1) or "="
-        output[#output + 1] = index + 2 <= #value
-            and string.sub(BASE64_ALPHABET, packed % 64 + 1, packed % 64 + 1) or "="
-    end
-    return table.concat(output)
-end
-
-local function base64Decode(value)
-    if type(value) ~= "string" or #value % 4 ~= 0 then
-        return nil, "invalid base64 length"
-    end
-
-    local output = {}
-    for index = 1, #value, 4 do
-        local first = string.sub(value, index, index)
-        local second = string.sub(value, index + 1, index + 1)
-        local third = string.sub(value, index + 2, index + 2)
-        local fourth = string.sub(value, index + 3, index + 3)
-        local a, b = BASE64_LOOKUP[first], BASE64_LOOKUP[second]
-        local c = third == "=" and 0 or BASE64_LOOKUP[third]
-        local d = fourth == "=" and 0 or BASE64_LOOKUP[fourth]
-
-        if a == nil or b == nil or c == nil or d == nil then
-            return nil, "invalid base64 data"
-        end
-        if third == "=" and fourth ~= "=" then
-            return nil, "invalid base64 padding"
-        end
-        if (third == "=" or fourth == "=") and index + 3 ~= #value then
-            return nil, "invalid base64 padding"
-        end
-
-        local packed = a * 262144 + b * 4096 + c * 64 + d
-        output[#output + 1] = string.char(math.floor(packed / 65536) % 256)
-        if third ~= "=" then output[#output + 1] = string.char(math.floor(packed / 256) % 256) end
-        if fourth ~= "=" then output[#output + 1] = string.char(packed % 256) end
-    end
-    return table.concat(output)
-end
-
-local function legacyConfigKey(nonce)
-    return LEGACY_CONFIG_SECRET .. "\0" .. scriptFolder .. "\0" .. nonce
-end
-
-local function packU32(value)
-    value = math.floor(tonumber(value) or 0) % 4294967296
-    return string.char(
-        value % 256,
-        math.floor(value / 256) % 256,
-        math.floor(value / 65536) % 256,
-        math.floor(value / 16777216) % 256
-    )
-end
-
-local function unpackU32(value, index)
-    if index < 1 or index + 3 > #value then return nil end
-    local first, second, third, fourth = string.byte(value, index, index + 3)
-    return first + second * 256 + third * 65536 + fourth * 16777216
-end
-
-local BIT = bit32
-local BAND = BIT and BIT.band
-local BOR = BIT and BIT.bor
-local BXOR = BIT and BIT.bxor
-local BNOT = BIT and BIT.bnot
-local RSHIFT = BIT and BIT.rshift
-local RROTATE = BIT and BIT.rrotate
-
-local SHA256_CONSTANTS = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-}
-
-local function requireCryptoBits()
-    if not (BAND and BOR and BXOR and BNOT and RSHIFT and RROTATE) then
-        error("WolfUi configs require bit32 support", 0)
-    end
-end
-
-local function add32(...)
-    local result = 0
-    for index = 1, select("#", ...) do
-        result = (result + select(index, ...)) % 4294967296
-    end
-    return result
-end
-
-local function packU32BE(value)
-    value = math.floor(tonumber(value) or 0) % 4294967296
-    return string.char(
-        math.floor(value / 16777216) % 256,
-        math.floor(value / 65536) % 256,
-        math.floor(value / 256) % 256,
-        value % 256
-    )
-end
-
-local function sha256(value)
-    requireCryptoBits()
-    local bitLength = #value * 8
-    local highLength = math.floor(bitLength / 4294967296)
-    local lowLength = bitLength % 4294967296
-    local paddingLength = (56 - ((#value + 1) % 64)) % 64
-    local message = value .. string.char(0x80) .. string.rep("\0", paddingLength)
-        .. packU32BE(highLength) .. packU32BE(lowLength)
-
-    local h0, h1, h2, h3 = 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a
-    local h4, h5, h6, h7 = 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-    local words = {}
-
-    for offset = 1, #message, 64 do
-        for index = 0, 15 do
-            local position = offset + index * 4
-            local a, b, c, d = string.byte(message, position, position + 3)
-            words[index + 1] = a * 16777216 + b * 65536 + c * 256 + d
-        end
-        for index = 17, 64 do
-            local before15 = words[index - 15]
-            local before2 = words[index - 2]
-            local sigma0 = BXOR(RROTATE(before15, 7), RROTATE(before15, 18), RSHIFT(before15, 3))
-            local sigma1 = BXOR(RROTATE(before2, 17), RROTATE(before2, 19), RSHIFT(before2, 10))
-            words[index] = add32(words[index - 16], sigma0, words[index - 7], sigma1)
-        end
-
-        local a, b, c, d = h0, h1, h2, h3
-        local e, f, g, h = h4, h5, h6, h7
-        for index = 1, 64 do
-            local sum1 = BXOR(RROTATE(e, 6), RROTATE(e, 11), RROTATE(e, 25))
-            local choice = BXOR(BAND(e, f), BAND(BNOT(e), g))
-            local temp1 = add32(h, sum1, choice, SHA256_CONSTANTS[index], words[index])
-            local sum0 = BXOR(RROTATE(a, 2), RROTATE(a, 13), RROTATE(a, 22))
-            local majority = BXOR(BAND(a, b), BAND(a, c), BAND(b, c))
-            local temp2 = add32(sum0, majority)
-            h, g, f, e = g, f, e, add32(d, temp1)
-            d, c, b, a = c, b, a, add32(temp1, temp2)
-        end
-
-        h0, h1, h2, h3 = add32(h0, a), add32(h1, b), add32(h2, c), add32(h3, d)
-        h4, h5, h6, h7 = add32(h4, e), add32(h5, f), add32(h6, g), add32(h7, h)
-    end
-
-    return packU32BE(h0) .. packU32BE(h1) .. packU32BE(h2) .. packU32BE(h3)
-        .. packU32BE(h4) .. packU32BE(h5) .. packU32BE(h6) .. packU32BE(h7)
-end
-
-local function hmacSha256(key, value)
-    if #key > 64 then key = sha256(key) end
-    key = key .. string.rep("\0", 64 - #key)
-    local innerPad, outerPad = {}, {}
-    for index = 1, 64 do
-        local byte = string.byte(key, index)
-        innerPad[index] = string.char(BXOR(byte, 0x36))
-        outerPad[index] = string.char(BXOR(byte, 0x5c))
-    end
-    return sha256(table.concat(outerPad) .. sha256(table.concat(innerPad) .. value))
-end
-
-local function xorBytes(left, right)
-    assert(#left == #right, "XOR buffers must have equal length")
-    local output = {}
-    for index = 1, #left do
-        output[index] = string.char(BXOR(string.byte(left, index), string.byte(right, index)))
-    end
-    return table.concat(output)
-end
-
-local function pbkdf2Sha256(password, salt, iterations)
-    local current = hmacSha256(password, salt .. packU32BE(1))
-    local result = current
-    for iteration = 2, iterations do
-        current = hmacSha256(password, current)
-        result = xorBytes(result, current)
-        if iteration % 256 == 0 and type(task) == "table" and type(task.wait) == "function" then
-            task.wait()
-        end
-    end
-    return result
-end
-
-local function deriveConfigKeys(password, salt, iterations)
-    local master = pbkdf2Sha256(password, salt, iterations)
-    local encryptionKey = sha256(master .. "\0WolfUi AES-256" .. salt)
-    local authenticationKey = sha256(master .. "\0WolfUi HMAC-SHA-256" .. salt)
-    return encryptionKey, authenticationKey
-end
-
-local AES_SBOX = {
-    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
-    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
-    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
-    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
-    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
-    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
-    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
-    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
-    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
-    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
-    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
-    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
-    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
-    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
-    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
-    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
-}
-
-local AES_RCON = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36}
-
-local function expandAes256Key(key)
-    assert(type(key) == "string" and #key == 32, "AES-256 requires a 32-byte key")
-    local expanded = {}
-    for index = 1, 32 do expanded[index] = string.byte(key, index) end
-
-    local generated, rconIndex = 32, 1
-    while generated < 240 do
-        local temporary = {
-            expanded[generated - 3], expanded[generated - 2],
-            expanded[generated - 1], expanded[generated],
-        }
-        if generated % 32 == 0 then
-            temporary = {temporary[2], temporary[3], temporary[4], temporary[1]}
-            for index = 1, 4 do temporary[index] = AES_SBOX[temporary[index] + 1] end
-            temporary[1] = BXOR(temporary[1], AES_RCON[rconIndex])
-            rconIndex = rconIndex + 1
-        elseif generated % 32 == 16 then
-            for index = 1, 4 do temporary[index] = AES_SBOX[temporary[index] + 1] end
-        end
-
-        for index = 1, 4 do
-            expanded[generated + index] = BXOR(expanded[generated - 32 + index], temporary[index])
-        end
-        generated = generated + 4
-    end
-    return expanded
-end
-
-local function aesAddRoundKey(state, expanded, round)
-    local offset = round * 16
-    for index = 1, 16 do state[index] = BXOR(state[index], expanded[offset + index]) end
-end
-
-local function aesSubBytes(state)
-    for index = 1, 16 do state[index] = AES_SBOX[state[index] + 1] end
-end
-
-local function aesShiftRows(state)
-    state[2], state[6], state[10], state[14] = state[6], state[10], state[14], state[2]
-    state[3], state[7], state[11], state[15] = state[11], state[15], state[3], state[7]
-    state[4], state[8], state[12], state[16] = state[16], state[4], state[8], state[12]
-end
-
-local function aesXtime(value)
-    local shifted = (value * 2) % 256
-    return value >= 128 and BXOR(shifted, 0x1b) or shifted
-end
-
-local function aesMixColumns(state)
-    for column = 0, 3 do
-        local index = column * 4 + 1
-        local a, b, c, d = state[index], state[index + 1], state[index + 2], state[index + 3]
-        local total = BXOR(a, b, c, d)
-        state[index] = BXOR(a, total, aesXtime(BXOR(a, b)))
-        state[index + 1] = BXOR(b, total, aesXtime(BXOR(b, c)))
-        state[index + 2] = BXOR(c, total, aesXtime(BXOR(c, d)))
-        state[index + 3] = BXOR(d, total, aesXtime(BXOR(d, a)))
-    end
-end
-
-local function aes256EncryptBlock(block, expanded)
-    assert(#block == 16, "AES block must contain 16 bytes")
-    local state = {string.byte(block, 1, 16)}
-    aesAddRoundKey(state, expanded, 0)
-    for round = 1, 13 do
-        aesSubBytes(state)
-        aesShiftRows(state)
-        aesMixColumns(state)
-        aesAddRoundKey(state, expanded, round)
-    end
-    aesSubBytes(state)
-    aesShiftRows(state)
-    aesAddRoundKey(state, expanded, 14)
-    return string.char(table.unpack(state))
-end
-
-local function incrementCounter(counter)
-    for index = 16, 1, -1 do
-        counter[index] = (counter[index] + 1) % 256
-        if counter[index] ~= 0 then break end
-    end
-end
-
-local function aes256Ctr(value, key, iv)
-    assert(type(iv) == "string" and #iv == 16, "AES-CTR requires a 16-byte IV")
-    local expanded = expandAes256Key(key)
-    local counter = {string.byte(iv, 1, 16)}
-    local output = {}
-    for offset = 1, #value, 16 do
-        local stream = aes256EncryptBlock(string.char(table.unpack(counter)), expanded)
-        local length = math.min(16, #value - offset + 1)
-        local block = {}
-        for index = 1, length do
-            block[index] = string.char(BXOR(string.byte(value, offset + index - 1), string.byte(stream, index)))
-        end
-        output[#output + 1] = table.concat(block)
-        incrementCounter(counter)
-    end
-    return table.concat(output)
-end
-
-local function secureRandomBytes(length)
-    local providers = {}
-    if type(crypt) == "table" then providers[#providers + 1] = crypt end
-    if type(syn) == "table" and type(syn.crypt) == "table" then providers[#providers + 1] = syn.crypt end
-    for _, provider in ipairs(providers) do
-        local generator = provider.generatebytes or provider.generate_bytes or provider.random
-        if type(generator) == "function" then
-            local ok, generated = pcall(generator, length)
-            if ok and type(generated) == "string" then
-                local decoded = base64Decode(generated)
-                if decoded and #decoded >= length then return string.sub(decoded, 1, length) end
-                if #generated >= length then return string.sub(generated, 1, length) end
-            end
-        end
-    end
-
-    local chunks, total = {}, 0
-    while total < length do
-        local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
-        local chunk
-        if ok and type(guid) == "string" then
-            local hex = string.gsub(guid, "%-", "")
-            if #hex == 32 then
-                local bytes = {}
-                for index = 1, #hex, 2 do
-                    local byte = tonumber(string.sub(hex, index, index + 1), 16)
-                    if not byte then bytes = nil; break end
-                    bytes[#bytes + 1] = string.char(byte)
-                end
-                if bytes then chunk = table.concat(bytes) end
-            end
-        end
-        if not chunk then
-            chunk = sha256(tostring(os.clock()) .. ":" .. tostring(math.random())
-                .. ":" .. tostring({}) .. ":" .. tostring(total))
-        end
-        chunks[#chunks + 1] = chunk
-        total = total + #chunk
-    end
-    return string.sub(table.concat(chunks), 1, length)
-end
-
-local function constantTimeEqual(left, right)
-    if type(left) ~= "string" or type(right) ~= "string" or #left ~= #right then return false end
-    local difference = 0
-    for index = 1, #left do
-        difference = BOR(difference, BXOR(string.byte(left, index), string.byte(right, index)))
-    end
-    return difference == 0
-end
-
-local function normalizeConfigPassword(password)
-    if password == nil then return nil, "config password is required" end
-    password = tostring(password)
-    local length = utf8.len(password) or #password
-    if length < 8 then return nil, "config password must contain at least 8 characters" end
-    return password
-end
-
-local function encodeConfig(json, password)
-    local passwordError
-    password, passwordError = normalizeConfigPassword(password)
-    if not password then error(passwordError, 0) end
-
-    local salt = secureRandomBytes(16)
-    local iv = secureRandomBytes(16)
-    local encryptionKey, authenticationKey = deriveConfigKeys(password, salt, CONFIG_KDF_ITERATIONS)
-    local encoded = base64Encode(json)
-    local encrypted = aes256Ctr(encoded, encryptionKey, iv)
-    local header = CONFIG_MAGIC
-        .. packU32(CONFIG_FORMAT_VERSION)
-        .. packU32(CONFIG_KDF_ITERATIONS)
-        .. packU32(#salt)
-        .. packU32(#iv)
-        .. packU32(#encrypted)
-    local authenticated = header .. salt .. iv .. encrypted
-    return authenticated .. hmacSha256(authenticationKey, authenticated)
-end
-
-local function decodeLegacyConfig(value)
-    local version, nonce, expected, payload = string.match(value,
-        "^" .. LEGACY_CONFIG_PREFIX .. ":([^:]+):([^:]+):([%x]+):([A-Za-z0-9+/=]+)$")
-    if not version then return nil, "unknown or damaged config format" end
-    if version ~= LEGACY_CONFIG_FORMAT_VERSION then
-        return nil, "unsupported legacy config version: " .. version
-    end
-
-    local encrypted, decodeError = base64Decode(payload)
-    if not encrypted then return nil, decodeError end
-    local json = xorTransform(encrypted, legacyConfigKey(nonce))
-    if checksum(json) ~= string.lower(expected) then
-        return nil, "config integrity check failed"
-    end
-    return json, nil, true
-end
-
-local function decodeObfuscatedConfig(value)
-    if type(value) ~= "string" then return nil, "config data is not a string" end
-    if string.sub(value, 1, #LEGACY_CONFIG_PREFIX + 1) == LEGACY_CONFIG_PREFIX .. ":" then
-        return decodeLegacyConfig(value)
-    end
-    if #value < 20 or string.sub(value, 1, 4) ~= OBFUSCATED_CONFIG_MAGIC then
-        return nil, "unknown or damaged config format"
-    end
-
-    local version = unpackU32(value, 5)
-    local nonceLength = unpackU32(value, 9)
-    local payloadLength = unpackU32(value, 13)
-    local expected = unpackU32(value, 17)
-    if version ~= OBFUSCATED_CONFIG_VERSION then
-        return nil, "unsupported config version: " .. tostring(version)
-    end
-    if not nonceLength or nonceLength < 8 or nonceLength > 64 or not payloadLength then
-        return nil, "invalid config header"
-    end
-
-    local nonceStart = 21
-    local payloadStart = nonceStart + nonceLength
-    if payloadStart - 1 + payloadLength ~= #value then
-        return nil, "invalid config length"
-    end
-
-    local nonce = string.sub(value, nonceStart, payloadStart - 1)
-    local encrypted = string.sub(value, payloadStart)
-    local encoded = xorTransform(encrypted, legacyConfigKey(nonce))
-    local json, decodeError = base64Decode(encoded)
-    if not json then return nil, decodeError end
-    if checksumValue(json) ~= expected then
-        return nil, "config integrity check failed"
-    end
-    return json, nil, false
-end
-
-local function decodeConfig(value, password)
-    if type(value) ~= "string" then return nil, "config data is not a string" end
-    if string.sub(value, 1, 4) == OBFUSCATED_CONFIG_MAGIC
-        or string.sub(value, 1, #LEGACY_CONFIG_PREFIX + 1) == LEGACY_CONFIG_PREFIX .. ":" then
-        local json, decodeError = decodeObfuscatedConfig(value)
-        return json, decodeError, json ~= nil
-    end
-    if #value < 24 + CONFIG_TAG_SIZE or string.sub(value, 1, 4) ~= CONFIG_MAGIC then
-        return nil, "unknown or damaged config format"
-    end
-
-    local version = unpackU32(value, 5)
-    local iterations = unpackU32(value, 9)
-    local saltLength = unpackU32(value, 13)
-    local ivLength = unpackU32(value, 17)
-    local payloadLength = unpackU32(value, 21)
-    if version ~= CONFIG_FORMAT_VERSION then
-        return nil, "unsupported config version: " .. tostring(version)
-    end
-    if not iterations or iterations < 1024 or iterations > 200000
-        or not saltLength or saltLength < 16 or saltLength > 64
-        or ivLength ~= 16 or not payloadLength then
-        return nil, "invalid config header"
-    end
-
-    local saltStart = 25
-    local ivStart = saltStart + saltLength
-    local payloadStart = ivStart + ivLength
-    local tagStart = payloadStart + payloadLength
-    if tagStart - 1 + CONFIG_TAG_SIZE ~= #value then
-        return nil, "invalid config length"
-    end
-
-    local passwordError
-    password, passwordError = normalizeConfigPassword(password)
-    if not password then return nil, passwordError end
-
-    local salt = string.sub(value, saltStart, ivStart - 1)
-    local iv = string.sub(value, ivStart, payloadStart - 1)
-    local encrypted = string.sub(value, payloadStart, tagStart - 1)
-    local actualTag = string.sub(value, tagStart)
-    local encryptionKey, authenticationKey = deriveConfigKeys(password, salt, iterations)
-    local authenticated = string.sub(value, 1, tagStart - 1)
-    local expectedTag = hmacSha256(authenticationKey, authenticated)
-    if not constantTimeEqual(actualTag, expectedTag) then
-        return nil, "wrong password or damaged config"
-    end
-
-    local encoded = aes256Ctr(encrypted, encryptionKey, iv)
-    local json, decodeError = base64Decode(encoded)
-    if not json then return nil, decodeError end
-    return json, nil, false
 end
 
 local function fileSupport()
@@ -4255,72 +3677,34 @@ end
 
 local function ensureFolder(path)
     if not folderSupport() then return false end
-    local built = nil
+    local built
     for part in string.gmatch(path, "[^/]+") do
         built = built and (built .. "/" .. part) or part
         local ok, exists = pcall(isfolder, built)
         if not ok then return false end
-        if not exists then
-            if not pcall(makefolder, built) then return false end
-        end
+        if not exists and not pcall(makefolder, built) then return false end
     end
     return true
 end
 
-local function migrateLegacy(target, password)
+local function migrateLegacyConfigs(target)
     if not fileSupport() or type(listfiles) ~= "function" then return end
     pcall(function()
         if folderSupport() and not isfolder(LEGACY_ROOT) then return end
         for _, path in ipairs(listfiles(LEGACY_ROOT)) do
             local name = string.match(path, "([^/\\]+)%.json$")
             if name then
-                pcall(function()
-                    local destination = target .. "/" .. name .. CONFIG_EXTENSION
-                    if not pathExists(destination) then
+                local destination = target .. "/" .. safeName(name) .. CONFIG_EXTENSION
+                if not pathExists(destination) then
+                    pcall(function()
                         local json = readfile(path)
                         HttpService:JSONDecode(json)
-                        writefile(destination, encodeConfig(json, password))
-                    end
-                end)
+                        writefile(destination, json)
+                    end)
+                end
             end
         end
     end)
-end
-
-local function migratePlainConfigs(target, password)
-    if not fileSupport() or type(listfiles) ~= "function" then return end
-    pcall(function()
-        for _, path in ipairs(listfiles(target)) do
-            local name = string.match(path, "([^/\\]+)%.json$")
-            if name then
-                pcall(function()
-                    local destination = target .. "/" .. name .. CONFIG_EXTENSION
-                    if not pathExists(destination) then
-                        local json = readfile(path)
-                        HttpService:JSONDecode(json)
-                        writefile(destination, encodeConfig(json, password))
-                        if type(delfile) == "function" then pcall(delfile, path) end
-                    end
-                end)
-            end
-        end
-    end)
-end
-
-function Library:SetConfigPassword(password)
-    if password == nil or tostring(password) == "" then
-        self.ConfigPassword = nil
-        return true
-    end
-    local normalized, passwordError = normalizeConfigPassword(password)
-    if not normalized then return false, passwordError end
-    self.ConfigPassword = normalized
-    local folder = self:GetConfigFolder()
-    if ensureFolder(folder) then
-        migrateLegacy(folder, normalized)
-        migratePlainConfigs(folder, normalized)
-    end
-    return true
 end
 
 function Library:SetScriptName(value)
@@ -4328,9 +3712,8 @@ function Library:SetScriptName(value)
     self.ScriptName = scriptFolder
     self.Folder = ROOT .. "/" .. scriptFolder
     self.ConfigFolder = self.Folder .. "/configs"
-    if ensureFolder(self.ConfigFolder) and self.ConfigPassword then
-        migrateLegacy(self.ConfigFolder, self.ConfigPassword)
-        migratePlainConfigs(self.ConfigFolder, self.ConfigPassword)
+    if ensureFolder(self.ConfigFolder) then
+        migrateLegacyConfigs(self.ConfigFolder)
     end
     return self.Folder
 end
@@ -4381,61 +3764,33 @@ function Library:ListFiles(subFolder)
     return names
 end
 
-function Library:SaveConfigFile(name, password)
+function Library:SaveConfigFile(name)
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
-    local ok, err = pcall(function()
+    local ok, result = pcall(function()
         if not ensureFolder(folder) then error("cannot create config folder", 0) end
         local json = HttpService:JSONEncode(self:GetConfig())
-        writefile(folder .. "/" .. base .. CONFIG_EXTENSION,
-            encodeConfig(json, password or self.ConfigPassword))
-
-        local legacyPath = folder .. "/" .. base .. LEGACY_CONFIG_EXTENSION
-        if type(delfile) == "function" and pathExists(legacyPath) then
-            pcall(delfile, legacyPath)
-        end
+        writefile(folder .. "/" .. base .. CONFIG_EXTENSION, json)
+        return folder .. "/" .. base .. CONFIG_EXTENSION
     end)
-    return ok, err
+    return ok, result
 end
 
-function Library:LoadConfigFile(name, password)
+function Library:LoadConfigFile(name)
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
-    local encryptedPath = folder .. "/" .. base .. CONFIG_EXTENSION
-    local legacyPath = folder .. "/" .. base .. LEGACY_CONFIG_EXTENSION
-    local rootLegacyPath = LEGACY_ROOT .. "/" .. base .. LEGACY_CONFIG_EXTENSION
-    local ok, result, wasLegacy, migrationSource = pcall(function()
-        local json
-        local legacy = false
-        local sourceToDelete = nil
-        if pathExists(encryptedPath) then
-            local decodeError, upgrade
-            json, decodeError, upgrade = decodeConfig(readfile(encryptedPath), password or self.ConfigPassword)
-            if not json then error(decodeError, 0) end
-            legacy = upgrade == true
-        elseif pathExists(legacyPath) then
-            json = readfile(legacyPath)
-            legacy = true
-        elseif pathExists(rootLegacyPath) then
-            json = readfile(rootLegacyPath)
-            legacy = true
-            sourceToDelete = rootLegacyPath
-        else
-            error("config not found: " .. base, 0)
-        end
-        return HttpService:JSONDecode(json), legacy, sourceToDelete
+    local path = folder .. "/" .. base .. CONFIG_EXTENSION
+    local legacyPath = LEGACY_ROOT .. "/" .. base .. CONFIG_EXTENSION
+    local ok, decoded = pcall(function()
+        local source = pathExists(path) and path or legacyPath
+        if not pathExists(source) then error("config not found: " .. base, 0) end
+        return HttpService:JSONDecode(readfile(source))
     end)
-    if not ok then return false, result end
-    local applyOk, loaded, loadError = pcall(self.LoadConfig, self, result)
-    if not applyOk then return false, loaded end
-    if loaded and wasLegacy then
-        local saved = self:SaveConfigFile(base, password or self.ConfigPassword)
-        if saved and migrationSource and type(delfile) == "function" and pathExists(migrationSource) then
-            pcall(delfile, migrationSource)
-        end
-    end
+    if not ok then return false, decoded end
+    local applied, loaded, loadError = pcall(self.LoadConfig, self, decoded)
+    if not applied then return false, loaded end
     return loaded, loadError
 end
 
@@ -4443,45 +3798,43 @@ function Library:ListConfigs()
     local names = {}
     local seen = {}
     if type(listfiles) ~= "function" then return names end
-    pcall(function()
-        for _, path in ipairs(listfiles(self:GetConfigFolder())) do
-            local name = string.match(path, "([^/\\]+)%.wcfg$")
-                or string.match(path, "([^/\\]+)%.json$")
-            if name and not seen[name] then
-                seen[name] = true
-                names[#names + 1] = name
+
+    local function collect(folder)
+        pcall(function()
+            for _, path in ipairs(listfiles(folder)) do
+                local name = string.match(path, "([^/\\]+)%.json$")
+                if name and not seen[name] then
+                    seen[name] = true
+                    names[#names + 1] = name
+                end
             end
-        end
-    end)
-    pcall(function()
-        for _, path in ipairs(listfiles(LEGACY_ROOT)) do
-            local name = string.match(path, "([^/\\]+)%.json$")
-            if name and not seen[name] then
-                seen[name] = true
-                names[#names + 1] = name
-            end
-        end
-    end)
+        end)
+    end
+
+    collect(self:GetConfigFolder())
+    collect(LEGACY_ROOT)
     table.sort(names)
     return names
 end
 
 function Library:DeleteConfigFile(name)
     if type(delfile) ~= "function" then return false, "executor has no delfile" end
-    local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
-    local deleted, lastError = false, nil
-    for _, extension in ipairs({CONFIG_EXTENSION, LEGACY_CONFIG_EXTENSION}) do
-        local path = folder .. "/" .. base .. extension
+    local paths = {
+        self:GetConfigFolder() .. "/" .. base .. CONFIG_EXTENSION,
+        LEGACY_ROOT .. "/" .. base .. CONFIG_EXTENSION,
+    }
+    local deleted
+    local lastError
+    for _, path in ipairs(paths) do
         if pathExists(path) then
             local ok, err = pcall(delfile, path)
-            if ok then deleted = true else lastError = err end
+            if ok then
+                deleted = true
+            else
+                lastError = err
+            end
         end
-    end
-    local rootLegacyPath = LEGACY_ROOT .. "/" .. base .. LEGACY_CONFIG_EXTENSION
-    if pathExists(rootLegacyPath) then
-        local ok, err = pcall(delfile, rootLegacyPath)
-        if ok then deleted = true else lastError = err end
     end
     if deleted then return true end
     return false, lastError or ("config not found: " .. base)
@@ -4503,18 +3856,12 @@ function Library:Unload()
     self.Window = nil
     self.Elements = {}
     self.NoSaveFlags = {}
-    self.ConfigPassword = nil
     for _, listener in ipairs(unloadListeners) do
         pcall(listener)
     end
     unloadListeners = {}
     changeListeners = {}
 end
-
-pcall(function()
-    print("[WolfLib] v" .. tostring(Library.Version) ..
-        " загружена. Меню появится после Library:CreateWindow(...).")
-end)
 
 Library.Runtime = Runtime
 Library.Palette = palette
