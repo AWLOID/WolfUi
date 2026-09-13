@@ -3,8 +3,6 @@ local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
 local HttpService = game:GetService("HttpService")
-local StarterGui = game:GetService("StarterGui")
-local ContextActionService = game:GetService("ContextActionService")
 
 local player = Players.LocalPlayer
 while not player do
@@ -468,7 +466,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 220
 
 local Library = {
-    Version = "4.3.0",
+    Version = "5.0.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -493,7 +491,6 @@ local Library = {
         SnapScale = true,
     },
     Window = nil,
-    KeySystem = {Enabled = false},
 }
 
 local state = {
@@ -709,6 +706,12 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     object.Visible = false
     object.Active = true
     object.ClipsDescendants = true
+    local outline = new("UIStroke", object, {
+        Color = palette[5],
+        Thickness = 1,
+        Transparency = 0.32,
+    })
+    step(function() outline.Color = palette[5] end, object)
 
     local depth = parentPopup and (parentPopup.Depth + 1) or 0
     object.ZIndex = 1 + depth * 2
@@ -777,10 +780,7 @@ function Library:CreateWindow(opts)
     Library.Theme, Library.Scale = state.Theme, state.Scale
     Library.Accent, Library.AccentAlpha = state.Accent, state.AccentAlpha
 
-    local defaultIcon = {"dog", "paw-print", "moon"}
-    local mainIcon = opts.MainIcon or opts.Icon or defaultIcon
-    local watermarkIconValue = opts.WatermarkIcon or mainIcon
-    local openIcon = opts.OpenIcon or opts.OpenButtonIcon or mainIcon
+    local windowIcon = opts.Icon or {"dog", "paw-print", "moon"}
 
     local window = setmetatable({
         Visible = true,
@@ -976,18 +976,17 @@ function Library:CreateWindow(opts)
     window.Sidebar = sidebar
 
     local logoHit = transparent(sidebar, 0, 0, SIDEBAR_W, TAB_SLOT, "TextButton")
-    local logoIcon = iconLabel(logoHit, mainIcon,
-        (SIDEBAR_W - 22) / 2, 24, 22, accent, string.sub(opts.Name or "W", 1, 1))
+    local logoSize = 28
+    local logoIcon = iconLabel(logoHit, windowIcon,
+        (SIDEBAR_W - logoSize) / 2, (TAB_SLOT - logoSize) / 2,
+        logoSize, accent, string.sub(opts.Name or "W", 1, 1))
     step(function()
         logoIcon:Color(accent)
         logoIcon:Alpha(state.AccentAlpha)
     end, logoHit)
 
     window.LogoIcon = logoIcon
-    window.Icon = mainIcon
-    window.MainIcon = mainIcon
-    window.WatermarkIconValue = watermarkIconValue
-    window.OpenIcon = openIcon
+    window.Icon = windowIcon
     window.IconFallback = string.sub(opts.Name or "W", 1, 1)
 
     local dragStart, windowStart
@@ -1174,7 +1173,7 @@ function Library:CreateWindow(opts)
     reopen.Visible = false
     reopen.ZIndex = 41
     local reopenStroke = new("UIStroke", reopen, {Color = palette[5], Thickness = 1, Transparency = 0.4})
-    local reopenIcon = iconLabel(reopen, openIcon, 5, 5, 22, accent,
+    local reopenIcon = iconLabel(reopen, windowIcon, 5, 5, 22, accent,
         string.sub(opts.Name or "W", 1, 1))
     window.Reopen = reopen
     window.ReopenIcon = reopenIcon
@@ -1185,8 +1184,17 @@ function Library:CreateWindow(opts)
     watermark.ZIndex = 42
     watermark.BackgroundTransparency = 1
     watermark.ClipsDescendants = true
-    local watermarkText = text(watermark, "", 28, 0, 144, 22, 11, white)
-    local watermarkIcon = iconLabel(watermark, watermarkIconValue, 7, 3, 16, accent, window.IconFallback)
+    local watermarkText = text(watermark, "", 28, 0, 0, 22, 11, white)
+    local watermarkIcon = iconLabel(watermark, windowIcon, 7, 3, 16, accent, window.IconFallback)
+    local watermarkFpsIcon = iconLabel(watermark, {"gauge", "activity", "monitor"},
+        0, 5, 12, accent, "F")
+    local watermarkFpsText = muted(watermark, "", 0, 0, 0, 22, 10)
+    local watermarkPingIcon = iconLabel(watermark, {"wifi", "radio", "globe"},
+        0, 5, 12, accent, "P")
+    local watermarkPingText = muted(watermark, "", 0, 0, 0, 22, 10)
+    local watermarkTimeIcon = iconLabel(watermark, {"clock-3", "clock"},
+        0, 5, 12, accent, "T")
+    local watermarkTimeText = muted(watermark, "", 0, 0, 0, 22, 10)
     window.WatermarkIcon = watermarkIcon
     window.Watermark = watermark
     window.WatermarkText = watermarkText
@@ -1282,18 +1290,40 @@ function Library:CreateWindow(opts)
         window.OpenerBlend = openerBlend
 
         if wm.Enabled or openerBlend > 0 then
-            local parts = {tostring(wm.Text or "")}
-            if wm.ShowFPS then parts[#parts + 1] = tostring(window.FPS) .. " fps" end
-            if wm.ShowPing then parts[#parts + 1] = tostring(window.Ping) .. " ms" end
-            if wm.ShowTime then parts[#parts + 1] = os.date("%H:%M:%S") end
-            local caption = table.concat(parts, "  |  ")
+            local titleValue = tostring(wm.Text or "")
+            local fpsValue = tostring(window.FPS) .. " fps"
+            local pingValue = tostring(window.Ping) .. " ms"
+            local timeValue = os.date("%H:%M:%S")
+            local caption = table.concat({titleValue, wm.ShowFPS and fpsValue or "",
+                wm.ShowPing and pingValue or "", wm.ShowTime and timeValue or ""}, "\0")
             if caption ~= watermarkCaption then
                 watermarkCaption = caption
-                watermarkText:SetText(caption)
-                local bounds = TextService:GetTextSize(caption, 11, Enum.Font.Gotham, Vector2.new(4000, 22))
-                watermarkWidth = math.max(60, bounds.X + 38)
+                local x = 28
+                local titleBounds = TextService:GetTextSize(titleValue, 11, Enum.Font.Gotham,
+                    Vector2.new(4000, 22))
+                watermarkText:SetText(titleValue)
+                watermarkText.Object.Position = UDim2.fromOffset(x, 0)
+                watermarkText:Width(titleBounds.X + 1)
+                x = x + titleBounds.X + (titleBounds.X > 0 and 11 or 0)
+
+                local function placeStat(icon, label, enabled, value)
+                    icon.Object.Visible = enabled
+                    label.Object.Visible = enabled
+                    if not enabled then return end
+                    local bounds = TextService:GetTextSize(value, 10, Enum.Font.Gotham,
+                        Vector2.new(4000, 22))
+                    icon.Object.Position = UDim2.fromOffset(roundPixel(x), 5)
+                    label.Object.Position = UDim2.fromOffset(roundPixel(x + 16), 0)
+                    label:SetText(value)
+                    label:Width(bounds.X + 1)
+                    x = x + 16 + bounds.X + 11
+                end
+
+                placeStat(watermarkFpsIcon, watermarkFpsText, wm.ShowFPS, fpsValue)
+                placeStat(watermarkPingIcon, watermarkPingText, wm.ShowPing, pingValue)
+                placeStat(watermarkTimeIcon, watermarkTimeText, wm.ShowTime, timeValue)
+                watermarkWidth = math.max(54, x - 3)
                 watermark.Size = UDim2.fromOffset(roundPixel(watermarkWidth), 22)
-                watermarkText:Width(math.max(40, bounds.X + 2))
             end
         end
 
@@ -1314,8 +1344,8 @@ function Library:CreateWindow(opts)
         local buttonAvailable = hidden or oc.AlwaysVisible
         local watermarkAvailable = wm.Enabled == true
         local transitioning = openerBlend > 0.001 and openerBlend < 0.999
-        local showOpener = window.KeyLocked ~= true and (transitioning
-            or (watermarkMode and watermarkAvailable) or (not watermarkMode and buttonAvailable))
+        local showOpener = transitioning or (watermarkMode and watermarkAvailable)
+            or (not watermarkMode and buttonAvailable)
 
         reopen.Visible = showOpener
         watermark.Visible = showOpener and openerBlend > 0.001
@@ -1335,6 +1365,12 @@ function Library:CreateWindow(opts)
             reopenStroke.Color = palette[5]
             reopenIcon:Color(accent)
             watermarkIcon:Color(accent)
+            watermarkFpsIcon:Color(accent)
+            watermarkPingIcon:Color(accent)
+            watermarkTimeIcon:Color(accent)
+            watermarkFpsText:Color(palette[3])
+            watermarkPingText:Color(palette[3])
+            watermarkTimeText:Color(palette[3])
             local buttonIconSize = math.min(buttonSize.X, buttonSize.Y) * 0.68
             local buttonIconPosition = Vector2.new(
                 (buttonSize.X - buttonIconSize) / 2,
@@ -1345,8 +1381,15 @@ function Library:CreateWindow(opts)
             reopenIcon.Object.Position = UDim2.fromOffset(roundPixel(iconPosition.X), roundPixel(iconPosition.Y))
             reopenIcon.Object.Size = UDim2.fromOffset(roundPixel(iconSize), roundPixel(iconSize))
             reopenIcon:Alpha((1 - openerBlend) * state.AccentAlpha * (1 - buttonTransparency))
-            watermarkIcon:Alpha(openerBlend * state.AccentAlpha * (1 - watermarkTransparency))
-            watermarkText:Alpha(openerBlend * (1 - watermarkTransparency))
+            local watermarkAlpha = openerBlend * (1 - watermarkTransparency)
+            watermarkIcon:Alpha(watermarkAlpha * state.AccentAlpha)
+            watermarkText:Alpha(watermarkAlpha)
+            watermarkFpsIcon:Alpha(watermarkAlpha * state.AccentAlpha)
+            watermarkPingIcon:Alpha(watermarkAlpha * state.AccentAlpha)
+            watermarkTimeIcon:Alpha(watermarkAlpha * state.AccentAlpha)
+            watermarkFpsText:Alpha(watermarkAlpha)
+            watermarkPingText:Alpha(watermarkAlpha)
+            watermarkTimeText:Alpha(watermarkAlpha)
             reopenStroke.Transparency = 0.4 + 0.6 * transparency
         end
 
@@ -1430,15 +1473,6 @@ function Library:CreateWindow(opts)
 
     connect(gui.Destroying, function()
         Runtime.Alive = false
-        local gate = window.KeyGate
-        if gate then
-            if gate.Restore then gate.Restore() end
-            window.KeyGate = nil
-            if not gate.Finished and gate.Completed then
-                gate.Finished = true
-                gate.Completed:Fire(false)
-            end
-        end
     end)
 
     local fpsTimer, fpsFrames = 0, 0
@@ -1550,26 +1584,10 @@ function Library:CreateWindow(opts)
         fadeGroup(popupLayer, window.Alpha)
     end)
 
-    if opts.KeySystem ~= nil then
-        self:SetKeySystem(opts.KeySystem)
-    elseif self.KeySystem and self.KeySystem.Enabled then
-        self:ShowKeySystem()
-    end
-
-    local gate = window.KeyGate
-    if gate and gate.Completed then
-        local authorized = gate.Completed.Event:Wait()
-        if authorized ~= true then
-            self:Unload()
-            error("WolfUi: key verification was cancelled", 0)
-        end
-    end
-
     return window
 end
 
 function Window:SetVisible(value)
-    if value == true and self.KeyLocked then return false end
     self.Visible = value == true
     self.Frame.Visible = self.Visible or self.Alpha > 0
     self.Frame.Interactable = self.Visible
@@ -1603,10 +1621,6 @@ function Window:SetOpenMode(options)
     return Library:SetOpenMode(options)
 end
 
-function Window:SetKeySystem(options)
-    return Library:SetKeySystem(options)
-end
-
 function Window:SetScale(value, exact)
     local snapped = exact and (tonumber(value) or state.Scale) or snapScale(value)
     state.Scale = snapped
@@ -1616,42 +1630,12 @@ function Window:SetScale(value, exact)
     return snapped
 end
 
-function Window:SetMainIcon(value)
+function Window:SetIcon(value)
     self.Icon = value
-    self.MainIcon = value
     self.LogoIcon:SetIcon(value)
-    return value
-end
-
-function Window:SetWatermarkIcon(value)
-    self.WatermarkIconValue = value
     self.WatermarkIcon:SetIcon(value)
-    return value
-end
-
-function Window:SetOpenIcon(value)
-    self.OpenIcon = value
     self.ReopenIcon:SetIcon(value)
     return value
-end
-
-function Window:SetIcon(value)
-    self:SetMainIcon(value)
-    self:SetWatermarkIcon(value)
-    self:SetOpenIcon(value)
-    return value
-end
-
-function Library:SetMainIcon(value)
-    if self.Window then return self.Window:SetMainIcon(value) end
-end
-
-function Library:SetWatermarkIcon(value)
-    if self.Window then return self.Window:SetWatermarkIcon(value) end
-end
-
-function Library:SetOpenIcon(value)
-    if self.Window then return self.Window:SetOpenIcon(value) end
 end
 
 function Library:SetIcon(value)
@@ -2739,22 +2723,27 @@ function Tab:AddDropdown(opts)
     muted(card, opts.Description or "", 10, 22, w - 20, 14, 11)
 
     local controlW = w - 20
-    local control = paint(rect(card, 10, 38, controlW, 31, palette[4], 3, "TextButton"), 4)
+    local control = paint(rect(card, 10, 38, controlW, 31, palette[4], 4, "TextButton"), 4)
     local preview = muted(control, "", 10, 0, controlW - 40, 31, 11)
     local arrow = iconLabel(control, {"chevron-down", "chevrons-down", "arrow-down"},
         controlW - 22, 11.5, 10, palette[3], "v")
-    step(function() arrow:Color(palette[3]) end, control)
 
     local ROW_H = 31
 
     local maxRows = math.floor(tonumber(opts.MaxRows) or 5)
     if maxRows <= 0 then maxRows = math.max(1, #options) end
-    local pop = createPopup(self.Window, control, controlW, math.min(#options, maxRows) * ROW_H, true, self.ParentPopup)
+    local initialRows = math.max(1, math.min(#options, maxRows))
+    local pop = createPopup(self.Window, control, controlW, initialRows * ROW_H + 8, true, self.ParentPopup)
+    step(function(dt)
+        arrow:Color(palette[3])
+        arrow.Object.Rotation = approach(arrow.Object.Rotation,
+            pop:IsActive() and 180 or 0, motionFactor(20, dt))
+    end, control)
     local list = new("ScrollingFrame", pop.Object, {
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(0, 0),
-        Size = UDim2.new(1, 0, 1, 0),
+        Position = UDim2.fromOffset(4, 4),
+        Size = UDim2.new(1, -8, 1, -8),
         CanvasSize = UDim2.fromOffset(0, #options * ROW_H),
         ScrollBarThickness = 0,
         ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -2763,13 +2752,32 @@ function Tab:AddDropdown(opts)
         Active = true,
     })
 
-    local selection = multiple and {} or 1
-    if multiple then
-        if type(opts.Default) == "table" then
-            for _, index in ipairs(opts.Default) do selection[index] = true end
+    local function optionIndex(value)
+        if type(value) == "number" then
+            local index = math.floor(value)
+            if index >= 1 and index <= #options then return index end
+        elseif type(value) == "string" then
+            for index, option in ipairs(options) do
+                if option == value then return index end
+            end
         end
+    end
+
+    local function selectionFrom(value)
+        local result = {}
+        if type(value) ~= "table" then return result end
+        for key, item in pairs(value) do
+            local index = item == true and optionIndex(key) or optionIndex(item)
+            if index then result[index] = true end
+        end
+        return result
+    end
+
+    local selection
+    if multiple then
+        selection = selectionFrom(opts.Default)
     else
-        selection = math.clamp(tonumber(opts.Default) or 1, 1, math.max(1, #options))
+        selection = optionIndex(opts.Default) or 1
     end
 
     local rows = {}
@@ -2821,13 +2829,14 @@ function Tab:AddDropdown(opts)
         local visibleRows = math.min(#options, maxRows)
         if tonumber(opts.MaxRows) == 0 then visibleRows = #options end
         list.ScrollingEnabled = #options > visibleRows
-        pop.Height = math.max(ROW_H, visibleRows * ROW_H)
+        pop.Height = math.max(ROW_H, visibleRows * ROW_H) + 8
 
         for index, option in ipairs(options) do
-            local row = rect(list, 0, (index - 1) * ROW_H, controlW, ROW_H, palette[5], nil, "TextButton")
+            local row = rect(list, 0, (index - 1) * ROW_H + 2,
+                controlW - 8, ROW_H - 4, palette[5], 4, "TextButton")
             row.BackgroundTransparency = 1
-            local mark = iconLabel(row, {"check"}, 0, 9.5, 12, accent, "v")
-            local title = text(row, option, 10, 0, controlW - 20, ROW_H, 11, palette[3])
+            local mark = iconLabel(row, {"check"}, 0, 7.5, 12, accent, "v")
+            local title = text(row, option, 10, 0, controlW - 28, ROW_H - 4, 11, palette[3])
             local entry = {Object = row, Mark = mark, Title = title, Alpha = 0, Index = index}
             rows[#rows + 1] = entry
 
@@ -2854,9 +2863,9 @@ function Tab:AddDropdown(opts)
             entry.Alpha = approach(entry.Alpha, selected and 1 or 0, k)
             entry.Object.BackgroundColor3 = palette[5]
             entry.Object.BackgroundTransparency = 1 - entry.Alpha
-            entry.Title.Object.Position = UDim2.fromOffset(roundPixel(10 + 20 * entry.Alpha), 0)
+            entry.Title.Object.Position = UDim2.fromOffset(roundPixel(10 + 18 * entry.Alpha), 0)
             entry.Title:Color(palette[3]:Lerp(white, entry.Alpha))
-            entry.Mark.Object.Position = UDim2.fromOffset(roundPixel(10 * entry.Alpha), 10)
+            entry.Mark.Object.Position = UDim2.fromOffset(roundPixel(9 * entry.Alpha), 8)
             entry.Mark:Color(accent)
             entry.Mark:Alpha(entry.Alpha * state.AccentAlpha)
         end
@@ -2867,21 +2876,7 @@ function Tab:AddDropdown(opts)
     function api:Get() return selectedValue() end
     function api:Set(value, silent)
         if multiple then
-            local next_ = {}
-            if type(value) == "table" then
-                for key, flagValue in pairs(value) do
-                    if type(key) == "number" and flagValue then
-                        next_[key] = true
-                    elseif type(flagValue) == "number" then
-                        next_[flagValue] = true
-                    elseif type(flagValue) == "string" then
-                        for index, option in ipairs(options) do
-                            if option == flagValue then next_[index] = true end
-                        end
-                    end
-                end
-            end
-            selection = next_
+            selection = selectionFrom(value)
         else
             if type(value) == "string" then
                 local found = nil
@@ -3739,7 +3734,6 @@ function Library:SetWatermark(opts)
     end
     if opts.Toggle ~= nil then config.Toggle = opts.Toggle and true or false end
     if opts.AlwaysVisible ~= nil then config.AlwaysVisible = opts.AlwaysVisible and true or false end
-    if opts.Icon ~= nil then window:SetWatermarkIcon(opts.Icon) end
     if typeof(opts.Position) == "Vector2" then config.Position = opts.Position end
     if opts.X ~= nil and opts.Y ~= nil then
         config.Position = Vector2.new(tonumber(opts.X) or 8, tonumber(opts.Y) or 8)
@@ -3770,8 +3764,6 @@ function Library:SetOpenMode(opts)
     if opts.Transparency ~= nil then
         config.Transparency = math.clamp(tonumber(opts.Transparency) or 0, 0, 1)
     end
-    if opts.Icon ~= nil then window:SetOpenIcon(opts.Icon) end
-    if opts.OpenIcon ~= nil then window:SetOpenIcon(opts.OpenIcon) end
     if opts.AlwaysVisible ~= nil then config.AlwaysVisible = opts.AlwaysVisible and true or false end
     if opts.AnimationDuration ~= nil then
         config.AnimationDuration = math.clamp(tonumber(opts.AnimationDuration) or 0.18, 0.05, 1)
@@ -3799,439 +3791,6 @@ end
 function Library:GetMiniButtons()
     local window = self.Window
     return window and window.Mini or {}
-end
-
-local function keyResult(result, message, data)
-    if type(result) == "table" then
-        local success = result.Success
-        if success == nil then success = result.Valid end
-        if success == nil then success = result.Authorized end
-        return success == true, result.Message or result.Error or message, result.Data or result
-    end
-    return result == true, message, data
-end
-
-local function requestFunction()
-    local environment = type(getgenv) == "function" and getgenv() or _G
-    local requester = environment.request or environment.http_request
-    if not requester and type(environment.syn) == "table" then requester = environment.syn.request end
-    return type(requester) == "function" and requester or nil
-end
-
-local function keyContext(key)
-    local player = Players.LocalPlayer
-    return {
-        Key = key,
-        UserId = player and player.UserId or 0,
-        Username = player and player.Name or "",
-        DisplayName = player and player.DisplayName or "",
-        PlaceId = game.PlaceId,
-        JobId = game.JobId,
-        GameId = game.GameId,
-    }
-end
-
-function Library:SetKeySystem(options)
-    if options == nil or options == false then
-        self.KeySystem = {Enabled = false}
-        self:HideKeySystem(true)
-        if self.Window then self.Window:SetVisible(true) end
-        return self.KeySystem
-    end
-    if type(options) ~= "table" then options = {Key = tostring(options)} end
-    local config = {}
-    for key, value in pairs(options) do config[key] = value end
-    config.Enabled = config.Enabled ~= false
-    self.KeySystem = config
-    if self.Window then
-        if config.Enabled then
-            self:ShowKeySystem()
-        else
-            self:HideKeySystem(true)
-            self.Window:SetVisible(true)
-        end
-    end
-    return config
-end
-
-Library.ConfigureKeySystem = Library.SetKeySystem
-
-function Library:ValidateKey(rawKey)
-    local config = self.KeySystem or {}
-    if config.Enabled == false then return true, "Key system disabled" end
-    local key = tostring(rawKey or "")
-    if config.Trim ~= false then key = string.match(key, "^%s*(.-)%s*$") end
-    if key == "" then return false, config.EmptyMessage or "Enter a key" end
-    local context = keyContext(key)
-
-    if type(config.Validate) == "function" then
-        local ok, result, message, data = pcall(config.Validate, key, context)
-        if not ok then return false, config.ErrorMessage or tostring(result) end
-        return keyResult(result, message, data)
-    end
-
-    local server = config.Server or config.Endpoint or config.Url
-    if server ~= nil then
-        server = type(server) == "table" and server or {Url = server}
-        local requestData
-        if type(server.BuildRequest) == "function" then
-            local ok, built = pcall(server.BuildRequest, key, context)
-            if not ok then return false, config.ErrorMessage or tostring(built) end
-            requestData = built
-        else
-            local url = tostring(server.Url or server.Endpoint or "")
-            local method = string.upper(tostring(server.Method or "POST"))
-            local headers = {['Content-Type'] = "application/json"}
-            for name, value in pairs(server.Headers or {}) do headers[name] = value end
-            local payload = {key = key, userId = context.UserId, username = context.Username,
-                placeId = context.PlaceId, jobId = context.JobId, gameId = context.GameId}
-            if type(server.Payload) == "function" then
-                local ok, result = pcall(server.Payload, key, context)
-                if not ok then return false, config.ErrorMessage or tostring(result) end
-                payload = result
-            elseif type(server.Payload) == "table" then
-                payload = server.Payload
-            end
-            if method == "GET" and server.AppendKey ~= false then
-                local divider = string.find(url, "?", 1, true) and "&" or "?"
-                url = url .. divider .. tostring(server.KeyParameter or "key") .. "=" .. HttpService:UrlEncode(key)
-            end
-            local body
-            if method ~= "GET" then
-                local ok, result = pcall(function() return HttpService:JSONEncode(payload) end)
-                if not ok then return false, config.ErrorMessage or tostring(result) end
-                body = result
-            end
-            requestData = {
-                Url = url,
-                Method = method,
-                Headers = headers,
-                Body = body,
-            }
-        end
-
-        if type(requestData) == "table" then requestData.Url = requestData.Url or requestData.URL or requestData.url end
-        if type(requestData) ~= "table" or tostring(requestData.Url or "") == "" then
-            return false, config.ErrorMessage or "Key server URL is missing"
-        end
-
-        local response
-        if type(server.Request) == "function" then
-            local ok, result = pcall(server.Request, requestData, key, context)
-            if not ok then return false, config.ErrorMessage or tostring(result) end
-            response = result
-        else
-            local requester = requestFunction()
-            if requester then
-                local ok, result = pcall(requester, requestData)
-                if not ok then return false, config.ErrorMessage or tostring(result) end
-                response = result
-            elseif string.upper(tostring(requestData.Method or "GET")) == "GET" then
-                local ok, result = pcall(function() return game:HttpGet(requestData.Url, true) end)
-                if not ok then return false, config.ErrorMessage or tostring(result) end
-                response = {StatusCode = 200, Body = result}
-            else
-                return false, config.ErrorMessage or "HTTP requests are unavailable"
-            end
-        end
-
-        local body = type(response) == "table" and (response.Body or response.body) or response
-        local status = type(response) == "table" and tonumber(response.StatusCode or response.Status or response.status_code) or 200
-        local decoded
-        if type(body) == "string" then pcall(function() decoded = HttpService:JSONDecode(body) end) end
-        if type(server.ParseResponse) == "function" then
-            local ok, result, message, data = pcall(server.ParseResponse, response, decoded, context)
-            if not ok then return false, config.ErrorMessage or tostring(result) end
-            return keyResult(result, message, data)
-        end
-        if status and (status < 200 or status >= 300) then
-            return false, (type(decoded) == "table" and (decoded.message or decoded.error))
-                or server.FailureMessage or "Key verification failed"
-        end
-        if type(decoded) == "table" then
-            local valid = decoded.valid
-            if valid == nil then valid = decoded.success end
-            if valid == nil then valid = decoded.authorized end
-            if valid == nil then valid = decoded.Valid end
-            if valid == nil then valid = decoded.Success end
-            return valid == true, decoded.message or decoded.Message
-                or (valid == true and "Access granted" or "Invalid key"), decoded
-        end
-        return body == true or body == "true" or body == "ok" or body == "success",
-            server.FailureMessage or "Invalid key", body
-    end
-
-    local caseSensitive = config.CaseSensitive ~= false
-    local function equal(candidate)
-        candidate = tostring(candidate or "")
-        if caseSensitive then return candidate == key end
-        return string.lower(candidate) == string.lower(key)
-    end
-    if config.Key ~= nil and equal(config.Key) then return true, "Access granted" end
-    for index, candidate in pairs(config.Keys or {}) do
-        if equal(type(index) ~= "number" and candidate == true and index or candidate) then
-            return true, "Access granted"
-        end
-    end
-    return false, config.InvalidMessage or "Invalid key"
-end
-
-function Library:HideKeySystem(authorized)
-    local window = self.Window
-    if not window then return end
-    if authorized ~= nil then window.KeyLocked = not authorized end
-    local gate = window.KeyGate
-    if gate then
-        if gate.Restore then gate.Restore() end
-        if gate.Object then gate.Object:Destroy() end
-        if not gate.Finished and gate.Completed then
-            gate.Finished = true
-            gate.Completed:Fire(authorized == true)
-        end
-    end
-    window.KeyGate = nil
-    if window.UpdateOpenVisibility then window.UpdateOpenVisibility() end
-end
-
-function Library:ShowKeySystem()
-    local window = self.Window
-    local config = self.KeySystem or {}
-    if not window or config.Enabled == false then return end
-    local displayOrder = window.Gui.DisplayOrder
-    local frameVisible = window.Frame.Visible
-    local popupVisible = window.PopupLayer.Visible
-    local miniVisible = window.MiniLayer.Visible
-    local notifyVisible = window.NotifyHolder.Visible
-    self:HideKeySystem(false)
-    window.KeyLocked = true
-    window.Visible = false
-    window.Alpha = 0
-    window.Frame.Visible = false
-    window.PopupLayer.Visible = false
-    window.MiniLayer.Visible = false
-    window.NotifyHolder.Visible = false
-
-    local shade = rect(window.Gui, 0, 0, 10, 10, black, nil, "TextButton")
-    shade.Name = "KeySystem"
-    shade.Size = UDim2.fromScale(1, 1)
-    shade.BackgroundTransparency = math.clamp(
-        tonumber(config.BackgroundTransparency) or 0, 0, 1)
-    shade.ZIndex = 100
-    shade.Active = true
-    shade.Modal = true
-    shade.AutoButtonColor = false
-    shade.Text = ""
-
-    local width = math.clamp(math.floor(tonumber(config.Width) or 340), 260, 460)
-    local hasLink = config.GetKeyUrl ~= nil or config.Link ~= nil or type(config.OnGetKey) == "function"
-    local height = hasLink and 222 or 181
-    local card = paint(rect(shade, 0, 0, width, height, palette[2], 7), 2)
-    card.AnchorPoint = Vector2.new(0.5, 0.5)
-    card.Position = UDim2.fromScale(0.5, 0.5)
-    card.ZIndex = 101
-    new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = 0.25})
-
-    text(card, config.Title or "Key verification", 18, 16, width - 36, 18, 14, white)
-    muted(card, config.Description or "Enter your access key to continue", 18, 38, width - 36, 18, 11)
-    local input = new("TextBox", card, {
-        Name = "KeyInput",
-        BackgroundColor3 = palette[4],
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(18, 68),
-        Size = UDim2.fromOffset(width - 36, 34),
-        Text = tostring(config.DefaultKey or ""),
-        PlaceholderText = tostring(config.Placeholder or "Enter key"),
-        PlaceholderColor3 = palette[3],
-        ClearTextOnFocus = false,
-        Font = Enum.Font.Gotham,
-        TextSize = 12,
-        TextColor3 = white,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 102,
-    })
-    new("UICorner", input, {CornerRadius = UDim.new(0, 4)})
-    new("UIPadding", input, {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)})
-
-    local submit = paint(rect(card, 18, 112, width - 36, 34, palette[4], 4, "TextButton"), 4)
-    submit.ZIndex = 102
-    local submitText = text(submit, config.ButtonText or "Verify key", 0, 0, width - 36, 34, 12, white, "center")
-    local status = muted(card, "", 18, 153, width - 36, 18, 11, "center")
-    local linkButton
-    if hasLink then
-        linkButton = transparent(card, 18, 181, width - 36, 25, "TextButton")
-        linkButton.ZIndex = 102
-        local linkText = text(linkButton, config.LinkText or "Get a key", 0, 0, width - 36, 25, 11, accent, "center")
-        step(function() linkText:Color(accent) end, linkButton)
-        connect(linkButton.Activated, function()
-            if type(config.OnGetKey) == "function" then
-                task.spawn(config.OnGetKey, config.GetKeyUrl or config.Link)
-            elseif type(setclipboard) == "function" then
-                setclipboard(tostring(config.GetKeyUrl or config.Link))
-                status:SetText(config.CopiedMessage or "Link copied")
-            end
-        end)
-    end
-
-    local busy = false
-    local attempts = 0
-    local lastAttempt = 0
-    local completed = new("BindableEvent", window.Events, {Name = "KeyResolved"})
-    local gate = {
-        Object = shade,
-        Card = card,
-        Input = input,
-        Button = submit,
-        Completed = completed,
-        Authorized = false,
-        Finished = false,
-    }
-    window.KeyGate = gate
-
-    local coreStates = {}
-    local actionNames = {}
-    local controls
-    local controlsEnabled
-    local restored = false
-
-    pcall(function() window.Gui.DisplayOrder = 2147483647 end)
-    for _, coreType in ipairs(Enum.CoreGuiType:GetEnumItems()) do
-        if coreType ~= Enum.CoreGuiType.All then
-            local ok, enabled = pcall(function()
-                return StarterGui:GetCoreGuiEnabled(coreType)
-            end)
-            if ok then
-                coreStates[coreType] = enabled
-                pcall(function() StarterGui:SetCoreGuiEnabled(coreType, false) end)
-            end
-        end
-    end
-
-    local topbarKnown, topbarEnabled = pcall(function()
-        return StarterGui:GetCore("TopbarEnabled")
-    end)
-    if topbarKnown then
-        pcall(function() StarterGui:SetCore("TopbarEnabled", false) end)
-    end
-
-    pcall(function()
-        local playerScripts = player:FindFirstChild("PlayerScripts")
-        local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
-        if not playerModule then return end
-        controls = require(playerModule):GetControls()
-        controlsEnabled = controls.controlsEnabled ~= false
-        controls:Disable()
-    end)
-
-    local function consumeInput()
-        if window.KeyGate ~= gate then return Enum.ContextActionResult.Pass end
-        if UIS:GetFocusedTextBox() == input then return Enum.ContextActionResult.Pass end
-        return Enum.ContextActionResult.Sink
-    end
-
-    local keyCodes = {}
-    for _, keyCode in ipairs(Enum.KeyCode:GetEnumItems()) do
-        if keyCode ~= Enum.KeyCode.Unknown then keyCodes[#keyCodes + 1] = keyCode end
-    end
-    local chunkSize = 48
-    for first = 1, #keyCodes, chunkSize do
-        local inputs = {}
-        for index = first, math.min(first + chunkSize - 1, #keyCodes) do
-            inputs[#inputs + 1] = keyCodes[index]
-        end
-        local actionName = "WolfUiKeyGate_" .. HttpService:GenerateGUID(false)
-        local ok = pcall(function()
-            ContextActionService:BindActionAtPriority(actionName, consumeInput, false, 10000,
-                table.unpack(inputs))
-        end)
-        if ok then actionNames[#actionNames + 1] = actionName end
-    end
-
-    gate.Restore = function()
-        if restored then return end
-        restored = true
-        for _, actionName in ipairs(actionNames) do
-            pcall(function() ContextActionService:UnbindAction(actionName) end)
-        end
-        for coreType, enabled in pairs(coreStates) do
-            pcall(function() StarterGui:SetCoreGuiEnabled(coreType, enabled) end)
-        end
-        if topbarKnown then
-            pcall(function() StarterGui:SetCore("TopbarEnabled", topbarEnabled) end)
-        end
-        if controls then
-            pcall(function()
-                if controlsEnabled then controls:Enable() else controls:Disable() end
-            end)
-        end
-        if window.Gui and window.Gui.Parent then
-            pcall(function() window.Gui.DisplayOrder = displayOrder end)
-        end
-        if window.Frame then window.Frame.Visible = frameVisible end
-        if window.PopupLayer then window.PopupLayer.Visible = popupVisible end
-        if window.MiniLayer then window.MiniLayer.Visible = miniVisible end
-        if window.NotifyHolder then window.NotifyHolder.Visible = notifyVisible end
-    end
-
-    local function authorize(data)
-        if window.KeyGate ~= gate then return end
-        gate.Authorized = true
-        window.KeyLocked = false
-        gate.Restore()
-        if type(config.OnSuccess) == "function" then task.spawn(config.OnSuccess, input.Text, data) end
-        shade:Destroy()
-        window.KeyGate = nil
-        if config.OpenOnSuccess == false then window:SetVisible(false) else window:SetVisible(true) end
-        window.UpdateOpenVisibility()
-        if not gate.Finished then
-            gate.Finished = true
-            completed:Fire(true, data)
-        end
-    end
-
-    local function submitKey()
-        if busy or window.KeyGate ~= gate then return end
-        local maximum = math.max(0, math.floor(tonumber(config.MaxAttempts) or 0))
-        if maximum > 0 and attempts >= maximum then
-            status:SetText(config.LockedMessage or "Too many attempts")
-            return
-        end
-        local cooldown = math.max(0, tonumber(config.Cooldown) or 0.5)
-        if os.clock() - lastAttempt < cooldown then return end
-        lastAttempt = os.clock()
-        attempts = attempts + 1
-        busy = true
-        submitText:SetText(config.CheckingText or "Checking...")
-        status:SetText("")
-        task.spawn(function()
-            local valid, message, data = Library:ValidateKey(input.Text)
-            if window.KeyGate ~= gate then return end
-            busy = false
-            submitText:SetText(config.ButtonText or "Verify key")
-            if valid then
-                status:Color(accent)
-                status:SetText(message or config.SuccessMessage or "Access granted")
-                authorize(data)
-            else
-                status:Color(Color3.fromRGB(235, 105, 105))
-                status:SetText(message or config.InvalidMessage or "Invalid key")
-                if type(config.OnFailure) == "function" then
-                    task.spawn(config.OnFailure, input.Text, message, attempts)
-                end
-            end
-        end)
-    end
-
-    gate.Submit = submitKey
-    gate.Authorize = authorize
-    connect(submit.Activated, submitKey)
-    connect(input.FocusLost, function(enterPressed) if enterPressed then submitKey() end end)
-    step(function()
-        card.BackgroundColor3 = palette[2]
-        input.BackgroundColor3 = palette[4]
-        input.PlaceholderColor3 = palette[3]
-        submit.BackgroundColor3 = palette[4]
-    end, card)
-    return gate
 end
 
 function Library:Dialog(opts)
@@ -4644,7 +4203,6 @@ end
 
 function Library:Unload()
     Runtime.Alive = false
-    self:HideKeySystem(false)
     restoreFades()
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
