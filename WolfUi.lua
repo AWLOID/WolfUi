@@ -466,7 +466,7 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 220
 
 local Library = {
-    Version = "5.0.0",
+    Version = "5.0.1",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -706,12 +706,6 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     object.Visible = false
     object.Active = true
     object.ClipsDescendants = true
-    local outline = new("UIStroke", object, {
-        Color = palette[5],
-        Thickness = 1,
-        Transparency = 0.32,
-    })
-    step(function() outline.Color = palette[5] end, object)
 
     local depth = parentPopup and (parentPopup.Depth + 1) or 0
     object.ZIndex = 1 + depth * 2
@@ -2723,7 +2717,7 @@ function Tab:AddDropdown(opts)
     muted(card, opts.Description or "", 10, 22, w - 20, 14, 11)
 
     local controlW = w - 20
-    local control = paint(rect(card, 10, 38, controlW, 31, palette[4], 4, "TextButton"), 4)
+    local control = paint(rect(card, 10, 38, controlW, 31, palette[4], 3, "TextButton"), 4)
     local preview = muted(control, "", 10, 0, controlW - 40, 31, 11)
     local arrow = iconLabel(control, {"chevron-down", "chevrons-down", "arrow-down"},
         controlW - 22, 11.5, 10, palette[3], "v")
@@ -2733,17 +2727,13 @@ function Tab:AddDropdown(opts)
     local maxRows = math.floor(tonumber(opts.MaxRows) or 5)
     if maxRows <= 0 then maxRows = math.max(1, #options) end
     local initialRows = math.max(1, math.min(#options, maxRows))
-    local pop = createPopup(self.Window, control, controlW, initialRows * ROW_H + 8, true, self.ParentPopup)
-    step(function(dt)
-        arrow:Color(palette[3])
-        arrow.Object.Rotation = approach(arrow.Object.Rotation,
-            pop:IsActive() and 180 or 0, motionFactor(20, dt))
-    end, control)
+    local pop = createPopup(self.Window, control, controlW, initialRows * ROW_H, true, self.ParentPopup)
+    step(function() arrow:Color(palette[3]) end, control)
     local list = new("ScrollingFrame", pop.Object, {
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(4, 4),
-        Size = UDim2.new(1, -8, 1, -8),
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.new(1, 0, 1, 0),
         CanvasSize = UDim2.fromOffset(0, #options * ROW_H),
         ScrollBarThickness = 0,
         ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -2829,14 +2819,14 @@ function Tab:AddDropdown(opts)
         local visibleRows = math.min(#options, maxRows)
         if tonumber(opts.MaxRows) == 0 then visibleRows = #options end
         list.ScrollingEnabled = #options > visibleRows
-        pop.Height = math.max(ROW_H, visibleRows * ROW_H) + 8
+        pop.Height = math.max(ROW_H, visibleRows * ROW_H)
 
         for index, option in ipairs(options) do
-            local row = rect(list, 0, (index - 1) * ROW_H + 2,
-                controlW - 8, ROW_H - 4, palette[5], 4, "TextButton")
+            local row = rect(list, 0, (index - 1) * ROW_H,
+                controlW, ROW_H, palette[5], nil, "TextButton")
             row.BackgroundTransparency = 1
-            local mark = iconLabel(row, {"check"}, 0, 7.5, 12, accent, "v")
-            local title = text(row, option, 10, 0, controlW - 28, ROW_H - 4, 11, palette[3])
+            local mark = iconLabel(row, {"check"}, 0, 9.5, 12, accent, "v")
+            local title = text(row, option, 10, 0, controlW - 20, ROW_H, 11, palette[3])
             local entry = {Object = row, Mark = mark, Title = title, Alpha = 0, Index = index}
             rows[#rows + 1] = entry
 
@@ -2863,9 +2853,9 @@ function Tab:AddDropdown(opts)
             entry.Alpha = approach(entry.Alpha, selected and 1 or 0, k)
             entry.Object.BackgroundColor3 = palette[5]
             entry.Object.BackgroundTransparency = 1 - entry.Alpha
-            entry.Title.Object.Position = UDim2.fromOffset(roundPixel(10 + 18 * entry.Alpha), 0)
+            entry.Title.Object.Position = UDim2.fromOffset(roundPixel(10 + 20 * entry.Alpha), 0)
             entry.Title:Color(palette[3]:Lerp(white, entry.Alpha))
-            entry.Mark.Object.Position = UDim2.fromOffset(roundPixel(9 * entry.Alpha), 8)
+            entry.Mark.Object.Position = UDim2.fromOffset(roundPixel(10 * entry.Alpha), 10)
             entry.Mark:Color(accent)
             entry.Mark:Alpha(entry.Alpha * state.AccentAlpha)
         end
