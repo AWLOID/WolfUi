@@ -446,7 +446,6 @@ end
 
 local themes = {
     {{8, 8, 8}, {10, 10, 10}, {150, 150, 150}, {15, 15, 15}, {22, 22, 22}, {50, 50, 50}, {255, 255, 255}},
-    {{244, 246, 249}, {255, 255, 255}, {100, 106, 120}, {235, 238, 244}, {222, 226, 235}, {185, 192, 205}, {24, 27, 33}},
 }
 for _, theme in ipairs(themes) do
     for i, rgb in ipairs(theme) do
@@ -486,12 +485,12 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 220
 
 local Library = {
-    Version = "5.2.0",
+    Version = "5.2.1",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
     Themes = themes,
-    ThemeNames = {"Black", "White"},
+    ThemeNames = {"Black"},
     FadeAnimations = true,
     FadeDuration = 0.16,
     ScaleAnimations = true,
@@ -876,33 +875,12 @@ function Library:CreateWindow(opts)
     window.TabChanged = new("BindableEvent", events, {Name = "TabChanged"})
     window.ButtonPressed = new("BindableEvent", events, {Name = "ButtonPressed"})
 
-    local shadowRoot = transparent(gui, 0, 0, WINDOW_W, WINDOW_H, "Frame")
-    shadowRoot.Name = "Shadow"
-    shadowRoot.ZIndex = 1
-    local shadowScale = new("UIScale", shadowRoot, {Scale = 1})
-    local shadowFar = rect(shadowRoot, -5, 8, WINDOW_W + 10, WINDOW_H + 10,
-        black, 10, "Frame")
-    shadowFar.BackgroundTransparency = 0.9
-    local shadowNear = rect(shadowRoot, -2, 4, WINDOW_W + 4, WINDOW_H + 4,
-        black, 8, "Frame")
-    shadowNear.BackgroundTransparency = 0.78
-
     local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5, "Frame"), 1)
     frame.Name = "Window"
     frame.ZIndex = 2
     frame.Active = true
     frame.ClipsDescendants = true
     window.Frame = frame
-    local frameOutline = new("UIStroke", frame, {
-        Color = palette[6],
-        Thickness = 1,
-        Transparency = 0.38,
-    })
-    local frameGradient = new("UIGradient", frame, {Rotation = 90})
-    step(function()
-        frameOutline.Color = palette[6]
-        frameGradient.Color = ColorSequence.new(palette[1], palette[1]:Lerp(palette[2], 0.3))
-    end, frame)
 
     local scale = new("UIScale", frame, {Scale = 1})
     window.UIScale = scale
@@ -933,7 +911,6 @@ function Library:CreateWindow(opts)
         end
         local s = window.ScaleCurrent
         scale.Scale = s
-        shadowScale.Scale = s
         window.PopupScale.Scale = s
         if not window.Initialized then
             window.Position = (viewport - Vector2.new(WINDOW_W * s, WINDOW_H * s)) / 2
@@ -950,7 +927,6 @@ function Library:CreateWindow(opts)
         end
         window.Position = Vector2.new(math.floor(window.Position.X + 0.5), math.floor(window.Position.Y + 0.5))
         frame.Position = UDim2.fromOffset(window.Position.X, window.Position.Y)
-        shadowRoot.Position = frame.Position
         popupLayer.Position = frame.Position
     end
     window.Layout = layout
@@ -1038,9 +1014,6 @@ function Library:CreateWindow(opts)
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
     sidebar.Name = "Sidebar"
     window.Sidebar = sidebar
-    local sidebarDivider = rect(frame, SIDEBAR_W - 1, 0, 1, WINDOW_H, palette[6])
-    sidebarDivider.BackgroundTransparency = 0.55
-    step(function() sidebarDivider.BackgroundColor3 = palette[6] end, sidebarDivider)
 
     local logoHit = transparent(sidebar, 0, 0, SIDEBAR_W, TAB_SLOT, "TextButton")
     local logoSize = 28
@@ -1099,15 +1072,6 @@ function Library:CreateWindow(opts)
     local rail = transparent(frame, WINDOW_W - RAIL_W, 0, RAIL_W, WINDOW_H)
     rail.Name = "Rail"
     window.Rail = rail
-    local railDivider = rect(rail, 0, 0, 1, WINDOW_H, palette[6])
-    railDivider.BackgroundTransparency = 0.55
-    step(function() railDivider.BackgroundColor3 = palette[6] end, railDivider)
-    local accentLine = rect(frame, SIDEBAR_W, 0, CONTENT_W, 1, accent)
-    accentLine.BackgroundTransparency = 1 - state.AccentAlpha * 0.7
-    step(function()
-        accentLine.BackgroundColor3 = accent
-        accentLine.BackgroundTransparency = 1 - state.AccentAlpha * 0.7
-    end, accentLine)
 
     local function inside(point, object)
         if not object then return false end
@@ -1134,15 +1098,11 @@ function Library:CreateWindow(opts)
         local y = 10 + self.RailCount * 20
         self.RailCount = self.RailCount + 1
         local hit = transparent(rail, 6, y - 4, 18, 18, "TextButton")
-        new("UICorner", hit, {CornerRadius = UDim.new(0, 5)})
         local icon = iconLabel(hit, config.Icon or {"circle"}, 4, 4, 10, palette[3], config.Fallback or "*")
-        local hover, tint, hoverAlpha = false, palette[3], 0
+        local hover, tint = false, palette[3]
         connect(hit.MouseEnter, function() hover = true end)
         connect(hit.MouseLeave, function() hover = false end)
         step(function(_, k)
-            hoverAlpha = approach(hoverAlpha, hover and 1 or 0, k)
-            hit.BackgroundColor3 = palette[4]
-            hit.BackgroundTransparency = 1 - hoverAlpha * 0.9
             tint = tint:Lerp(hover and white or palette[3], k)
             icon:Color(tint)
         end, hit)
@@ -1736,7 +1696,6 @@ function Library:CreateWindow(opts)
 
         window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
         frame.Visible = window.Visible or window.Alpha > 0
-        shadowRoot.Visible = frame.Visible
         window.PopupLayer.Visible = frame.Visible
         if not frame.Visible then return end
 
@@ -1785,7 +1744,6 @@ function Library:CreateWindow(opts)
                 end
             end
         end
-        fadeGroup(shadowRoot, window.Alpha)
         fadeGroup(frame, window.Alpha)
         fadeGroup(popupLayer, window.Alpha)
     end)
@@ -1924,8 +1882,6 @@ function Window:CreateTab(opts)
     local icon = iconLabel(hit, opts.Icon or {"circle"}, (SIDEBAR_W - 16) / 2, 21.6, 16, palette[3],
         opts.Fallback or string.sub(name, 1, 1))
     local title = text(hit, opts.Title or name, 0, 41.3, SIDEBAR_W, 15, 11, palette[3], "center")
-    local indicator = rect(hit, SIDEBAR_W - 3, 31, 3, 8, accent, 2)
-    indicator.BackgroundTransparency = 1
     self.TabHolder.CanvasSize = UDim2.fromOffset(0, index * TAB_SLOT)
 
     connect(hit.Activated, function() self:SelectTab(tab) end)
@@ -1941,12 +1897,6 @@ function Window:CreateTab(opts)
         title:Color(tint)
         icon:Alpha(1 - alpha * (1 - state.AccentAlpha))
         title:Alpha(1 - alpha * (1 - state.AccentAlpha))
-        local indicatorHeight = 8 + 16 * alpha
-        indicator.Position = UDim2.fromOffset(SIDEBAR_W - 3,
-            roundPixel((TAB_SLOT - indicatorHeight) / 2))
-        indicator.Size = UDim2.fromOffset(3, roundPixel(indicatorHeight))
-        indicator.BackgroundColor3 = accent
-        indicator.BackgroundTransparency = 1 - alpha * state.AccentAlpha
     end, hit)
 
     tab.Button = hit
@@ -2387,29 +2337,7 @@ function Tab:AddSection(nameOrOpts)
     local total = self:_pageWidth()
     local x, y = self:_place(total, 16)
     local caption = string.upper(tostring(opts.Name or "Section"))
-    local marker = rect(self.Page, x, y + 3, 3, 10, accent, 2)
-    local api = muted(self.Page, caption, x + 10, y, total - 10, 16, 11, nil,
-        {Font = Enum.Font.GothamBold})
-    local line = rect(self.Page, x + total, y + 8, 0, 1, palette[4])
-    line.BackgroundTransparency = 0.2
-    local function layoutSection(value)
-        local bounds = TextService:GetTextSize(tostring(value), 11, Enum.Font.GothamBold,
-            Vector2.new(total - 10, 16))
-        local lineX = math.min(total, 18 + bounds.X)
-        line.Position = UDim2.fromOffset(x + lineX, y + 8)
-        line.Size = UDim2.fromOffset(math.max(0, total - lineX), 1)
-    end
-    local setText = api.SetText
-    function api:SetText(value)
-        setText(value)
-        layoutSection(value)
-    end
-    layoutSection(caption)
-    step(function()
-        marker.BackgroundColor3 = accent
-        marker.BackgroundTransparency = 1 - state.AccentAlpha
-        line.BackgroundColor3 = palette[4]
-    end, marker)
+    local api = muted(self.Page, caption, x, y, total, 16, 11)
     self:_newline()
     self:_grow()
     return api
@@ -4295,7 +4223,7 @@ local function deserialize(value)
 end
 
 function Library:GetConfig()
-    local config = {__version = self.Version, Flags = {}, Theme = state.Theme, Scale = state.Scale}
+    local config = {__version = self.Version, Flags = {}, Scale = state.Scale}
     for flag, value in pairs(self.Flags) do
         if not self.NoSaveFlags[flag] then
             config.Flags[flag] = serialize(value)
@@ -4303,9 +4231,6 @@ function Library:GetConfig()
     end
     config.FadeDuration = self.FadeDuration
     config.ScaleDuration = self.ScaleDuration
-    config.ThemePalette = {}
-    for i, color in ipairs(themes[state.Theme]) do config.ThemePalette[i] = serialize(color) end
-    config.ThemeName = self.ThemeNames[state.Theme]
     config.Accent = serialize(state.Accent)
     config.AccentAlpha = state.AccentAlpha
     if self.Window then
@@ -4325,11 +4250,7 @@ function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
     if config.FadeDuration ~= nil then self:SetFadeDuration(config.FadeDuration) end
     if config.ScaleDuration ~= nil then self:SetScaleDuration(config.ScaleDuration) end
-    if type(config.ThemePalette) == "table" then
-        local colors = {}
-        for i, color in ipairs(config.ThemePalette) do colors[i] = deserialize(color) end
-        self:SetTheme(self:RegisterTheme(config.ThemeName or "Custom", colors))
-    elseif config.Theme then self:SetTheme(config.Theme) end
+    self:SetTheme(1)
     if type(config.MiniStyle) == "table" and self.Window then
         for _, mini in ipairs(self.Window.Mini) do
             local style = config.MiniStyle[mini.Key]
