@@ -165,7 +165,10 @@ local function resolveIcon(value)
     return nil
 end
 
-local white, black = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+local pureWhite, black = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+local white = pureWhite
+local foregroundLabels = setmetatable({}, {__mode = "k"})
+local foregroundIcons = setmetatable({}, {__mode = "k"})
 
 local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false}
 
@@ -234,6 +237,8 @@ end
 
 local fadeValues = setmetatable({}, {__mode = "k"})
 local fadeCaches = setmetatable({}, {__mode = "k"})
+local themedStrokes = setmetatable({}, {__mode = "k"})
+local palette = {}
 
 local function restoreFades()
     for object, values in pairs(fadeValues) do
@@ -314,6 +319,13 @@ local function new(class, parent, props)
         object.TopImage = ""
         object.MidImage = ""
         object.BottomImage = ""
+    elseif class == "UIStroke" and props and props.Color then
+        for index = 1, 6 do
+            if palette[index] and props.Color == palette[index] then
+                themedStrokes[object] = index
+                break
+            end
+        end
     end
     object.Parent = parent
     return object
@@ -346,6 +358,7 @@ end
 
 local function text(parent, value, x, y, w, h, size, color, align, opts)
     opts = opts or {}
+    local themed = color == nil or color == white
     local label = new("TextLabel", parent, {
         BackgroundTransparency = 1,
         Position = UDim2.fromOffset(roundPixel(x), roundPixel(y)),
@@ -363,10 +376,14 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
         RichText = false,
         ZIndex = 2,
     })
+    if themed then foregroundLabels[label] = true end
     local api = {Object = label}
     function api:SetText(v) label.Text = tostring(v) end
     function api:GetText() return label.Text end
-    function api:Color(v) label.TextColor3 = v end
+    function api:Color(v)
+        foregroundLabels[label] = nil
+        label.TextColor3 = v
+    end
     function api:Alpha(v) label.TextTransparency = 1 - v end
     function api:Width(v) label.Size = UDim2.fromOffset(math.max(0, roundPixel(v)), label.Size.Y.Offset) end
     return api
@@ -375,6 +392,7 @@ end
 local function iconLabel(parent, names, x, y, size, color, fallback)
     local image, offset, sheetSize, tinted, customColor = resolveIcon(names)
     local object, isImage
+    local themed = color == nil or color == white
     if image then
         isImage = true
         object = new("ImageLabel", parent, {
@@ -384,7 +402,7 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
             Image = image,
             ImageRectOffset = offset,
             ImageRectSize = sheetSize,
-            ImageColor3 = customColor or (tinted and (color or white) or white),
+            ImageColor3 = customColor or (tinted and (color or white) or pureWhite),
             ScaleType = Enum.ScaleType.Fit,
             ZIndex = 2,
         })
@@ -403,8 +421,10 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
             ZIndex = 2,
         })
     end
+    if themed and (not isImage or tinted) then foregroundIcons[object] = true end
     local api = {Object = object, IsImage = isImage, Tinted = tinted == true}
     function api:Color(v)
+        foregroundIcons[object] = nil
         if isImage then
             if self.Tinted then object.ImageColor3 = v end
         else
@@ -425,9 +445,8 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
 end
 
 local themes = {
-    {{15, 15, 18}, {17, 17, 21}, {92, 95, 122}, {20, 20, 25}, {22, 22, 28}, {50, 50, 65}},
-    {{26, 26, 30}, {31, 31, 36}, {128, 128, 143}, {36, 36, 42}, {40, 40, 46}, {70, 70, 90}},
-    {{8, 8, 8}, {10, 10, 10}, {150, 150, 150}, {15, 15, 15}, {22, 22, 22}, {50, 50, 50}},
+    {{8, 8, 8}, {10, 10, 10}, {150, 150, 150}, {15, 15, 15}, {22, 22, 22}, {50, 50, 50}, {255, 255, 255}},
+    {{244, 246, 249}, {255, 255, 255}, {100, 106, 120}, {235, 238, 244}, {222, 226, 235}, {185, 192, 205}, {24, 27, 33}},
 }
 for _, theme in ipairs(themes) do
     for i, rgb in ipairs(theme) do
@@ -435,8 +454,9 @@ for _, theme in ipairs(themes) do
     end
 end
 
-local palette = {}
+palette = {}
 for i, color in ipairs(themes[1]) do palette[i] = color end
+white = palette[7]
 
 local accent = Color3.fromRGB(126, 139, 209)
 
@@ -466,12 +486,12 @@ local DRAG_THRESHOLD = 6
 local SUB_MAX_HEIGHT = 220
 
 local Library = {
-    Version = "5.0.1",
+    Version = "5.2.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
     Themes = themes,
-    ThemeNames = {"Wolf", "Slate", "Black"},
+    ThemeNames = {"Black", "White"},
     FadeAnimations = true,
     FadeDuration = 0.16,
     ScaleAnimations = true,
@@ -481,6 +501,10 @@ local Library = {
     Scale = 100,
     Accent = accent,
     AccentAlpha = 1,
+    Configs = {
+        Enabled = false,
+        Encrypted = false,
+    },
 
     Limits = {
         ClampWindow = true,
@@ -596,6 +620,16 @@ function Library:RegisterTheme(name, colors)
         assert(typeof(color) == "Color3", "Theme requires six colors")
         theme[i] = color
     end
+    local textColor = paletteColors[7]
+    if typeof(textColor) == "table" then
+        textColor = Color3.fromRGB(textColor[1], textColor[2], textColor[3])
+    end
+    if typeof(textColor) ~= "Color3" then
+        local background = theme[1]
+        local luminance = background.R * 0.2126 + background.G * 0.7152 + background.B * 0.0722
+        textColor = luminance > 0.55 and Color3.fromRGB(24, 27, 33) or pureWhite
+    end
+    theme[7] = textColor
     local index = table.find(self.ThemeNames, name) or (#themes + 1)
     themes[index], self.ThemeNames[index] = theme, name
     return index
@@ -755,6 +789,14 @@ function Library:CreateWindow(opts)
     end
 
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive = {}, {}, {}, true
+    local configOptions = opts.Configs
+    if configOptions == true then configOptions = {Enabled = true} end
+    if type(configOptions) ~= "table" then configOptions = {Enabled = false} end
+    self.Configs = {
+        Enabled = configOptions.Enabled ~= false and opts.Configs ~= nil,
+        Encrypted = configOptions.Encrypted == true or configOptions.Encryption == true,
+        Key = tostring(configOptions.Key or "1"),
+    }
     Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
     self.FadeAnimations, self.ScaleAnimations = true, true
     if opts.FadeDuration ~= nil then self:SetFadeDuration(opts.FadeDuration) end
@@ -771,10 +813,14 @@ function Library:CreateWindow(opts)
     state.Tab = nil
     accent = state.Accent
     for i, color in ipairs(themes[state.Theme]) do palette[i] = color end
+    white = palette[7] or pureWhite
     Library.Theme, Library.Scale = state.Theme, state.Scale
     Library.Accent, Library.AccentAlpha = state.Accent, state.AccentAlpha
 
     local windowIcon = opts.Icon or {"dog", "paw-print", "moon"}
+    local menuSettings = opts.MenuSettings
+    if menuSettings == true then menuSettings = {} end
+    local menuSettingsEnabled = type(menuSettings) == "table" and menuSettings.Enabled ~= false
 
     local window = setmetatable({
         Visible = true,
@@ -830,11 +876,33 @@ function Library:CreateWindow(opts)
     window.TabChanged = new("BindableEvent", events, {Name = "TabChanged"})
     window.ButtonPressed = new("BindableEvent", events, {Name = "ButtonPressed"})
 
+    local shadowRoot = transparent(gui, 0, 0, WINDOW_W, WINDOW_H, "Frame")
+    shadowRoot.Name = "Shadow"
+    shadowRoot.ZIndex = 1
+    local shadowScale = new("UIScale", shadowRoot, {Scale = 1})
+    local shadowFar = rect(shadowRoot, -5, 8, WINDOW_W + 10, WINDOW_H + 10,
+        black, 10, "Frame")
+    shadowFar.BackgroundTransparency = 0.9
+    local shadowNear = rect(shadowRoot, -2, 4, WINDOW_W + 4, WINDOW_H + 4,
+        black, 8, "Frame")
+    shadowNear.BackgroundTransparency = 0.78
+
     local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 5, "Frame"), 1)
     frame.Name = "Window"
+    frame.ZIndex = 2
     frame.Active = true
     frame.ClipsDescendants = true
     window.Frame = frame
+    local frameOutline = new("UIStroke", frame, {
+        Color = palette[6],
+        Thickness = 1,
+        Transparency = 0.38,
+    })
+    local frameGradient = new("UIGradient", frame, {Rotation = 90})
+    step(function()
+        frameOutline.Color = palette[6]
+        frameGradient.Color = ColorSequence.new(palette[1], palette[1]:Lerp(palette[2], 0.3))
+    end, frame)
 
     local scale = new("UIScale", frame, {Scale = 1})
     window.UIScale = scale
@@ -865,6 +933,7 @@ function Library:CreateWindow(opts)
         end
         local s = window.ScaleCurrent
         scale.Scale = s
+        shadowScale.Scale = s
         window.PopupScale.Scale = s
         if not window.Initialized then
             window.Position = (viewport - Vector2.new(WINDOW_W * s, WINDOW_H * s)) / 2
@@ -881,6 +950,7 @@ function Library:CreateWindow(opts)
         end
         window.Position = Vector2.new(math.floor(window.Position.X + 0.5), math.floor(window.Position.Y + 0.5))
         frame.Position = UDim2.fromOffset(window.Position.X, window.Position.Y)
+        shadowRoot.Position = frame.Position
         popupLayer.Position = frame.Position
     end
     window.Layout = layout
@@ -968,6 +1038,9 @@ function Library:CreateWindow(opts)
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
     sidebar.Name = "Sidebar"
     window.Sidebar = sidebar
+    local sidebarDivider = rect(frame, SIDEBAR_W - 1, 0, 1, WINDOW_H, palette[6])
+    sidebarDivider.BackgroundTransparency = 0.55
+    step(function() sidebarDivider.BackgroundColor3 = palette[6] end, sidebarDivider)
 
     local logoHit = transparent(sidebar, 0, 0, SIDEBAR_W, TAB_SLOT, "TextButton")
     local logoSize = 28
@@ -1026,6 +1099,15 @@ function Library:CreateWindow(opts)
     local rail = transparent(frame, WINDOW_W - RAIL_W, 0, RAIL_W, WINDOW_H)
     rail.Name = "Rail"
     window.Rail = rail
+    local railDivider = rect(rail, 0, 0, 1, WINDOW_H, palette[6])
+    railDivider.BackgroundTransparency = 0.55
+    step(function() railDivider.BackgroundColor3 = palette[6] end, railDivider)
+    local accentLine = rect(frame, SIDEBAR_W, 0, CONTENT_W, 1, accent)
+    accentLine.BackgroundTransparency = 1 - state.AccentAlpha * 0.7
+    step(function()
+        accentLine.BackgroundColor3 = accent
+        accentLine.BackgroundTransparency = 1 - state.AccentAlpha * 0.7
+    end, accentLine)
 
     local function inside(point, object)
         if not object then return false end
@@ -1051,12 +1133,16 @@ function Library:CreateWindow(opts)
         config = config or {}
         local y = 10 + self.RailCount * 20
         self.RailCount = self.RailCount + 1
-        local hit = transparent(rail, 10, y, 10, 10, "TextButton")
-        local icon = iconLabel(hit, config.Icon or {"circle"}, 0, 0, 10, palette[3], config.Fallback or "*")
-        local hover, tint = false, palette[3]
+        local hit = transparent(rail, 6, y - 4, 18, 18, "TextButton")
+        new("UICorner", hit, {CornerRadius = UDim.new(0, 5)})
+        local icon = iconLabel(hit, config.Icon or {"circle"}, 4, 4, 10, palette[3], config.Fallback or "*")
+        local hover, tint, hoverAlpha = false, palette[3], 0
         connect(hit.MouseEnter, function() hover = true end)
         connect(hit.MouseLeave, function() hover = false end)
-        step(function(dt, k)
+        step(function(_, k)
+            hoverAlpha = approach(hoverAlpha, hover and 1 or 0, k)
+            hit.BackgroundColor3 = palette[4]
+            hit.BackgroundTransparency = 1 - hoverAlpha * 0.9
             tint = tint:Lerp(hover and white or palette[3], k)
             icon:Color(tint)
         end, hit)
@@ -1066,58 +1152,81 @@ function Library:CreateWindow(opts)
         return hit
     end
 
-    local themeButton = window:AddRailButton({
-        Icon = {"sun-moon", "sun", "palette", "moon"},
-        Fallback = "T",
-        Callback = function()
-            Library:SetTheme(state.Theme % #themes + 1)
-        end,
-    })
+    window.RebuildScaleButtons = function() end
+    if menuSettingsEnabled then
+        local settingsButton = window:AddRailButton({
+            Icon = menuSettings.Icon or {"settings", "settings-2", "sliders-horizontal"},
+            Fallback = "S",
+        })
+        local showTheme = menuSettings.Theme ~= false
+        local showScale = menuSettings.Scale ~= false
+        local settingsPopup = createPopup(window, settingsButton, 200, 72, false)
+        local cursorY = 6
+        local themeButtons = {}
+        local scaleButtons = {}
 
-    local settingsButton = window:AddRailButton({
-        Icon = {"settings", "settings-2", "sliders-horizontal"},
-        Fallback = "S",
-    })
-
-    local settingsPopup = createPopup(window, settingsButton, 200, 72, false)
-    muted(settingsPopup.Object, "Menu scale", 10, 6, 180, 14, 11)
-    local scaleHolder = transparent(settingsPopup.Object, 10, 26, 180, 31)
-    local scaleButtons = {}
-
-    local function rebuildScaleButtons()
-        for _, old in ipairs(scaleButtons) do old:Destroy() end
-        scaleButtons = {}
-        local options = Library.ScaleOptions
-        local count = math.max(1, #options)
-        local perRow = math.min(3, count)
-        local rows = math.ceil(count / perRow)
-        local buttonW = math.floor((180 - (perRow - 1) * 9) / perRow)
-        for index, option in ipairs(options) do
-            local row = math.floor((index - 1) / perRow)
-            local column = (index - 1) % perRow
-            local button = paint(rect(scaleHolder, column * (buttonW + 9), row * 40, buttonW, 31,
-                palette[4], 3, "TextButton"), 4)
-            local caption = text(button, tostring(option) .. "%", 0, 0, buttonW, 31, 11, palette[3], "center")
-            connect(button.Activated, function() window:SetScale(option) end)
-            local hover, a, tint = false, 0, palette[3]
-            connect(button.MouseEnter, function() hover = true end)
-            connect(button.MouseLeave, function() hover = false end)
-            step(function(dt, k)
-                local active = state.Scale == option
-                a = approach(a, active and 1 or 0, k)
-                button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 1 or 0)
-                tint = tint:Lerp(active and white or palette[3], k)
-                caption:Color(tint)
-            end, button)
-            scaleButtons[#scaleButtons + 1] = button
+        local function buildChoice(holder, labels, activeValue, onChoose, target)
+            for _, old in ipairs(target) do old:Destroy() end
+            table.clear(target)
+            local count = math.max(1, #labels)
+            local perRow = math.min(3, count)
+            local rows = math.ceil(count / perRow)
+            local buttonW = math.floor((180 - (perRow - 1) * 9) / perRow)
+            for index, label in ipairs(labels) do
+                local row = math.floor((index - 1) / perRow)
+                local column = (index - 1) % perRow
+                local button = paint(rect(holder, column * (buttonW + 9), row * 40, buttonW, 31,
+                    palette[4], 3, "TextButton"), 4)
+                local caption = text(button, tostring(label), 0, 0, buttonW, 31, 11, palette[3], "center")
+                connect(button.Activated, function() onChoose(index, label) end)
+                local hover, tint = false, palette[3]
+                connect(button.MouseEnter, function() hover = true end)
+                connect(button.MouseLeave, function() hover = false end)
+                step(function(_, k)
+                    local active = activeValue(index, label)
+                    button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 1 or 0)
+                    tint = tint:Lerp(active and white or palette[3], k)
+                    caption:Color(tint)
+                end, button)
+                target[#target + 1] = button
+            end
+            holder.Size = UDim2.fromOffset(180, rows * 40 - 9)
+            return rows * 40 - 9
         end
-        scaleHolder.Size = UDim2.fromOffset(180, rows * 40 - 9)
 
-        settingsPopup.Height = 26 + rows * 40 - 9 + 15
+        if showTheme then
+            muted(settingsPopup.Object, "Theme", 10, cursorY, 180, 14, 11)
+            cursorY = cursorY + 20
+            local themeHolder = transparent(settingsPopup.Object, 10, cursorY, 180, 31)
+            cursorY = cursorY + buildChoice(themeHolder, Library.ThemeNames,
+                function(index) return state.Theme == index end,
+                function(index) Library:SetTheme(index) end, themeButtons) + 9
+        end
+
+        local scaleHolder
+        local function rebuildScaleButtons()
+            if not scaleHolder then return end
+            local labels = {}
+            for _, option in ipairs(Library.ScaleOptions) do labels[#labels + 1] = tostring(option) .. "%" end
+            local height = buildChoice(scaleHolder, labels,
+                function(index) return state.Scale == Library.ScaleOptions[index] end,
+                function(index) window:SetScale(Library.ScaleOptions[index]) end, scaleButtons)
+            settingsPopup.Height = scaleHolder.Position.Y.Offset + height + 15
+        end
+        window.RebuildScaleButtons = rebuildScaleButtons
+
+        if showScale then
+            muted(settingsPopup.Object, "Menu scale", 10, cursorY, 180, 14, 11)
+            cursorY = cursorY + 20
+            scaleHolder = transparent(settingsPopup.Object, 10, cursorY, 180, 31)
+            rebuildScaleButtons()
+        else
+            settingsPopup.Height = cursorY + 6
+        end
+        connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
+        window.MenuSettingsButton = settingsButton
+        window.MenuSettingsPopup = settingsPopup
     end
-    window.RebuildScaleButtons = rebuildScaleButtons
-    rebuildScaleButtons()
-    connect(settingsButton.Activated, function() settingsPopup:Toggle(settingsButton) end)
 
     local miniLayer = new("Frame", gui, {
         Name = "Floating",
@@ -1178,31 +1287,66 @@ function Library:CreateWindow(opts)
     watermark.ZIndex = 42
     watermark.BackgroundTransparency = 1
     watermark.ClipsDescendants = true
-    local watermarkText = text(watermark, "", 28, 0, 0, 22, 11, white)
-    local watermarkIcon = iconLabel(watermark, windowIcon, 7, 3, 16, accent, window.IconFallback)
-    local watermarkFpsIcon = iconLabel(watermark, {"gauge", "activity", "monitor"},
-        0, 5, 12, accent, "F")
-    local watermarkFpsText = muted(watermark, "", 0, 0, 0, 22, 10)
-    local watermarkPingIcon = iconLabel(watermark, {"wifi", "radio", "globe"},
-        0, 5, 12, accent, "P")
-    local watermarkPingText = muted(watermark, "", 0, 0, 0, 22, 10)
-    local watermarkTimeIcon = iconLabel(watermark, {"clock-3", "clock"},
-        0, 5, 12, accent, "T")
-    local watermarkTimeText = muted(watermark, "", 0, 0, 0, 22, 10)
-    window.WatermarkIcon = watermarkIcon
     window.Watermark = watermark
-    window.WatermarkText = watermarkText
     window.WatermarkConfig = {
         Enabled = false,
-        Text = opts.Name or "Wolf",
-        ShowFPS = false,
-        ShowPing = false,
-        ShowTime = false,
         Transparency = 0,
         Toggle = true,
         AlwaysVisible = false,
         Position = Vector2.new(8, 8),
+        Height = 22,
+        Padding = 7,
+        Gap = 10,
+        MinimumWidth = 32,
+        Blocks = {},
     }
+    local watermarkItems = {}
+    local defaultWatermarkBlocks = {
+        {Id = "brand", Type = "Icon", Icon = windowIcon, Size = 16, UseWindowIcon = true},
+        {Id = "fps", Type = "FPS", Icon = {"gauge", "activity", "monitor"}},
+        {Id = "ping", Type = "Ping", Icon = {"wifi", "radio", "globe"}},
+        {Id = "time", Type = "Time", Icon = {"clock-3", "clock"}},
+    }
+
+    local function copyWatermarkBlock(source, index)
+        local block = {}
+        for key, value in pairs(source or {}) do block[key] = value end
+        block.Id = tostring(block.Id or block.Name or ("block_" .. tostring(index)))
+        block.Type = string.lower(tostring(block.Type or "Text"))
+        return block
+    end
+
+    local function rebuildWatermarkBlocks(blocks)
+        local sources = {}
+        for index, source in ipairs(blocks or {}) do sources[index] = copyWatermarkBlock(source, index) end
+        for _, item in ipairs(watermarkItems) do item.Object:Destroy() end
+        table.clear(watermarkItems)
+        table.clear(window.WatermarkConfig.Blocks)
+        for index, source in ipairs(sources) do
+            local block = copyWatermarkBlock(source, index)
+            window.WatermarkConfig.Blocks[index] = block
+            local kind = block.Type
+            local object = transparent(watermark, 0, 0, 0, window.WatermarkConfig.Height)
+            object.Name = block.Id
+            local item = {Object = object, Block = block, Width = 0, TextWidth = 0}
+            local iconValue = block.Icon
+            if kind == "icon" and iconValue == nil then iconValue = windowIcon end
+            if iconValue ~= false and iconValue ~= nil and kind ~= "spacer" then
+                item.Icon = iconLabel(object, iconValue, 0, 0, block.IconSize or block.Size or 12,
+                    block.IconColor or accent, block.Fallback or string.upper(string.sub(block.Id, 1, 1)))
+            end
+            if kind ~= "icon" and kind ~= "spacer" then
+                item.Label = text(object, "", 0, 0, 0, window.WatermarkConfig.Height,
+                    block.TextSize or 10, block.TextColor or palette[3])
+            end
+            watermarkItems[#watermarkItems + 1] = item
+        end
+        window.WatermarkItems = watermarkItems
+        window.WatermarkDirty = true
+    end
+
+    window.RebuildWatermarkBlocks = rebuildWatermarkBlocks
+    rebuildWatermarkBlocks(defaultWatermarkBlocks)
     local initialOpenMode = string.lower(tostring(type(opts.OpenMode) == "table" and opts.OpenMode.Mode or opts.OpenMode or "button"))
     if initialOpenMode ~= "watermark" then initialOpenMode = "button" end
     window.OpenConfig = {
@@ -1264,8 +1408,10 @@ function Library:CreateWindow(opts)
         end
     end)
 
-    local watermarkCaption = nil
     local watermarkWidth = 160
+    local watermarkHeight = 22
+    local watermarkIconPosition = Vector2.new(7, 3)
+    local watermarkIconSize = 16
     local tooltipCaption = nil
     local tooltipWidth = 0
     local openerBlend = initialOpenMode == "watermark" and 1 or 0
@@ -1284,45 +1430,94 @@ function Library:CreateWindow(opts)
         window.OpenerBlend = openerBlend
 
         if wm.Enabled or openerBlend > 0 then
-            local titleValue = tostring(wm.Text or "")
-            local fpsValue = tostring(window.FPS) .. " fps"
-            local pingValue = tostring(window.Ping) .. " ms"
-            local timeValue = os.date("%H:%M:%S")
-            local caption = table.concat({titleValue, wm.ShowFPS and fpsValue or "",
-                wm.ShowPing and pingValue or "", wm.ShowTime and timeValue or ""}, "\0")
-            if caption ~= watermarkCaption then
-                watermarkCaption = caption
-                local x = 28
-                local titleBounds = TextService:GetTextSize(titleValue, 11, Enum.Font.Gotham,
-                    Vector2.new(4000, 22))
-                watermarkText:SetText(titleValue)
-                watermarkText.Object.Position = UDim2.fromOffset(x, 0)
-                watermarkText:Width(titleBounds.X + 1)
-                x = x + titleBounds.X + (titleBounds.X > 0 and 11 or 0)
-
-                local function placeStat(icon, label, enabled, value)
-                    icon.Object.Visible = enabled
-                    label.Object.Visible = enabled
-                    if not enabled then return end
-                    local bounds = TextService:GetTextSize(value, 10, Enum.Font.Gotham,
-                        Vector2.new(4000, 22))
-                    icon.Object.Position = UDim2.fromOffset(roundPixel(x), 5)
-                    label.Object.Position = UDim2.fromOffset(roundPixel(x + 16), 0)
-                    label:SetText(value)
-                    label:Width(bounds.X + 1)
-                    x = x + 16 + bounds.X + 11
+            watermarkHeight = math.max(18, math.floor(tonumber(wm.Height) or 22))
+            local context = {
+                FPS = window.FPS,
+                Ping = window.Ping,
+                Time = os.date("%H:%M:%S"),
+                Player = player,
+                Window = window,
+                Library = Library,
+            }
+            local x = math.max(0, tonumber(wm.Padding) or 7)
+            local visibleCount = 0
+            local firstIconPosition, firstIconSize
+            for _, item in ipairs(watermarkItems) do
+                local block = item.Block
+                local visible = block.Visible ~= false
+                if type(block.Visible) == "function" then
+                    local ok, result = pcall(block.Visible, context, block)
+                    visible = ok and result ~= false
                 end
-
-                placeStat(watermarkFpsIcon, watermarkFpsText, wm.ShowFPS, fpsValue)
-                placeStat(watermarkPingIcon, watermarkPingText, wm.ShowPing, pingValue)
-                placeStat(watermarkTimeIcon, watermarkTimeText, wm.ShowTime, timeValue)
-                watermarkWidth = math.max(54, x - 3)
-                watermark.Size = UDim2.fromOffset(roundPixel(watermarkWidth), 22)
+                item.Object.Visible = visible
+                if visible then
+                    visibleCount = visibleCount + 1
+                    local kind = block.Type
+                    local value = block.Text
+                    if type(value) == "function" then
+                        local ok, result = pcall(value, context, block)
+                        value = ok and result or ""
+                    elseif type(block.Update) == "function" then
+                        local ok, result = pcall(block.Update, context, block)
+                        value = ok and result or ""
+                    elseif value == nil then
+                        if kind == "fps" then
+                            value = tostring(context.FPS) .. tostring(block.Suffix or " fps")
+                        elseif kind == "ping" then
+                            value = tostring(context.Ping) .. tostring(block.Suffix or " ms")
+                        elseif kind == "time" then
+                            value = os.date(block.Format or "%H:%M:%S")
+                        elseif kind == "player" then
+                            value = block.DisplayName == false and player.Name or player.DisplayName
+                        else
+                            value = ""
+                        end
+                    end
+                    value = tostring(block.Prefix or "") .. tostring(value or "") .. tostring(block.SuffixText or "")
+                    local iconShown = item.Icon and block.IconVisible ~= false
+                    local iconSize = iconShown and math.max(8, tonumber(block.IconSize or block.Size) or 12) or 0
+                    local labelWidth = 0
+                    if item.Label then
+                        if item.LastText ~= value then
+                            item.LastText = value
+                            local bounds = TextService:GetTextSize(value, block.TextSize or 10, Enum.Font.Gotham,
+                                Vector2.new(4000, watermarkHeight))
+                            item.TextWidth = bounds.X + 1
+                            item.Label:SetText(value)
+                            item.Label:Width(item.TextWidth)
+                        end
+                        labelWidth = item.TextWidth
+                    end
+                    local innerGap = item.Icon and item.Label and value ~= "" and (tonumber(block.InnerGap) or 4) or 0
+                    local width = kind == "spacer" and math.max(0, tonumber(block.Width) or 8)
+                        or math.max(0, tonumber(block.Width) or (iconSize + innerGap + labelWidth))
+                    item.Width = width
+                    item.Object.Position = UDim2.fromOffset(roundPixel(x), 0)
+                    item.Object.Size = UDim2.fromOffset(roundPixel(width), watermarkHeight)
+                    if item.Icon then
+                        item.Icon.Object.Visible = iconShown
+                        item.Icon.Object.Position = UDim2.fromOffset(0, roundPixel((watermarkHeight - iconSize) / 2))
+                        item.Icon.Object.Size = UDim2.fromOffset(iconSize, iconSize)
+                        if iconShown and not firstIconPosition then
+                            firstIconPosition = Vector2.new(x, (watermarkHeight - iconSize) / 2)
+                            firstIconSize = iconSize
+                        end
+                    end
+                    if item.Label then
+                        item.Label.Object.Position = UDim2.fromOffset(iconSize + innerGap, 0)
+                        item.Label.Object.Size = UDim2.fromOffset(labelWidth, watermarkHeight)
+                    end
+                    x = x + width + (tonumber(block.Gap) or tonumber(wm.Gap) or 10)
+                end
             end
+            if visibleCount > 0 then x = x - (tonumber(wm.Gap) or 10) end
+            watermarkWidth = math.max(tonumber(wm.MinimumWidth) or 32, x + math.max(0, tonumber(wm.Padding) or 7))
+            watermarkIconPosition = firstIconPosition or Vector2.new(7, math.max(0, (watermarkHeight - 16) / 2))
+            watermarkIconSize = firstIconSize or 16
         end
 
         local buttonSize = Vector2.new(oc.Width, oc.Height)
-        local watermarkSize = Vector2.new(watermarkWidth, 22)
+        local watermarkSize = Vector2.new(watermarkWidth, watermarkHeight)
         local buttonPosition = Vector2.new(
             math.clamp(oc.Position.X, 0, math.max(0, viewport.X - buttonSize.X)),
             math.clamp(oc.Position.Y, 0, math.max(0, viewport.Y - buttonSize.Y))
@@ -1358,32 +1553,28 @@ function Library:CreateWindow(opts)
             watermark.BackgroundTransparency = 1
             reopenStroke.Color = palette[5]
             reopenIcon:Color(accent)
-            watermarkIcon:Color(accent)
-            watermarkFpsIcon:Color(accent)
-            watermarkPingIcon:Color(accent)
-            watermarkTimeIcon:Color(accent)
-            watermarkFpsText:Color(palette[3])
-            watermarkPingText:Color(palette[3])
-            watermarkTimeText:Color(palette[3])
             local buttonIconSize = math.min(buttonSize.X, buttonSize.Y) * 0.68
             local buttonIconPosition = Vector2.new(
                 (buttonSize.X - buttonIconSize) / 2,
                 (buttonSize.Y - buttonIconSize) / 2
             )
-            local iconPosition = buttonIconPosition:Lerp(Vector2.new(7, 3), openerBlend)
-            local iconSize = buttonIconSize + (16 - buttonIconSize) * openerBlend
+            local iconPosition = buttonIconPosition:Lerp(watermarkIconPosition, openerBlend)
+            local iconSize = buttonIconSize + (watermarkIconSize - buttonIconSize) * openerBlend
             reopenIcon.Object.Position = UDim2.fromOffset(roundPixel(iconPosition.X), roundPixel(iconPosition.Y))
             reopenIcon.Object.Size = UDim2.fromOffset(roundPixel(iconSize), roundPixel(iconSize))
             reopenIcon:Alpha((1 - openerBlend) * state.AccentAlpha * (1 - buttonTransparency))
             local watermarkAlpha = openerBlend * (1 - watermarkTransparency)
-            watermarkIcon:Alpha(watermarkAlpha * state.AccentAlpha)
-            watermarkText:Alpha(watermarkAlpha)
-            watermarkFpsIcon:Alpha(watermarkAlpha * state.AccentAlpha)
-            watermarkPingIcon:Alpha(watermarkAlpha * state.AccentAlpha)
-            watermarkTimeIcon:Alpha(watermarkAlpha * state.AccentAlpha)
-            watermarkFpsText:Alpha(watermarkAlpha)
-            watermarkPingText:Alpha(watermarkAlpha)
-            watermarkTimeText:Alpha(watermarkAlpha)
+            for _, item in ipairs(watermarkItems) do
+                local block = item.Block
+                if item.Icon then
+                    item.Icon:Color(block.IconColor or block.Color or accent)
+                    item.Icon:Alpha(watermarkAlpha * math.clamp(tonumber(block.IconAlpha) or state.AccentAlpha, 0, 1))
+                end
+                if item.Label then
+                    item.Label:Color(block.TextColor or block.Color or palette[3])
+                    item.Label:Alpha(watermarkAlpha * math.clamp(tonumber(block.TextAlpha) or 1, 0, 1))
+                end
+            end
             reopenStroke.Transparency = 0.4 + 0.6 * transparency
         end
 
@@ -1464,6 +1655,7 @@ function Library:CreateWindow(opts)
 
     window.ToggleKey = type(opts.ToggleKey) == "string" and keyFromName(opts.ToggleKey) or opts.ToggleKey or Enum.KeyCode.RightShift
     Library:SetOpenMode(type(opts.OpenMode) == "table" and opts.OpenMode or {Mode = opts.OpenMode or "button"})
+    if opts.Watermark ~= nil then Library:SetWatermark(opts.Watermark) end
 
     connect(gui.Destroying, function()
         Runtime.Alive = false
@@ -1480,6 +1672,24 @@ function Library:CreateWindow(opts)
         local theme = themes[state.Theme] or themes[1]
         for i, target in ipairs(theme) do
             palette[i] = palette[i]:Lerp(target, k)
+        end
+        white = palette[7] or pureWhite
+        for label in pairs(foregroundLabels) do
+            if label.Parent then label.TextColor3 = white else foregroundLabels[label] = nil end
+        end
+        for icon in pairs(foregroundIcons) do
+            if icon.Parent then
+                if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
+                    icon.ImageColor3 = white
+                else
+                    icon.TextColor3 = white
+                end
+            else
+                foregroundIcons[icon] = nil
+            end
+        end
+        for stroke, index in pairs(themedStrokes) do
+            if stroke.Parent then stroke.Color = palette[index] else themedStrokes[stroke] = nil end
         end
         accent = accent:Lerp(state.Accent, k)
 
@@ -1526,6 +1736,7 @@ function Library:CreateWindow(opts)
 
         window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
         frame.Visible = window.Visible or window.Alpha > 0
+        shadowRoot.Visible = frame.Visible
         window.PopupLayer.Visible = frame.Visible
         if not frame.Visible then return end
 
@@ -1574,6 +1785,7 @@ function Library:CreateWindow(opts)
                 end
             end
         end
+        fadeGroup(shadowRoot, window.Alpha)
         fadeGroup(frame, window.Alpha)
         fadeGroup(popupLayer, window.Alpha)
     end)
@@ -1611,6 +1823,26 @@ function Window:SetWatermark(options)
     return Library:SetWatermark(options)
 end
 
+function Window:SetWatermarkBlocks(blocks)
+    return Library:SetWatermarkBlocks(blocks)
+end
+
+function Window:GetWatermarkBlocks()
+    return Library:GetWatermarkBlocks()
+end
+
+function Window:AddWatermarkBlock(block, index)
+    return Library:AddWatermarkBlock(block, index)
+end
+
+function Window:SetWatermarkBlock(id, changes)
+    return Library:SetWatermarkBlock(id, changes)
+end
+
+function Window:RemoveWatermarkBlock(id)
+    return Library:RemoveWatermarkBlock(id)
+end
+
 function Window:SetOpenMode(options)
     return Library:SetOpenMode(options)
 end
@@ -1627,8 +1859,13 @@ end
 function Window:SetIcon(value)
     self.Icon = value
     self.LogoIcon:SetIcon(value)
-    self.WatermarkIcon:SetIcon(value)
     self.ReopenIcon:SetIcon(value)
+    if self.WatermarkConfig and self.RebuildWatermarkBlocks then
+        for _, block in ipairs(self.WatermarkConfig.Blocks) do
+            if block.UseWindowIcon == true then block.Icon = value end
+        end
+        self.RebuildWatermarkBlocks(self.WatermarkConfig.Blocks)
+    end
     return value
 end
 
@@ -1687,6 +1924,8 @@ function Window:CreateTab(opts)
     local icon = iconLabel(hit, opts.Icon or {"circle"}, (SIDEBAR_W - 16) / 2, 21.6, 16, palette[3],
         opts.Fallback or string.sub(name, 1, 1))
     local title = text(hit, opts.Title or name, 0, 41.3, SIDEBAR_W, 15, 11, palette[3], "center")
+    local indicator = rect(hit, SIDEBAR_W - 3, 31, 3, 8, accent, 2)
+    indicator.BackgroundTransparency = 1
     self.TabHolder.CanvasSize = UDim2.fromOffset(0, index * TAB_SLOT)
 
     connect(hit.Activated, function() self:SelectTab(tab) end)
@@ -1702,6 +1941,12 @@ function Window:CreateTab(opts)
         title:Color(tint)
         icon:Alpha(1 - alpha * (1 - state.AccentAlpha))
         title:Alpha(1 - alpha * (1 - state.AccentAlpha))
+        local indicatorHeight = 8 + 16 * alpha
+        indicator.Position = UDim2.fromOffset(SIDEBAR_W - 3,
+            roundPixel((TAB_SLOT - indicatorHeight) / 2))
+        indicator.Size = UDim2.fromOffset(3, roundPixel(indicatorHeight))
+        indicator.BackgroundColor3 = accent
+        indicator.BackgroundTransparency = 1 - alpha * state.AccentAlpha
     end, hit)
 
     tab.Button = hit
@@ -2141,8 +2386,30 @@ function Tab:AddSection(nameOrOpts)
     self:_newline()
     local total = self:_pageWidth()
     local x, y = self:_place(total, 16)
-    local api = muted(self.Page, string.upper(tostring(opts.Name or "Section")), x, y, total, 16, 11, nil,
+    local caption = string.upper(tostring(opts.Name or "Section"))
+    local marker = rect(self.Page, x, y + 3, 3, 10, accent, 2)
+    local api = muted(self.Page, caption, x + 10, y, total - 10, 16, 11, nil,
         {Font = Enum.Font.GothamBold})
+    local line = rect(self.Page, x + total, y + 8, 0, 1, palette[4])
+    line.BackgroundTransparency = 0.2
+    local function layoutSection(value)
+        local bounds = TextService:GetTextSize(tostring(value), 11, Enum.Font.GothamBold,
+            Vector2.new(total - 10, 16))
+        local lineX = math.min(total, 18 + bounds.X)
+        line.Position = UDim2.fromOffset(x + lineX, y + 8)
+        line.Size = UDim2.fromOffset(math.max(0, total - lineX), 1)
+    end
+    local setText = api.SetText
+    function api:SetText(value)
+        setText(value)
+        layoutSection(value)
+    end
+    layoutSection(caption)
+    step(function()
+        marker.BackgroundColor3 = accent
+        marker.BackgroundTransparency = 1 - state.AccentAlpha
+        line.BackgroundColor3 = palette[4]
+    end, marker)
     self:_newline()
     self:_grow()
     return api
@@ -2254,8 +2521,8 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
 
     local hue, saturation, value = color:ToHSV()
 
-    local sv = rect(host, 10, SV_TOP, INNER, SV_H, white, 4, "TextButton")
-    local svGradient = new("UIGradient", sv, {Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))})
+    local sv = rect(host, 10, SV_TOP, INNER, SV_H, pureWhite, 4, "TextButton")
+    local svGradient = new("UIGradient", sv, {Color = ColorSequence.new(pureWhite, Color3.fromHSV(hue, 1, 1))})
     local shade = rect(sv, 0, 0, INNER, SV_H, black, 4)
     new("UIGradient", shade, {
         Rotation = 90,
@@ -2266,15 +2533,15 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     })
     local svDot = rect(sv, 0, 0, 10, 10, color, 5)
     svDot.ZIndex = 3
-    new("UIStroke", svDot, {Color = white, Thickness = 2})
+    new("UIStroke", svDot, {Color = pureWhite, Thickness = 2})
 
-    local hueBar = rect(host, 10, HUE_TOP, INNER, BAR_H, white, 4, "TextButton")
+    local hueBar = rect(host, 10, HUE_TOP, INNER, BAR_H, pureWhite, 4, "TextButton")
     local stops = {}
     for i = 0, 6 do
         stops[#stops + 1] = ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(i / 6, 1, 1))
     end
     new("UIGradient", hueBar, {Color = ColorSequence.new(stops)})
-    local hueThumb = rect(hueBar, 0, -3, 6, BAR_H + 6, white, 3)
+    local hueThumb = rect(hueBar, 0, -3, 6, BAR_H + 6, pureWhite, 3)
     hueThumb.ZIndex = 3
     new("UIStroke", hueThumb, {Color = palette[1], Thickness = 1})
 
@@ -2287,7 +2554,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
                 NumberSequenceKeypoint.new(1, 0),
             }),
         })
-        alphaThumb = rect(alphaBar, 0, -3, 6, BAR_H + 6, white, 3)
+        alphaThumb = rect(alphaBar, 0, -3, 6, BAR_H + 6, pureWhite, 3)
         alphaThumb.ZIndex = 3
         new("UIStroke", alphaThumb, {Color = palette[1], Thickness = 1})
     end
@@ -2399,7 +2666,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
             alphaThumb.Position = UDim2.fromOffset(roundPixel(alphaX), -3)
         end
         if hue ~= lastHue then
-            svGradient.Color = ColorSequence.new(white, Color3.fromHSV(hue, 1, 1))
+            svGradient.Color = ColorSequence.new(pureWhite, Color3.fromHSV(hue, 1, 1))
             lastHue = hue
         end
         local current = Color3.fromHSV(hue, saturation, value)
@@ -2408,6 +2675,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         svDot.BackgroundColor3 = current
         preview.BackgroundColor3 = current
         hexBox.BackgroundColor3 = palette[4]
+        hexBox.TextColor3 = white
         if alphaBar then alphaBar.BackgroundColor3 = current end
         if not editing then
             local hexText = "#" .. toHex(current)
@@ -2822,12 +3090,21 @@ function Tab:AddDropdown(opts)
         pop.Height = math.max(ROW_H, visibleRows * ROW_H)
 
         for index, option in ipairs(options) do
+            local firstRow = index == 1
+            local lastRow = index == #options
             local row = rect(list, 0, (index - 1) * ROW_H,
-                controlW, ROW_H, palette[5], nil, "TextButton")
+                controlW, ROW_H, palette[5], (firstRow or lastRow) and 5 or nil, "TextButton")
             row.BackgroundTransparency = 1
+            local edgeFill
+            if firstRow ~= lastRow then
+                edgeFill = rect(row, 0, firstRow and 5 or 0, controlW,
+                    ROW_H - 5, palette[5])
+                edgeFill.BackgroundTransparency = 1
+            end
             local mark = iconLabel(row, {"check"}, 0, 9.5, 12, accent, "v")
             local title = text(row, option, 10, 0, controlW - 20, ROW_H, 11, palette[3])
-            local entry = {Object = row, Mark = mark, Title = title, Alpha = 0, Index = index}
+            local entry = {Object = row, Fill = edgeFill, Mark = mark, Title = title,
+                Alpha = 0, Index = index}
             rows[#rows + 1] = entry
 
             connect(row.Activated, function()
@@ -2853,6 +3130,10 @@ function Tab:AddDropdown(opts)
             entry.Alpha = approach(entry.Alpha, selected and 1 or 0, k)
             entry.Object.BackgroundColor3 = palette[5]
             entry.Object.BackgroundTransparency = 1 - entry.Alpha
+            if entry.Fill then
+                entry.Fill.BackgroundColor3 = palette[5]
+                entry.Fill.BackgroundTransparency = 1 - entry.Alpha
+            end
             entry.Title.Object.Position = UDim2.fromOffset(roundPixel(10 + 20 * entry.Alpha), 0)
             entry.Title:Color(palette[3]:Lerp(white, entry.Alpha))
             entry.Mark.Object.Position = UDim2.fromOffset(roundPixel(10 * entry.Alpha), 10)
@@ -2936,6 +3217,7 @@ function Tab:AddTextBox(opts)
     })
     step(function()
         box.PlaceholderColor3 = palette[3]
+        box.TextColor3 = white
     end, box)
 
     local maxLength = math.max(0, math.floor(tonumber(opts.MaxLength) or 0))
@@ -3402,6 +3684,7 @@ function Tab:AddList(opts)
         step(function()
             box.BackgroundColor3 = palette[4]
             box.PlaceholderColor3 = palette[3]
+            box.TextColor3 = white
         end, box)
         local add = paint(rect(card, w - 46, 28, 36, 31, palette[4], 3, "TextButton"), 4)
         local addIcon = iconLabel(add, {"plus"}, 12, 9, 13, white, "+")
@@ -3571,6 +3854,7 @@ function Tab:AddInput(opts)
 end
 
 function Tab:AddConfigManager(opts)
+    if not Library.Configs or not Library.Configs.Enabled then return nil, "configs are disabled" end
     opts = opts or {}
     self:AddSection(opts.Name or "Configs")
 
@@ -3641,7 +3925,7 @@ function Tab:AddConfigManager(opts)
             local name = chosen()
             Library:Dialog({
                 Title = "Delete config?",
-                Text = "This will permanently delete " .. tostring(name) .. ".json.",
+                Text = "This will permanently delete the " .. tostring(name) .. " config.",
                 ConfirmText = "Delete",
                 CancelText = "Cancel",
                 Confirm = function()
@@ -3710,15 +3994,99 @@ function Library:Notify(opts)
     return notif
 end
 
+local function watermarkBlockIndex(window, id)
+    if not window or not window.WatermarkConfig then return nil end
+    if type(id) == "number" then
+        local index = math.floor(id)
+        if window.WatermarkConfig.Blocks[index] then return index end
+        return nil
+    end
+    local target = tostring(id or "")
+    for index, block in ipairs(window.WatermarkConfig.Blocks) do
+        if block.Id == target then return index end
+    end
+end
+
+function Library:GetWatermarkBlocks()
+    local window = self.Window
+    return window and window.WatermarkConfig and window.WatermarkConfig.Blocks or {}
+end
+
+function Library:SetWatermarkBlocks(blocks)
+    local window = self.Window
+    if not window or type(blocks) ~= "table" then return nil end
+    window.RebuildWatermarkBlocks(blocks)
+    return window.WatermarkConfig.Blocks
+end
+
+function Library:AddWatermarkBlock(block, index)
+    local window = self.Window
+    if not window or type(block) ~= "table" then return nil end
+    local blocks = window.WatermarkConfig.Blocks
+    local position = math.clamp(math.floor(tonumber(index) or (#blocks + 1)), 1, #blocks + 1)
+    table.insert(blocks, position, block)
+    window.RebuildWatermarkBlocks(blocks)
+    return window.WatermarkConfig.Blocks[position]
+end
+
+function Library:SetWatermarkBlock(id, changes)
+    local window = self.Window
+    local index = watermarkBlockIndex(window, id)
+    if not index or type(changes) ~= "table" then return nil end
+    local block = window.WatermarkConfig.Blocks[index]
+    for key, value in pairs(changes) do block[key] = value end
+    window.RebuildWatermarkBlocks(window.WatermarkConfig.Blocks)
+    return window.WatermarkConfig.Blocks[index]
+end
+
+function Library:RemoveWatermarkBlock(id)
+    local window = self.Window
+    local index = watermarkBlockIndex(window, id)
+    if not index then return false end
+    table.remove(window.WatermarkConfig.Blocks, index)
+    window.RebuildWatermarkBlocks(window.WatermarkConfig.Blocks)
+    return true
+end
+
 function Library:SetWatermark(opts)
     local window = self.Window
     if not window then return end
     opts = type(opts) == "table" and opts or {Text = opts, Enabled = true}
     local config = window.WatermarkConfig
-    if opts.Text ~= nil then config.Text = tostring(opts.Text) end
-    if opts.ShowFPS ~= nil then config.ShowFPS = opts.ShowFPS and true or false end
-    if opts.ShowPing ~= nil then config.ShowPing = opts.ShowPing and true or false end
-    if opts.ShowTime ~= nil then config.ShowTime = opts.ShowTime and true or false end
+    if type(opts.Blocks) == "table" then self:SetWatermarkBlocks(opts.Blocks) end
+    local function setVisible(id, value)
+        local index = watermarkBlockIndex(window, id)
+        if index then window.WatermarkConfig.Blocks[index].Visible = value and true or false end
+    end
+    local function setIconVisible(id, value)
+        local index = watermarkBlockIndex(window, id)
+        if index then window.WatermarkConfig.Blocks[index].IconVisible = value and true or false end
+    end
+    if opts.Text ~= nil then
+        local textValue = tostring(opts.Text)
+        local index = watermarkBlockIndex(window, "text")
+        if index then
+            window.WatermarkConfig.Blocks[index].Text = textValue
+            window.WatermarkConfig.Blocks[index].Visible = textValue ~= ""
+        elseif textValue ~= "" then
+            table.insert(window.WatermarkConfig.Blocks, 2, {Id = "text", Type = "Text", Text = textValue})
+        end
+    end
+    if opts.ShowIcon ~= nil then setVisible("brand", opts.ShowIcon) end
+    if opts.ShowFPS ~= nil then setVisible("fps", opts.ShowFPS) end
+    if opts.ShowPing ~= nil then setVisible("ping", opts.ShowPing) end
+    if opts.ShowTime ~= nil then setVisible("time", opts.ShowTime) end
+    if opts.ShowStatIcons ~= nil then
+        setIconVisible("fps", opts.ShowStatIcons)
+        setIconVisible("ping", opts.ShowStatIcons)
+        setIconVisible("time", opts.ShowStatIcons)
+    end
+    if opts.ShowFPSIcon ~= nil then setIconVisible("fps", opts.ShowFPSIcon) end
+    if opts.ShowPingIcon ~= nil then setIconVisible("ping", opts.ShowPingIcon) end
+    if opts.ShowTimeIcon ~= nil then setIconVisible("time", opts.ShowTimeIcon) end
+    for _, key in ipairs({"Height", "Padding", "Gap", "MinimumWidth"}) do
+        if opts[key] ~= nil then config[key] = tonumber(opts[key]) or config[key] end
+    end
     if opts.Transparency ~= nil then
         config.Transparency = math.clamp(tonumber(opts.Transparency) or 0, 0, 1)
     end
@@ -3728,6 +4096,11 @@ function Library:SetWatermark(opts)
     if opts.X ~= nil and opts.Y ~= nil then
         config.Position = Vector2.new(tonumber(opts.X) or 8, tonumber(opts.Y) or 8)
     end
+    if opts.Radius ~= nil then
+        local corner = window.Watermark:FindFirstChildOfClass("UICorner")
+        if corner then corner.CornerRadius = UDim.new(0, math.max(0, tonumber(opts.Radius) or 5)) end
+    end
+    window.RebuildWatermarkBlocks(config.Blocks)
     config.Enabled = opts.Enabled ~= false
     window.UpdateOpenVisibility()
     return config
@@ -3996,8 +4369,144 @@ end
 
 local ROOT = "WolfUi"
 local LEGACY_ROOT = "WolfLib"
-local CONFIG_EXTENSION = ".json"
+local JSON_EXTENSION = ".json"
+local SECURE_EXTENSION = ".wcfg"
+local CONFIG_HEADER = "WCFG2:"
+local CONFIG_KEY = "1"
 local scriptFolder = "Default"
+
+local BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+local function base64Encode(value)
+    return ((string.gsub(value, ".", function(character)
+        local byte = string.byte(character)
+        local bits = ""
+        for index = 8, 1, -1 do
+            bits = bits .. (byte % 2 ^ index - byte % 2 ^ (index - 1) > 0 and "1" or "0")
+        end
+        return bits
+    end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(bits)
+        if #bits < 6 then return "" end
+        local valueAt = 0
+        for index = 1, 6 do
+            if string.sub(bits, index, index) == "1" then valueAt = valueAt + 2 ^ (6 - index) end
+        end
+        return string.sub(BASE64_ALPHABET, valueAt + 1, valueAt + 1)
+    end) .. ({"", "==", "="})[#value % 3 + 1])
+end
+
+local function base64Decode(value)
+    value = string.gsub(value, "[^" .. BASE64_ALPHABET .. "=]", "")
+    return (string.gsub(value, ".", function(character)
+        if character == "=" then return "" end
+        local position = string.find(BASE64_ALPHABET, character, 1, true)
+        if not position then return "" end
+        local number = position - 1
+        local bits = ""
+        for index = 6, 1, -1 do
+            bits = bits .. (number % 2 ^ index - number % 2 ^ (index - 1) > 0 and "1" or "0")
+        end
+        return bits
+    end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(bits)
+        if #bits ~= 8 then return "" end
+        local number = 0
+        for index = 1, 8 do
+            if string.sub(bits, index, index) == "1" then number = number + 2 ^ (8 - index) end
+        end
+        return string.char(number)
+    end))
+end
+
+local function xorByte(left, right)
+    if bit32 and bit32.bxor then return bit32.bxor(left, right) end
+    local result, place = 0, 1
+    while left > 0 or right > 0 do
+        local a, b = left % 2, right % 2
+        if a ~= b then result = result + place end
+        left, right, place = math.floor(left / 2), math.floor(right / 2), place * 2
+    end
+    return result
+end
+
+local function rotateLeft(byte, amount)
+    amount = amount % 8
+    if amount == 0 then return byte end
+    return (byte * 2 ^ amount) % 256 + math.floor(byte / 2 ^ (8 - amount))
+end
+
+local function rotateRight(byte, amount)
+    amount = amount % 8
+    if amount == 0 then return byte end
+    return math.floor(byte / 2 ^ amount) + (byte % 2 ^ amount) * 2 ^ (8 - amount)
+end
+
+local function configHash(value)
+    local hash = 5381
+    for index = 1, #value do hash = (hash * 33 + string.byte(value, index)) % 2147483647 end
+    return string.format("%08x", hash)
+end
+
+local function configSeed(value)
+    local seed = 97
+    for index = 1, #value do seed = (seed * 131 + string.byte(value, index)) % 65521 end
+    return seed
+end
+
+local function configSalt()
+    local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
+    local value = ok and tostring(guid) or tostring(os.clock()) .. tostring(math.random())
+    value = string.gsub(value, "[^%w]", "")
+    return string.sub(value .. "0000000000000000", 1, 16)
+end
+
+local function transformConfig(value, key, salt, decode)
+    local seed = configSeed(key .. salt)
+    local output = table.create(#value)
+    for index = 1, #value do
+        local keyByte = string.byte(key, (index - 1) % #key + 1)
+        seed = (seed * 73 + keyByte + index * 19) % 65521
+        local shift = (seed + index) % 8
+        local byte = string.byte(value, index)
+        if decode then
+            byte = xorByte(rotateRight(byte, shift), (keyByte + seed + index * 29) % 256)
+        else
+            byte = rotateLeft(xorByte(byte, (keyByte + seed + index * 29) % 256), shift)
+        end
+        output[index] = string.char(byte)
+    end
+    return table.concat(output)
+end
+
+local function encodeConfig(value, key)
+    key = tostring(key or CONFIG_KEY)
+    if key == "" then key = CONFIG_KEY end
+    local salt = configSalt()
+    local payload = configHash(value) .. "\0" .. value
+    local mixed = string.reverse(transformConfig(payload, key, salt, false))
+    return CONFIG_HEADER .. base64Encode(string.reverse(base64Encode(salt .. mixed)))
+end
+
+local function decodeConfig(value, key)
+    if string.sub(value, 1, #CONFIG_HEADER) ~= CONFIG_HEADER then return value end
+    key = tostring(key or CONFIG_KEY)
+    if key == "" then key = CONFIG_KEY end
+    local packed = base64Decode(string.sub(value, #CONFIG_HEADER + 1))
+    packed = base64Decode(string.reverse(packed))
+    if #packed < 17 then error("invalid encrypted config", 0) end
+    local salt = string.sub(packed, 1, 16)
+    local mixed = string.reverse(string.sub(packed, 17))
+    local payload = transformConfig(mixed, key, salt, true)
+    local separator = string.find(payload, "\0", 1, true)
+    if not separator then error("invalid config key or damaged config", 0) end
+    local checksum = string.sub(payload, 1, separator - 1)
+    local json = string.sub(payload, separator + 1)
+    if checksum ~= configHash(json) then error("invalid config key or damaged config", 0) end
+    return json
+end
+
+local function configExtension()
+    return Library.Configs and Library.Configs.Encrypted and SECURE_EXTENSION or JSON_EXTENSION
+end
 
 local function safeName(value)
     local name = string.gsub(tostring(value or ""), "[^%w%-%. ]", "_")
@@ -4045,7 +4554,7 @@ local function migrateLegacyConfigs(target)
         for _, path in ipairs(listfiles(LEGACY_ROOT)) do
             local name = string.match(path, "([^/\\]+)%.json$")
             if name then
-                local destination = target .. "/" .. safeName(name) .. CONFIG_EXTENSION
+                local destination = target .. "/" .. safeName(name) .. JSON_EXTENSION
                 if not pathExists(destination) then
                     pcall(function()
                         local json = readfile(path)
@@ -4063,7 +4572,7 @@ function Library:SetScriptName(value)
     self.ScriptName = scriptFolder
     self.Folder = ROOT .. "/" .. scriptFolder
     self.ConfigFolder = self.Folder .. "/configs"
-    if ensureFolder(self.ConfigFolder) then
+    if self.Configs and self.Configs.Enabled and ensureFolder(self.ConfigFolder) then
         migrateLegacyConfigs(self.ConfigFolder)
     end
     return self.Folder
@@ -4115,29 +4624,58 @@ function Library:ListFiles(subFolder)
     return names
 end
 
+function Library:SetConfigOptions(options)
+    if options == true then options = {Enabled = true} end
+    if type(options) ~= "table" then options = {Enabled = false} end
+    self.Configs = {
+        Enabled = options.Enabled ~= false,
+        Encrypted = options.Encrypted == true or options.Encryption == true,
+        Key = tostring(options.Key or CONFIG_KEY),
+    }
+    if self.Configs.Enabled then self:SetScriptName(self.ScriptName or scriptFolder) end
+    return self.Configs
+end
+
+function Library:GetConfigOptions()
+    return self.Configs
+end
+
 function Library:SaveConfigFile(name)
+    if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
     local ok, result = pcall(function()
         if not ensureFolder(folder) then error("cannot create config folder", 0) end
         local json = HttpService:JSONEncode(self:GetConfig())
-        writefile(folder .. "/" .. base .. CONFIG_EXTENSION, json)
-        return folder .. "/" .. base .. CONFIG_EXTENSION
+        local extension = configExtension()
+        local content = self.Configs.Encrypted and encodeConfig(json, self.Configs.Key) or json
+        writefile(folder .. "/" .. base .. extension, content)
+        return folder .. "/" .. base .. extension
     end)
     return ok, result
 end
 
 function Library:LoadConfigFile(name)
+    if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
     if not fileSupport() then return false, "executor has no file API" end
     local folder = self:GetConfigFolder()
     local base = safeName(name or "default")
-    local path = folder .. "/" .. base .. CONFIG_EXTENSION
-    local legacyPath = LEGACY_ROOT .. "/" .. base .. CONFIG_EXTENSION
     local ok, decoded = pcall(function()
-        local source = pathExists(path) and path or legacyPath
-        if not pathExists(source) then error("config not found: " .. base, 0) end
-        return HttpService:JSONDecode(readfile(source))
+        local preferred = configExtension()
+        local alternate = preferred == SECURE_EXTENSION and JSON_EXTENSION or SECURE_EXTENSION
+        local paths = {
+            folder .. "/" .. base .. preferred,
+            folder .. "/" .. base .. alternate,
+            LEGACY_ROOT .. "/" .. base .. JSON_EXTENSION,
+        }
+        local source
+        for _, path in ipairs(paths) do
+            if pathExists(path) then source = path; break end
+        end
+        if not source then error("config not found: " .. base, 0) end
+        local json = decodeConfig(readfile(source), self.Configs.Key)
+        return HttpService:JSONDecode(json)
     end)
     if not ok then return false, decoded end
     local applied, loaded, loadError = pcall(self.LoadConfig, self, decoded)
@@ -4148,12 +4686,14 @@ end
 function Library:ListConfigs()
     local names = {}
     local seen = {}
+    if not self.Configs or not self.Configs.Enabled then return names end
     if type(listfiles) ~= "function" then return names end
 
     local function collect(folder)
         pcall(function()
             for _, path in ipairs(listfiles(folder)) do
                 local name = string.match(path, "([^/\\]+)%.json$")
+                    or string.match(path, "([^/\\]+)%.wcfg$")
                 if name and not seen[name] then
                     seen[name] = true
                     names[#names + 1] = name
@@ -4169,11 +4709,13 @@ function Library:ListConfigs()
 end
 
 function Library:DeleteConfigFile(name)
+    if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
     if type(delfile) ~= "function" then return false, "executor has no delfile" end
     local base = safeName(name or "default")
     local paths = {
-        self:GetConfigFolder() .. "/" .. base .. CONFIG_EXTENSION,
-        LEGACY_ROOT .. "/" .. base .. CONFIG_EXTENSION,
+        self:GetConfigFolder() .. "/" .. base .. JSON_EXTENSION,
+        self:GetConfigFolder() .. "/" .. base .. SECURE_EXTENSION,
+        LEGACY_ROOT .. "/" .. base .. JSON_EXTENSION,
     }
     local deleted
     local lastError
