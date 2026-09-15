@@ -220,12 +220,167 @@ local white = pureWhite
 local foregroundLabels = setmetatable({}, {__mode = "k"})
 local foregroundIcons = setmetatable({}, {__mode = "k"})
 
-local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false}
+local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false, Owner = nil,
+    Stats = {Connections = 0, Disconnected = 0, Maids = 0, MaidsDestroyed = 0, Sweeps = 0, LastSweep = 0},
+    SweepInterval = 3, MaxDeadConnections = 64}
 
-local function connect(signal, callback)
+-- ============================================================================
+-- Memory core: Maid (ownership container)
+-- Every element, popup, notification and tab owns a Maid. Destroying the owner
+-- disconnects its connections, destroys its instances, cancels its threads and
+-- calls its cleanup callbacks. Maids nest: destroying a parent destroys children.
+-- ============================================================================
+local Maid = {}
+Maid.__index = Maid
+local liveMaids = setmetatable({}, {__mode = "k"})
+
+function Maid.new(parent)
+    local self = setmetatable({_tasks = {}, _children = setmetatable({}, {__mode = "k"}), Destroyed = false}, Maid)
+    liveMaids[self] = true
+    Runtime.Stats.Maids = Runtime.Stats.Maids + 1
+    if parent and parent.Add then parent._children[self] = true end
+    return self
+end
+
+local function cleanTask(item)
+    local kind = typeof(item)
+    if kind == "RBXScriptConnection" then
+        if item.Connected then item:Disconnect() end
+    elseif kind == "Instance" then
+        item:Destroy()
+    elseif kind == "function" then
+        item()
+    elseif kind == "thread" then
+        if coroutine.status(item) ~= "dead" then pcall(task.cancel, item) end
+    elseif kind == "table" then
+        if item.Destroy then item:Destroy()
+        elseif item.Disconnect then item:Disconnect()
+        elseif item.Cancel then item:Cancel() end
+    end
+end
+
+function Maid:Add(item, key)
+    if self.Destroyed then cleanTask(item) return item end
+    if key ~= nil then
+        local previous = self._tasks[key]
+        if previous ~= nil and previous ~= item then pcall(cleanTask, previous) end
+        self._tasks[key] = item
+    else
+        self._tasks[#self._tasks + 1] = item
+    end
+    return item
+end
+Maid.Give = Maid.Add
+
+function Maid:Remove(key)
+    local item = self._tasks[key]
+    if item ~= nil then
+        self._tasks[key] = nil
+        pcall(cleanTask, item)
+    end
+end
+
+function Maid:Connect(signal, callback)
     local connection = signal:Connect(callback)
-    Runtime.Connections[#Runtime.Connections + 1] = connection
+    self:Add(connection)
     return connection
+end
+
+function Maid:Once(signal, callback)
+    local connection
+    connection = signal:Connect(function(...)
+        if connection.Connected then connection:Disconnect() end
+        callback(...)
+    end)
+    self:Add(connection)
+    return connection
+end
+
+function Maid:Spawn(fn, ...)
+    return self:Add(task.spawn(fn, ...))
+end
+
+function Maid:Delay(seconds, fn, ...)
+    return self:Add(task.delay(seconds, fn, ...))
+end
+
+function Maid:Extend()
+    return Maid.new(self)
+end
+
+function Maid:Count()
+    local count = 0
+    for _ in pairs(self._tasks) do count = count + 1 end
+    return count
+end
+
+function Maid:Clean()
+    local tasks = self._tasks
+    self._tasks = {}
+    for child in pairs(self._children) do
+        child:Destroy()
+    end
+    self._children = setmetatable({}, {__mode = "k"})
+    -- Disconnect signals first so callbacks cannot fire while instances are torn down.
+    for _, item in pairs(tasks) do
+        if typeof(item) == "RBXScriptConnection" then pcall(cleanTask, item) end
+    end
+    for _, item in pairs(tasks) do
+        if typeof(item) ~= "RBXScriptConnection" then pcall(cleanTask, item) end
+    end
+end
+Maid.DoCleaning = Maid.Clean
+
+function Maid:Destroy()
+    if self.Destroyed then return end
+    self.Destroyed = true
+    self:Clean()
+    liveMaids[self] = nil
+    Runtime.Stats.MaidsDestroyed = Runtime.Stats.MaidsDestroyed + 1
+end
+
+-- Runs `fn` with `maid` as the ambient owner: every connect()/step()/popup made inside
+-- is attached to that maid automatically. Nesting is safe.
+local function withOwner(maid, fn, ...)
+    local previous = Runtime.Owner
+    Runtime.Owner = maid
+    local results = table.pack(pcall(fn, ...))
+    Runtime.Owner = previous
+    if not results[1] then error(results[2], 0) end
+    return table.unpack(results, 2, results.n)
+end
+
+local function connect(signal, callback, owner)
+    local connection = signal:Connect(callback)
+    owner = owner or Runtime.Owner
+    if owner then
+        owner:Add(connection)
+    else
+        Runtime.Connections[#Runtime.Connections + 1] = connection
+    end
+    Runtime.Stats.Connections = Runtime.Stats.Connections + 1
+    return connection
+end
+
+-- Drops already-disconnected connections from the global list so it never grows
+-- with recreated rows / notifications. Cheap: one pass over an array of handles.
+local function sweepConnections(force)
+    local list = Runtime.Connections
+    local count = #list
+    local writeIndex = 1
+    for readIndex = 1, count do
+        local connection = list[readIndex]
+        if connection.Connected then
+            list[writeIndex] = connection
+            writeIndex = writeIndex + 1
+        else
+            Runtime.Stats.Disconnected = Runtime.Stats.Disconnected + 1
+        end
+    end
+    for index = count, writeIndex, -1 do list[index] = nil end
+    Runtime.Stats.Sweeps = Runtime.Stats.Sweeps + 1
+    Runtime.Stats.LastSweep = os.clock()
+    return count - (writeIndex - 1)
 end
 
 local function isRendered(object)
@@ -240,8 +395,13 @@ local function isRendered(object)
 end
 
 local function addUpdate(collection, callback, object)
-    local update = {Callback = callback, Object = object}
+    local update = {Callback = callback, Object = object, Alive = true}
     collection[#collection + 1] = update
+    local owner = Runtime.Owner
+    if owner then
+        -- Owner destruction kills the update even if it has no instance to watch.
+        owner:Add(function() update.Alive = false end)
+    end
     return update
 end
 
@@ -259,7 +419,7 @@ local function runUpdates(collection, dt, k)
     for readIndex = 1, count do
         local update = collection[readIndex]
         local object = update.Object
-        if not object or object.Parent then
+        if update.Alive and (not object or object.Parent) then
             collection[writeIndex] = update
             writeIndex = writeIndex + 1
             if not object or isRendered(object) then
@@ -597,7 +757,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.3.0",
+    Version = "5.4.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -906,6 +1066,17 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
         AnimateHeight = animateHeight and true or false,
     }
     window.Popups[#window.Popups + 1] = data
+    data.Maid = Maid.new(Runtime.Owner)
+    function data:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        if window.Opened == self then window.Opened = self.Parent end
+        for index, popup in ipairs(window.Popups) do
+            if popup == self then table.remove(window.Popups, index) break end
+        end
+        self.Maid:Destroy()
+        if self.Object then self.Object:Destroy() end
+    end
 
     function data:IsActive()
         local current = window.Opened
@@ -938,7 +1109,8 @@ function Library:CreateWindow(opts)
         Library:Unload()
     end
 
-    Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive = {}, {}, {}, true
+    Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive, Runtime.Owner = {}, {}, {}, true, nil
+    Library.Maid = Maid.new()
     local configOptions = opts.Configs
     if configOptions == true then configOptions = {Enabled = true} end
     if type(configOptions) ~= "table" then configOptions = {Enabled = false} end
@@ -2230,9 +2402,15 @@ function Library:CreateWindow(opts)
 
     local fpsTimer, fpsFrames = 0, 0
 
+    local sweepTimer = 0
     connect(RunService.RenderStepped, function(dt)
         if not Runtime.Alive then return end
         restoreFades()
+        sweepTimer = sweepTimer + dt
+        if sweepTimer >= Runtime.SweepInterval then
+            sweepTimer = 0
+            sweepConnections()
+        end
         dt = math.min(dt, 0.1)
         local k = motionFactor(18, dt)
 
@@ -2298,7 +2476,7 @@ function Library:CreateWindow(opts)
             end
             notif.Object.Position = UDim2.fromOffset(roundPixel(260 * (1 - notif.Alpha)), roundPixel(notif.Y))
             if notif.Life <= 0 and notif.Alpha <= 0.01 then
-                notif.Object:Destroy()
+                if notif.Maid then notif.Maid:Destroy() else notif.Object:Destroy() end
                 table.remove(window.Notifications, index)
             end
         end
@@ -2522,6 +2700,32 @@ function Window:CreateTab(opts)
     tab.Button = hit
     tab.Icon = icon
     tab.TitleLabel = title
+    tab.Maid = Maid.new(Library.Maid)
+    tab.Maid:Add(page)
+    tab.Maid:Add(hit)
+    function tab:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        local window = self.Window
+        for i = #self.Elements, 1, -1 do
+            local element = self.Elements[i]
+            if element and element.Destroy then pcall(element.Destroy, element) end
+        end
+        self.Elements = {}
+        for i, other in ipairs(window.TabList) do
+            if other == self then table.remove(window.TabList, i) break end
+        end
+        window.Tabs[self.Name] = nil
+        for i, other in ipairs(window.TabList) do
+            other.Button.Position = UDim2.fromOffset(0, (i - 1) * TAB_SLOT)
+        end
+        window.TabHolder.CanvasSize = UDim2.fromOffset(0, #window.TabList * TAB_SLOT)
+        if window.Current == self then
+            window.Current = nil
+            if window.TabList[1] then window:SelectTab(window.TabList[1]) end
+        end
+        self.Maid:Destroy()
+    end
     function tab:SetName(value)
         self.Title = tostring(value)
         title:SetText(self.Title)
@@ -4660,10 +4864,17 @@ function Library:Notify(opts)
             if child:IsA("TextLabel") and child.TextWrapped then child.Text = tostring(value) end
         end
     end
-    connect(object.Activated, function()
+    notif.Maid = Maid.new(Library.Maid)
+    notif.Maid:Add(object)
+    notif.Maid:Connect(object.Activated, function()
         if opts.Callback then task.spawn(opts.Callback) end
         if opts.CloseOnClick ~= false then notif:Close() end
     end)
+    function notif:Destroy()
+        self.Life = 0
+        self.Sticky = false
+        self.Maid:Destroy()
+    end
     window.Notifications[#window.Notifications + 1] = notif
     return notif
 end
@@ -5541,10 +5752,29 @@ end
 function Library:Unload()
     Runtime.Alive = false
     restoreFades()
+    if self.Window then
+        for _, tab in ipairs(self.Window.TabList or {}) do
+            for _, element in ipairs(tab.Elements or {}) do
+                if element.Maid then pcall(element.Maid.Destroy, element.Maid) end
+            end
+        end
+        for _, popup in ipairs(self.Window.Popups or {}) do
+            if popup.Maid then pcall(popup.Maid.Destroy, popup.Maid) end
+        end
+        for _, notif in ipairs(self.Window.Notifications or {}) do
+            if notif.Maid then pcall(notif.Maid.Destroy, notif.Maid) end
+        end
+    end
+    if self.Maid then pcall(self.Maid.Destroy, self.Maid) end
+    for maid in pairs(liveMaids) do pcall(maid.Destroy, maid) end
     for _, connection in ipairs(Runtime.Connections) do
         pcall(function() connection:Disconnect() end)
     end
-    Runtime.Connections, Runtime.Updates, Runtime.Overlay = {}, {}, {}
+    Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Owner = {}, {}, {}, nil
+    for object in pairs(fadeValues) do fadeValues[object] = nil end
+    for object in pairs(themedStrokes) do themedStrokes[object] = nil end
+    for object in pairs(foregroundLabels) do foregroundLabels[object] = nil end
+    for object in pairs(foregroundIcons) do foregroundIcons[object] = nil end
     if self.Window and self.Window.Gui then
         pcall(function() self.Window.Gui:Destroy() end)
     end
@@ -5561,6 +5791,101 @@ function Library:Unload()
     end
     unloadListeners = {}
     changeListeners = {}
+end
+
+-- ============================================================================
+-- Element ownership: every Tab:Add* call runs inside its own Maid, so all
+-- connections, update steps and popups created for the element are released
+-- by element:Destroy(). Also unregisters the element from Library.Elements.
+-- ============================================================================
+local function ownElement(tab, api, maid)
+    if type(api) ~= "table" then return api end -- section/divider: maid stays owned by the tab
+    api.Maid = maid
+    if api.Object then maid:Add(api.Object) end
+    local original = api.Destroy
+    function api:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        if self.Flag and Library.Elements[self.Flag] == self then Library.Elements[self.Flag] = nil end
+        if tab and tab.Elements then
+            for i, other in ipairs(tab.Elements) do
+                if other == self then table.remove(tab.Elements, i) break end
+            end
+        end
+        maid:Destroy()
+        if original then pcall(original, self) end
+    end
+    function api:GetMaid() return maid end
+    return api
+end
+
+for name, fn in pairs(Tab) do
+    if type(fn) == "function" and string.sub(name, 1, 3) == "Add"
+        and name ~= "AddElements" and name ~= "AddSelect" and name ~= "AddColor" and name ~= "AddInput" then
+        Tab[name] = function(self, ...)
+            local maid = Maid.new(self.Maid or Library.Maid)
+            local ok, result = pcall(withOwner, maid, fn, self, ...)
+            if not ok then
+                maid:Destroy()
+                error(result, 0)
+            end
+            return ownElement(self, result, maid)
+        end
+    end
+end
+
+Library.Maid = nil
+Library.MaidClass = Maid
+Library.NewMaid = Maid.new
+
+function Library:SetMemoryOptions(opts)
+    opts = opts or {}
+    if opts.SweepInterval ~= nil then Runtime.SweepInterval = math.max(0.25, tonumber(opts.SweepInterval) or 3) end
+end
+
+-- Force a sweep + Lua GC step. Returns a stats snapshot.
+function Library:Collect(full)
+    local dropped = sweepConnections(true)
+    if full then collectgarbage("collect") else collectgarbage("step") end
+    local stats = self:GetMemoryStats()
+    stats.Dropped = dropped
+    return stats
+end
+
+function Library:GetMemoryStats()
+    local window = self.Window
+    local live = 0
+    for _ in pairs(liveMaids) do live = live + 1 end
+    local elements = 0
+    for _ in pairs(self.Elements or {}) do elements = elements + 1 end
+    local instances = 0
+    if window and window.Gui and window.Gui.Parent then instances = #window.Gui:GetDescendants() end
+    local fadeCount = 0
+    for _ in pairs(fadeCaches) do fadeCount = fadeCount + 1 end
+    return {
+        LuaKB = collectgarbage("count"),
+        Connections = #Runtime.Connections,
+        ConnectionsTotal = Runtime.Stats.Connections,
+        ConnectionsSwept = Runtime.Stats.Disconnected,
+        Updates = #Runtime.Updates,
+        OverlayUpdates = #Runtime.Overlay,
+        Maids = live,
+        MaidsDestroyed = Runtime.Stats.MaidsDestroyed,
+        Elements = elements,
+        Popups = window and #window.Popups or 0,
+        Notifications = window and #window.Notifications or 0,
+        Instances = instances,
+        FadeCaches = fadeCount,
+        Sweeps = Runtime.Stats.Sweeps,
+    }
+end
+
+function Library:MemoryReport()
+    local s = self:GetMemoryStats()
+    return string.format(
+        "WolfUi memory: %.0f KB lua | %d instances | %d elements | %d conns (%d total, %d swept) | %d updates | %d maids (%d freed) | %d popups | %d notifs",
+        s.LuaKB, s.Instances, s.Elements, s.Connections, s.ConnectionsTotal, s.ConnectionsSwept,
+        s.Updates + s.OverlayUpdates, s.Maids, s.MaidsDestroyed, s.Popups, s.Notifications)
 end
 
 Library.Runtime = Runtime
