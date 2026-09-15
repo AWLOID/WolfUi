@@ -48,6 +48,52 @@ do
     Icons = (ok and type(result) == "table") and result or {}
 end
 
+-- BuilderIcons: Roblox's built-in vector icon font. No HTTP request or asset id needed.
+-- Use it by passing an icon value as "builder:name" / "bi:name" or {BuilderIcon = "name", Bold = true}.
+local BuilderIconsFont = {}
+do
+    local okRegular, regular = pcall(Font.new,
+        "rbxasset://LuaPackages/Packages/_Index/BuilderIcons/BuilderIcons/BuilderIcons.json",
+        Enum.FontWeight.Regular, Enum.FontStyle.Normal)
+    local okBold, bold = pcall(Font.new,
+        "rbxasset://LuaPackages/Packages/_Index/BuilderIcons/BuilderIcons/BuilderIcons.json",
+        Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+    BuilderIconsFont.Regular = okRegular and regular or UI_FONT
+    BuilderIconsFont.Bold = okBold and bold or UI_FONT_BOLD
+end
+
+local function builderIconName(value)
+    if type(value) == "table" then
+        local name = value.BuilderIcon or value.Builder
+        if type(name) == "string" and name ~= "" then
+            return name, value.Bold == true
+        end
+        return nil
+    end
+    if type(value) ~= "string" then return nil end
+    local name = string.match(value, "^[Bb]uilder:%s*(.+)$") or string.match(value, "^[Bb][Ii]:%s*(.+)$")
+    if type(name) == "string" and name ~= "" then return name, false end
+    return nil
+end
+
+-- Searches a list of icon candidates (as used everywhere Icon = {...} appears) for the
+-- first entry requesting a BuilderIcons glyph, so it can take priority over the atlas.
+local function builderIconFromList(value)
+    if type(value) ~= "table" or (value.Id ~= nil or value.AssetId ~= nil or value.Image ~= nil
+        or value.Url ~= nil or value.URL ~= nil) then
+        return builderIconName(value)
+    end
+    local isNameList = value[1] ~= nil
+    if isNameList then
+        for _, entry in ipairs(value) do
+            local name, bold = builderIconName(entry)
+            if name then return name, bold end
+        end
+        return nil
+    end
+    return builderIconName(value)
+end
+
 local function looksLikeSheet(sheet)
     if type(sheet) ~= "table" then return false end
     for _, data in pairs(sheet) do
@@ -409,9 +455,44 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
 end
 
 local function iconLabel(parent, names, x, y, size, color, fallback)
-    local image, offset, sheetSize, tinted, customColor = resolveIcon(names)
+    local builderName, builderBold = builderIconFromList(names)
+    local image, offset, sheetSize, tinted, customColor
+    if not builderName then
+        image, offset, sheetSize, tinted, customColor = resolveIcon(names)
+    end
     local object, isImage
     local themed = color == nil or color == white
+    if builderName then
+        isImage = false
+        object = new("TextLabel", parent, {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(roundPixel(x), roundPixel(y)),
+            Size = UDim2.fromOffset(roundPixel(size), roundPixel(size)),
+            Text = builderName,
+            FontFace = builderBold and BuilderIconsFont.Bold or BuilderIconsFont.Regular,
+            TextSize = size,
+            TextColor3 = color or white,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            ZIndex = 2,
+        })
+        if themed then foregroundIcons[object] = true end
+        local api = {Object = object, IsImage = false, Tinted = true, IsBuilderIcon = true}
+        function api:Color(v)
+            foregroundIcons[object] = nil
+            object.TextColor3 = v
+        end
+        function api:Alpha(v) object.TextTransparency = 1 - math.clamp(v, 0, 1) end
+        function api:SetIcon(value)
+            local replacement = iconLabel(object.Parent, value, 0, 0, size, color, fallback)
+            replacement.Object.Position, replacement.Object.Size = object.Position, object.Size
+            object:Destroy()
+            object, isImage = replacement.Object, replacement.IsImage
+            self.Object, self.IsImage, self.Tinted, self.IsBuilderIcon =
+                object, isImage, replacement.Tinted, replacement.IsBuilderIcon
+        end
+        return api
+    end
     if image then
         isImage = true
         object = new("ImageLabel", parent, {
@@ -1536,8 +1617,8 @@ function Library:CreateWindow(opts)
                     else
                         local glyph = separator == "slash" and "/"
                             or (separator == "pipe" and "|")
-                            or (separator == "bullet" and "вЂў")
-                            or (separator == "arrow" and "вЂє")
+                            or (separator == "bullet" and "•")
+                            or (separator == "arrow" and "›")
                             or separator
                         local sepLabel = text(capsule.Object, glyph, 0, 0, 10, height, item.TextSize, palette[3],
                             "center", {Font = item.Font})
@@ -5485,5 +5566,34 @@ end
 Library.Runtime = Runtime
 Library.Palette = palette
 Library.Icons = IconSheet
+
+-- Standalone BuilderIcons helper (same API as the module you can require on its own).
+-- Use icon values "builder:name" / {BuilderIcon = "name"} anywhere the library accepts
+-- an Icon, or call these directly to place a BuilderIcons glyph yourself.
+Library.BuilderIcons = {
+    Regular = BuilderIconsFont.Regular,
+    Bold = BuilderIconsFont.Bold,
+}
+function Library.BuilderIcons:GetFont(bold)
+    return bold and self.Bold or self.Regular
+end
+function Library.BuilderIcons:Create(parent, iconName, bold, size, color)
+    local label = Instance.new("TextLabel")
+    label.Name = "Icon_" .. iconName
+    label.FontFace = self:GetFont(bold)
+    label.Text = iconName
+    label.TextSize = size or 18
+    label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.fromOffset((size or 18) + 2, (size or 18) + 2)
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.TextYAlignment = Enum.TextYAlignment.Center
+    label.Parent = parent
+    return label
+end
+function Library.BuilderIcons:Set(label, iconName, bold)
+    label.Text = iconName
+    label.FontFace = self:GetFont(bold)
+end
 
 return Library
