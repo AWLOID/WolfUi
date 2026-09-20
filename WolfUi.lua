@@ -220,7 +220,7 @@ local white = pureWhite
 local foregroundLabels = setmetatable({}, {__mode = "k"})
 local foregroundIcons = setmetatable({}, {__mode = "k"})
 
-local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false, Owner = nil,
+local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false, Owner = nil, ThemeDirty = true,
     Stats = {Connections = 0, Disconnected = 0, Maids = 0, MaidsDestroyed = 0, Sweeps = 0, LastSweep = 0},
     SweepInterval = 3, MaxDeadConnections = 64}
 
@@ -383,15 +383,20 @@ local function sweepConnections(force)
     return count - (writeIndex - 1)
 end
 
-local function isRendered(object)
+local function isRendered(object, cache)
     if not object or not object.Parent then return false end
-    local current = object
-    while current do
-        if current:IsA("GuiObject") and not current.Visible then return false end
-        if current:IsA("LayerCollector") and not current.Enabled then return false end
-        current = current.Parent
+    local cached = cache and cache[object]
+    if cached ~= nil then return cached == true end
+    local visible = true
+    if object:IsA("GuiObject") and not object.Visible then
+        visible = false
+    elseif object:IsA("LayerCollector") and not object.Enabled then
+        visible = false
+    elseif object.Parent and object.Parent ~= game then
+        visible = isRendered(object.Parent, cache)
     end
-    return true
+    if cache then cache[object] = visible end
+    return visible
 end
 
 local function addUpdate(collection, callback, object)
@@ -413,16 +418,17 @@ local function overlayStep(callback, object)
     return addUpdate(Runtime.Overlay, callback, object)
 end
 
-local function runUpdates(collection, dt, k)
+local function runUpdates(collection, dt, k, renderCache)
     local count = #collection
     local writeIndex = 1
+    renderCache = renderCache or {}
     for readIndex = 1, count do
         local update = collection[readIndex]
         local object = update.Object
         if update.Alive and (not object or object.Parent) then
             collection[writeIndex] = update
             writeIndex = writeIndex + 1
-            if not object or isRendered(object) then
+            if not object or isRendered(object, renderCache) then
                 update.Callback(dt, k)
             end
         end
@@ -440,6 +446,10 @@ local function motionFactor(speed, dt)
     return 1 - math.exp(-math.max(0, speed) * math.min(dt, 0.1))
 end
 
+local function colorDelta(left, right)
+    return math.max(math.abs(left.R - right.R), math.abs(left.G - right.G), math.abs(left.B - right.B))
+end
+
 local function roundPixel(value)
     value = tonumber(value) or 0
     return value >= 0 and math.floor(value + 0.5) or math.ceil(value - 0.5)
@@ -448,6 +458,8 @@ end
 local fadeValues = setmetatable({}, {__mode = "k"})
 local fadeCaches = setmetatable({}, {__mode = "k"})
 local themedStrokes = setmetatable({}, {__mode = "k"})
+local themedBackgrounds = setmetatable({}, {__mode = "k"})
+local themedLabels = setmetatable({}, {__mode = "k"})
 local palette = {}
 
 local function restoreFades()
@@ -471,6 +483,9 @@ local function fadeProperties(object)
         properties[#properties + 1] = "ImageTransparency"
     elseif object:IsA("UIStroke") then
         properties[#properties + 1] = "Transparency"
+    end
+    if object:IsA("ViewportFrame") then
+        properties[#properties + 1] = "ImageTransparency"
     end
     if object:IsA("ScrollingFrame") then
         properties[#properties + 1] = "ScrollBarImageTransparency"
@@ -728,13 +743,13 @@ local accent = Color3.fromRGB(126, 139, 209)
 
 local function paint(object, index)
     object.BackgroundColor3 = palette[index]
-    step(function() object.BackgroundColor3 = palette[index] end, object)
+    themedBackgrounds[object] = index
     return object
 end
 
 local function muted(parent, value, x, y, w, h, size, align, opts)
     local api = text(parent, value, x, y, w, h, size, palette[3], align, opts)
-    step(function() api:Color(palette[3]) end, api.Object)
+    themedLabels[api.Object] = 3
     return api
 end
 
@@ -757,7 +772,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.4.0",
+    Version = "5.5.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -777,6 +792,11 @@ local Library = {
     Configs = {
         Enabled = false,
         Encrypted = false,
+    },
+    Performance = {
+        IdleUpdateRate = 12,
+        HiddenUpdateRate = 6,
+        ActiveDuration = 0.45,
     },
 
     Limits = {
@@ -811,6 +831,7 @@ local function fireChange(flag, value)
     Library.Flags[flag] = value
     local window = Library.Window
     if window then
+        if window.Wake then window:Wake() end
         if type(value) ~= "table" and typeof(value) ~= "EnumItem" then
             local key = attributeName(flag)
             pcall(function() window.Gui:SetAttribute(key, value) end)
@@ -939,6 +960,7 @@ end
 function Library:SetTheme(value)
     local index = themeIndex(value)
     state.Theme, self.Theme = index, index
+    Runtime.ThemeDirty = true
     if type(value) == "table" and value.Accent then self:SetAccent(value.Accent, value.AccentAlpha) end
     fireChange("Theme", index)
     return index
@@ -948,14 +970,31 @@ function Library:SetAccent(color, alpha)
     if typeof(color) == "Color3" then
         state.Accent = color
         self.Accent = color
+        Runtime.ThemeDirty = true
         fireChange("Accent", color)
     end
     if alpha then
         alpha = math.clamp(alpha, 0, 1)
         state.AccentAlpha = alpha
         self.AccentAlpha = alpha
+        Runtime.ThemeDirty = true
         fireChange("AccentAlpha", alpha)
     end
+end
+
+function Library:SetPerformanceOptions(opts)
+    if type(opts) ~= "table" then return self.Performance end
+    if opts.IdleUpdateRate ~= nil then
+        self.Performance.IdleUpdateRate = math.clamp(tonumber(opts.IdleUpdateRate) or 12, 4, 60)
+    end
+    if opts.HiddenUpdateRate ~= nil then
+        self.Performance.HiddenUpdateRate = math.clamp(tonumber(opts.HiddenUpdateRate) or 6, 2, 30)
+    end
+    if opts.ActiveDuration ~= nil then
+        self.Performance.ActiveDuration = math.clamp(tonumber(opts.ActiveDuration) or 0.45, 0.1, 2)
+    end
+    if self.Window and self.Window.Wake then self.Window:Wake() end
+    return self.Performance
 end
 
 function Library:SetLimits(opts)
@@ -1044,6 +1083,9 @@ Tab.__index = Tab
 local Window = {}
 Window.__index = Window
 
+local ESPPreview = {}
+ESPPreview.__index = ESPPreview
+
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "Frame")
     object.Name = "Popup"
@@ -1089,9 +1131,11 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     function data:Open(anchorOverride)
         if anchorOverride then self.Anchor = anchorOverride end
         window.Opened = self
+        if window.Wake then window:Wake() end
     end
     function data:Close()
         if self:IsActive() then window.Opened = self.Parent end
+        if window.Wake then window:Wake() end
     end
     function data:Toggle(anchorOverride)
         if window.Opened == self then
@@ -1099,6 +1143,7 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
         else
             self:Open(anchorOverride)
         end
+        if window.Wake then window:Wake() end
     end
     return data
 end
@@ -1110,6 +1155,7 @@ function Library:CreateWindow(opts)
     end
 
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive, Runtime.Owner = {}, {}, {}, true, nil
+    Runtime.ThemeDirty = true
     Library.Maid = Maid.new()
     local configOptions = opts.Configs
     if configOptions == true then configOptions = {Enabled = true} end
@@ -1123,6 +1169,7 @@ function Library:CreateWindow(opts)
     self.FadeAnimations, self.ScaleAnimations = true, true
     if opts.FadeDuration ~= nil then self:SetFadeDuration(opts.FadeDuration) end
     if opts.ScaleDuration ~= nil then self:SetScaleDuration(opts.ScaleDuration) end
+    if type(opts.Performance) == "table" then self:SetPerformanceOptions(opts.Performance) end
 
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
@@ -1153,6 +1200,7 @@ function Library:CreateWindow(opts)
         Opened = nil,
         Keybinds = {},
         Notifications = {},
+        Previews = {},
         Current = nil,
         RailCount = 0,
         Mini = {},
@@ -1165,7 +1213,15 @@ function Library:CreateWindow(opts)
         ScaleCurrent = 1,
         ScaleTarget = 1,
         Initialized = false,
+        UpdateAccumulator = 0,
+        RenderCache = {},
+        ActiveUntil = os.clock() + 1,
     }, Window)
+    function window:Wake(duration)
+        local activeDuration = tonumber(duration)
+            or tonumber(Library.Performance and Library.Performance.ActiveDuration) or 0.45
+        self.ActiveUntil = math.max(self.ActiveUntil or 0, os.clock() + activeDuration)
+    end
     Library.Window = window
 
     local host, protected = guiHost()
@@ -1251,8 +1307,29 @@ function Library:CreateWindow(opts)
         window.Position = Vector2.new(math.floor(window.Position.X + 0.5), math.floor(window.Position.Y + 0.5))
         frame.Position = UDim2.fromOffset(window.Position.X, window.Position.Y)
         popupLayer.Position = frame.Position
+        if window.LayoutPreviews then window.LayoutPreviews() end
     end
     window.Layout = layout
+    function window.LayoutPreviews()
+        for _, preview in ipairs(window.Previews) do
+            if not preview.Destroyed then preview:_Layout() end
+        end
+    end
+    function window.UpdatePreviews(dt)
+        for _, preview in ipairs(window.Previews) do
+            if not preview.Destroyed and preview.Root.Visible then preview:_Step(dt) end
+        end
+    end
+    function window.RenderPreviews()
+        for _, preview in ipairs(window.Previews) do
+            if not preview.Destroyed then
+                local visible = preview.Enabled and (window.Visible or window.Alpha > 0.001)
+                preview.Root.Visible = visible
+                preview.Root.Interactable = visible and window.Visible
+                if visible then fadeGroup(preview.Root, window.Alpha) end
+            end
+        end
+    end
     function window.StepScale(dt)
         local previousViewport = window.Viewport
         local target = targetScale()
@@ -1270,6 +1347,7 @@ function Library:CreateWindow(opts)
             window.ScaleCurrent = target
         end
         if changed or window.Viewport ~= previousViewport then layout(false) end
+        return changed
     end
     layout(true)
 
@@ -1317,7 +1395,22 @@ function Library:CreateWindow(opts)
 
     local function updateDrag(input)
         local drag = window.Drag
-        if not drag then return end
+        if not drag then
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                local point = Vector2.new(input.Position.X, input.Position.Y)
+                local function contains(object)
+                    if not object or not object.Parent or not object.Visible then return false end
+                    local origin, size = object.AbsolutePosition, object.AbsoluteSize
+                    return point.X >= origin.X and point.Y >= origin.Y
+                        and point.X <= origin.X + size.X and point.Y <= origin.Y + size.Y
+                end
+                if contains(frame) or contains(window.Reopen) or contains(window.Watermark) then
+                    window:Wake(0.2)
+                end
+            end
+            return
+        end
+        window:Wake(0.25)
         if input ~= drag.Input and not (drag.Input.UserInputType == Enum.UserInputType.MouseButton1
             and input.UserInputType == Enum.UserInputType.MouseMovement) then return end
         local point = Vector2.new(input.Position.X, input.Position.Y)
@@ -1403,6 +1496,7 @@ function Library:CreateWindow(opts)
     end
 
     connect(UIS.InputBegan, function(input)
+        window:Wake()
         if primary(input) and window.Opened then
             local point = Vector2.new(input.Position.X, input.Position.Y)
 
@@ -1809,6 +1903,7 @@ function Library:CreateWindow(opts)
         end
         window.WatermarkItems = watermarkItems
         window.WatermarkCapsules = watermarkCapsules
+        if window.Wake then window:Wake() end
     end
     window.RebuildWatermarkBlocks = rebuildWatermarkBlocks
     rebuildWatermarkBlocks(defaultWatermarkBlocks)
@@ -1942,6 +2037,7 @@ function Library:CreateWindow(opts)
 
     function window.UpdateOpenVisibility()
         window.OpenerDirty = true
+        if window.Wake then window:Wake() end
     end
 
     local tooltip = rect(gui, 0, 0, 10, 20, palette[1], 3)
@@ -2412,31 +2508,63 @@ function Library:CreateWindow(opts)
             sweepConnections()
         end
         dt = math.min(dt, 0.1)
+        local now = os.clock()
+        local performance = Library.Performance or {}
+        local idleRate = window.Visible
+            and math.clamp(tonumber(performance.IdleUpdateRate) or 12, 4, 60)
+            or math.clamp(tonumber(performance.HiddenUpdateRate) or 6, 2, 30)
+        window.UpdateAccumulator = (window.UpdateAccumulator or 0) + dt
+        local active = now <= (window.ActiveUntil or 0) or Runtime.ThemeDirty or window.Drag ~= nil
+        local runUi = active or window.UpdateAccumulator >= 1 / idleRate
+        local uiDt = active and dt or math.min(window.UpdateAccumulator, 0.1)
+        if runUi then window.UpdateAccumulator = 0 end
         local k = motionFactor(18, dt)
 
-        local theme = themes[state.Theme] or themes[1]
-        for i, target in ipairs(theme) do
-            palette[i] = palette[i]:Lerp(target, k)
-        end
-        white = palette[7] or pureWhite
-        for label in pairs(foregroundLabels) do
-            if label.Parent then label.TextColor3 = white else foregroundLabels[label] = nil end
-        end
-        for icon in pairs(foregroundIcons) do
-            if icon.Parent then
-                if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
-                    icon.ImageColor3 = white
+        if Runtime.ThemeDirty then
+            local theme = themes[state.Theme] or themes[1]
+            local moving = false
+            for i, target in ipairs(theme) do
+                local current = palette[i]
+                if colorDelta(current, target) > 0.0005 then
+                    current = current:Lerp(target, k)
+                    if colorDelta(current, target) <= 0.0005 then current = target else moving = true end
                 else
-                    icon.TextColor3 = white
+                    current = target
                 end
-            else
-                foregroundIcons[icon] = nil
+                palette[i] = current
             end
+            if colorDelta(accent, state.Accent) > 0.0005 then
+                accent = accent:Lerp(state.Accent, k)
+                if colorDelta(accent, state.Accent) <= 0.0005 then accent = state.Accent else moving = true end
+            else
+                accent = state.Accent
+            end
+            white = palette[7] or pureWhite
+            for label in pairs(foregroundLabels) do
+                if label.Parent then label.TextColor3 = white else foregroundLabels[label] = nil end
+            end
+            for icon in pairs(foregroundIcons) do
+                if icon.Parent then
+                    if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
+                        icon.ImageColor3 = white
+                    else
+                        icon.TextColor3 = white
+                    end
+                else
+                    foregroundIcons[icon] = nil
+                end
+            end
+            for stroke, index in pairs(themedStrokes) do
+                if stroke.Parent then stroke.Color = palette[index] else themedStrokes[stroke] = nil end
+            end
+            for object, index in pairs(themedBackgrounds) do
+                if object.Parent then object.BackgroundColor3 = palette[index] else themedBackgrounds[object] = nil end
+            end
+            for label, index in pairs(themedLabels) do
+                if label.Parent then label.TextColor3 = palette[index] else themedLabels[label] = nil end
+            end
+            Runtime.ThemeDirty = moving
         end
-        for stroke, index in pairs(themedStrokes) do
-            if stroke.Parent then stroke.Color = palette[index] else themedStrokes[stroke] = nil end
-        end
-        accent = accent:Lerp(state.Accent, k)
 
         fpsFrames = fpsFrames + 1
         fpsTimer = fpsTimer + dt
@@ -2444,18 +2572,27 @@ function Library:CreateWindow(opts)
             window.FPS = math.floor(fpsFrames / fpsTimer + 0.5)
             fpsFrames, fpsTimer = 0, 0
             pcall(function()
-                local stats = game:GetService("Stats")
                 window.Ping = math.floor(
-                    stats.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5)
+                    StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5)
             end)
         end
 
         local camera = workspace.CurrentCamera
         local viewportChanged = camera and camera.ViewportSize ~= window.Viewport
-        window.StepScale(dt)
+        local scaleChanged = window.StepScale(dt)
         if viewportChanged then window.LayoutMini() end
+        if viewportChanged or scaleChanged then
+            runUi = true
+            uiDt = dt
+            window.UpdateAccumulator = 0
+        end
 
-        runUpdates(Runtime.Overlay, dt, k)
+        local renderCache = nil
+        if runUi then
+            renderCache = window.RenderCache
+            table.clear(renderCache)
+        end
+        if runUi then runUpdates(Runtime.Overlay, uiDt, motionFactor(18, uiDt), renderCache) end
 
         for index = #window.Notifications, 1, -1 do
             local notif = window.Notifications[index]
@@ -2489,50 +2626,55 @@ function Library:CreateWindow(opts)
         window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
         frame.Visible = window.Visible or window.Alpha > 0
         window.PopupLayer.Visible = frame.Visible
+        if runUi and window.UpdatePreviews then window.UpdatePreviews(uiDt) end
+        if window.RenderPreviews then window.RenderPreviews() end
         if not frame.Visible then return end
 
-        runUpdates(Runtime.Updates, dt, k)
+        if runUi then
+            local uiK = motionFactor(18, uiDt)
+            runUpdates(Runtime.Updates, uiDt, uiK, renderCache)
 
-        for _, tab in ipairs(window.TabList) do
-            local active = window.Current == tab
-            tab.Alpha = fadeAlpha(tab.Alpha, active and 1 or 0, dt)
-            local page = tab.Page
-            page.Visible = tab.Alpha > 0
-            page.Interactable = active and window.Visible
-            if page.Visible then
-                fadeGroup(page, tab.Alpha)
-            end
-        end
-
-        for _, pop in ipairs(window.Popups) do
-            local show = pop:IsActive()
-            local object = pop.Object
-            if not show and pop.Alpha == 0 then
-                object.Visible = false
-                object.Interactable = false
-                if pop.AnimateHeight then pop.CurrentHeight = 1 end
-            else
-                pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, dt)
-                if pop.AnimateHeight then
-                    pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, dt))
-                else
-                    pop.CurrentHeight = pop.Height
+            for _, tab in ipairs(window.TabList) do
+                local tabActive = window.Current == tab
+                tab.Alpha = fadeAlpha(tab.Alpha, tabActive and 1 or 0, uiDt)
+                local page = tab.Page
+                page.Visible = tab.Alpha > 0
+                page.Interactable = tabActive and window.Visible
+                if page.Visible then
+                    fadeGroup(page, tab.Alpha)
                 end
-                object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
-                object.Interactable = show and window.Visible
-                if object.Visible then
-                    fadeGroup(object, pop.Alpha)
-                    object.BackgroundColor3 = palette[1]
-                    object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
-                    local s = math.max(0.001, scale.Scale)
-                    local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
-                    local minX, minY = -window.Position.X / s, -window.Position.Y / s
-                    local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
-                    local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
-                    object.Position = UDim2.fromOffset(
-                        roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
-                        roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
-                    )
+            end
+
+            for _, pop in ipairs(window.Popups) do
+                local show = pop:IsActive()
+                local object = pop.Object
+                if not show and pop.Alpha == 0 then
+                    object.Visible = false
+                    object.Interactable = false
+                    if pop.AnimateHeight then pop.CurrentHeight = 1 end
+                else
+                    pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, uiDt)
+                    if pop.AnimateHeight then
+                        pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, uiDt))
+                    else
+                        pop.CurrentHeight = pop.Height
+                    end
+                    object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
+                    object.Interactable = show and window.Visible
+                    if object.Visible then
+                        fadeGroup(object, pop.Alpha)
+                        object.BackgroundColor3 = palette[1]
+                        object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
+                        local s = math.max(0.001, scale.Scale)
+                        local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
+                        local minX, minY = -window.Position.X / s, -window.Position.Y / s
+                        local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
+                        local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
+                        object.Position = UDim2.fromOffset(
+                            roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
+                            roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
+                        )
+                    end
                 end
             end
         end
@@ -2545,6 +2687,7 @@ end
 
 function Window:SetVisible(value)
     self.Visible = value == true
+    if self.Wake then self:Wake() end
     self.Frame.Visible = self.Visible or self.Alpha > 0
     self.Frame.Interactable = self.Visible
     self.PopupLayer.Visible = self.Frame.Visible
@@ -2623,6 +2766,670 @@ function Library:SetIcon(value)
     if self.Window then return self.Window:SetIcon(value) end
 end
 
+local function copyPreviewTable(source)
+    local result = {}
+    for key, value in pairs(source or {}) do
+        result[key] = type(value) == "table" and copyPreviewTable(value) or value
+    end
+    return result
+end
+
+local function previewOptionName(name)
+    local normalized = string.lower(tostring(name or "")):gsub("[%s_%-]", "")
+    local aliases = {
+        box = "Box", boundingbox = "Box", name = "Name", playername = "Name",
+        health = "HealthBar", healthbar = "HealthBar", healthtext = "HealthText",
+        distance = "Distance", weapon = "Weapon", tool = "Weapon", tracer = "Tracer",
+        headdot = "HeadDot", head = "HeadDot", skeleton = "Skeleton", chams = "Chams",
+    }
+    return aliases[normalized] or tostring(name)
+end
+
+local function previewValue(preview, value, fallback)
+    if type(value) == "function" then
+        local ok, result = pcall(value, preview)
+        if ok then value = result else value = fallback end
+    end
+    if value == nil then return fallback end
+    return value
+end
+
+local function previewSetting(preview, option, key, fallback)
+    if type(option) ~= "table" then return fallback end
+    local flag = option[key .. "Flag"]
+    if key == "Enabled" and option.Flag ~= nil then flag = option.Flag end
+    if flag ~= nil then
+        local value = Library:GetFlag(flag)
+        if value ~= nil then return value end
+    end
+    return previewValue(preview, option[key], fallback)
+end
+
+local function previewHasDynamic(value)
+    if type(value) == "function" then return true end
+    if type(value) ~= "table" then return false end
+    for key, child in pairs(value) do
+        if type(key) == "string" and string.sub(key, -4) == "Flag" then return true end
+        if previewHasDynamic(child) then return true end
+    end
+    return false
+end
+
+local function previewLine(parent, z)
+    local line = rect(parent, 0, 0, 1, 1, white)
+    line.AnchorPoint = Vector2.new(0.5, 0.5)
+    line.ZIndex = z or 7
+    return line
+end
+
+local function positionPreviewLine(line, from, to, width, height, thickness)
+    local a = Vector2.new(from.X * width, from.Y * height)
+    local b = Vector2.new(to.X * width, to.Y * height)
+    local delta = b - a
+    line.Position = UDim2.fromOffset(roundPixel((a.X + b.X) * 0.5), roundPixel((a.Y + b.Y) * 0.5))
+    line.Size = UDim2.fromOffset(math.max(1, roundPixel(delta.Magnitude)), math.max(1, roundPixel(thickness or 1)))
+    line.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+end
+
+local function createPreviewMannequin()
+    local model = Instance.new("Model")
+    model.Name = "PreviewCharacter"
+    local function part(name, size, position, color, shape)
+        local object = Instance.new("Part")
+        object.Name = name
+        object.Size = size
+        object.CFrame = CFrame.new(position)
+        object.Color = color
+        object.Material = Enum.Material.SmoothPlastic
+        object.Shape = shape or Enum.PartType.Block
+        object.Anchored = true
+        object.CanCollide = false
+        object.CastShadow = true
+        object.Parent = model
+        return object
+    end
+    local skin = Color3.fromRGB(205, 163, 128)
+    local clothing = Color3.fromRGB(54, 62, 72)
+    local pants = Color3.fromRGB(32, 36, 43)
+    part("Head", Vector3.new(1.35, 1.35, 1.35), Vector3.new(0, 3.55, 0), skin, Enum.PartType.Ball)
+    part("Torso", Vector3.new(2.2, 2.3, 1.05), Vector3.new(0, 1.75, 0), clothing)
+    part("LeftArm", Vector3.new(0.75, 2.35, 0.8), Vector3.new(-1.48, 1.75, 0), skin)
+    part("RightArm", Vector3.new(0.75, 2.35, 0.8), Vector3.new(1.48, 1.75, 0), skin)
+    part("LeftLeg", Vector3.new(0.9, 2.5, 0.95), Vector3.new(-0.56, -0.65, 0), pants)
+    part("RightLeg", Vector3.new(0.9, 2.5, 0.95), Vector3.new(0.56, -0.65, 0), pants)
+    return model
+end
+
+local function clonePreviewSource(source)
+    if typeof(source) == "Instance" and source:IsA("Player") then source = source.Character end
+    if source == nil and player then source = player.Character end
+    if typeof(source) ~= "Instance" or not source:IsA("Model") then return createPreviewMannequin() end
+    local wasArchivable
+    local ok, clone = pcall(function()
+        wasArchivable = source.Archivable
+        source.Archivable = true
+        return source:Clone()
+    end)
+    if wasArchivable ~= nil then pcall(function() source.Archivable = wasArchivable end) end
+    if not ok or not clone then return createPreviewMannequin() end
+    for _, object in ipairs(clone:GetDescendants()) do
+        if object:IsA("LuaSourceContainer") or object:IsA("Tool") or object:IsA("BillboardGui")
+            or object:IsA("SurfaceGui") or object:IsA("ParticleEmitter") or object:IsA("Trail")
+            or object:IsA("Beam") or object:IsA("Sound") then
+            object:Destroy()
+        elseif object:IsA("BasePart") then
+            object.Anchored = true
+            object.CanCollide = false
+            object.CanTouch = false
+            object.CanQuery = false
+            object.Massless = true
+            object.LocalTransparencyModifier = 0
+            if object.Name == "HumanoidRootPart" then object.Transparency = 1 end
+        end
+    end
+    return clone
+end
+
+function ESPPreview:_LayoutSkeleton()
+    local width = math.max(1, self.Width - 28)
+    local height = math.max(1, self.Height - 64)
+    local thickness = tonumber(previewSetting(self, self.ESP.Skeleton, "Thickness", 1)) or 1
+    for _, entry in ipairs(self.SkeletonLines) do
+        positionPreviewLine(entry.Line, entry.From, entry.To, width, height, thickness)
+    end
+end
+
+function ESPPreview:_Layout()
+    local window = self.Window
+    if self.Destroyed or not window or not window.Gui or not window.Gui.Parent then return end
+    local scale = math.max(0.001, window.ScaleCurrent or 1)
+    local viewport = window.Viewport
+    local margin = math.max(0, tonumber(self.Margin) or 8)
+    local gap = math.max(0, tonumber(self.Gap) or 10) * scale
+    local panelWidth, panelHeight = self.Width * scale, self.Height * scale
+    local mainLeft = window.Position.X
+    local mainRight = mainLeft + WINDOW_W * scale
+    local leftX = mainLeft - gap - panelWidth
+    local rightX = mainRight + gap
+    local fitsLeft = leftX >= margin
+    local fitsRight = rightX + panelWidth <= viewport.X - margin
+    local side = string.lower(tostring(self.Side or "auto"))
+    if side ~= "left" and side ~= "right" then
+        if fitsRight then
+            side = "right"
+        elseif fitsLeft then
+            side = "left"
+        else
+            local leftSpace = mainLeft - margin
+            local rightSpace = viewport.X - margin - mainRight
+            side = rightSpace >= leftSpace and "right" or "left"
+        end
+    elseif side == "right" and not fitsRight and fitsLeft then
+        side = "left"
+    elseif side == "left" and not fitsLeft and fitsRight then
+        side = "right"
+    end
+    local x = side == "left" and leftX or rightX
+    local align = string.lower(tostring(self.Align or "top"))
+    local y = window.Position.Y
+    if align == "center" then
+        y = window.Position.Y + (WINDOW_H * scale - panelHeight) * 0.5
+    elseif align == "bottom" then
+        y = window.Position.Y + WINDOW_H * scale - panelHeight
+    end
+    local offset = typeof(self.Offset) == "Vector2" and self.Offset or Vector2.zero
+    x = math.clamp(x + offset.X, margin, math.max(margin, viewport.X - panelWidth - margin))
+    y = math.clamp(y + offset.Y, margin, math.max(margin, viewport.Y - panelHeight - margin))
+    self.ResolvedSide = side
+    self.Scale.Scale = scale
+    self.Root.Position = UDim2.fromOffset(roundPixel(x), roundPixel(y))
+end
+
+function ESPPreview:_SetModelRotation(yaw)
+    if not self.Model or not self.Model.Parent then return end
+    self.Yaw = tonumber(yaw) or 0
+    self.Model:PivotTo(CFrame.Angles(0, math.rad(self.Yaw), 0))
+end
+
+function ESPPreview:SetModel(source)
+    if self.Destroyed then return self end
+    self.World:ClearAllChildren()
+    local character = clonePreviewSource(source)
+    local holder = Instance.new("Model")
+    holder.Name = "Character"
+    character.Parent = holder
+    holder.Parent = self.World
+    local bounds, size = holder:GetBoundingBox()
+    pcall(function() holder.WorldPivot = bounds end)
+    holder:PivotTo(CFrame.new())
+    self.Model = holder
+    self.Character = character
+    self.ModelSize = size
+    self.Highlight = Instance.new("Highlight")
+    self.Highlight.Name = "PreviewChams"
+    self.Highlight.Adornee = character
+    self.Highlight.Enabled = false
+    self.Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    self.Highlight.Parent = holder
+    self:_SetModelRotation(self.Yaw)
+    self:SetCamera(self.CameraOptions)
+    self.Dirty = true
+    if self.Window.Wake then self.Window:Wake() end
+    return self
+end
+
+ESPPreview.SetCharacter = ESPPreview.SetModel
+
+function ESPPreview:GetModel()
+    return self.Character
+end
+
+function ESPPreview:SetCamera(options)
+    if type(options) == "number" then options = {FieldOfView = options} end
+    options = type(options) == "table" and options or {}
+    for key, value in pairs(options) do self.CameraOptions[key] = value end
+    local fov = math.clamp(tonumber(self.CameraOptions.FieldOfView or self.CameraOptions.FOV) or 34, 15, 80)
+    local size = self.ModelSize or Vector3.new(4, 6, 2)
+    local target = typeof(self.CameraOptions.Target) == "Vector3" and self.CameraOptions.Target or Vector3.new(0, 0, 0)
+    local padding = math.clamp(tonumber(self.CameraOptions.Padding) or 1.18, 0.7, 3)
+    local aspect = math.max(0.45, (self.Width - 28) / math.max(1, self.Height - 64))
+    local vertical = size.Y * 0.5
+    local horizontal = size.X * 0.5 / aspect
+    local distance = math.max(vertical, horizontal) * padding / math.tan(math.rad(fov * 0.5)) + size.Z * 0.5
+    local elevation = tonumber(self.CameraOptions.Elevation) or 0
+    self.Camera.FieldOfView = fov
+    self.Camera.CFrame = CFrame.lookAt(Vector3.new(0, elevation, -distance), target)
+    return self
+end
+
+function ESPPreview:_RenderESP()
+    local esp = self.ESP
+    local box = esp.Box
+    local boxEnabled = previewSetting(self, box, "Enabled", true) ~= false
+    local boxColor = previewSetting(self, box, "Color", white)
+    if typeof(boxColor) ~= "Color3" then boxColor = white end
+    local boxThickness = math.clamp(tonumber(previewSetting(self, box, "Thickness", 1)) or 1, 1, 4)
+    local boxStyle = string.lower(tostring(previewSetting(self, box, "Style", "regular")))
+    self.BoxStroke.Enabled = boxEnabled and boxStyle ~= "corner" and boxStyle ~= "corners"
+    self.BoxStroke.Color = boxColor
+    self.BoxStroke.Thickness = boxThickness
+    for _, line in ipairs(self.BoxCorners) do
+        line.Visible = boxEnabled and (boxStyle == "corner" or boxStyle == "corners")
+        line.BackgroundColor3 = boxColor
+    end
+
+    local name = esp.Name
+    self.NameLabel.Visible = previewSetting(self, name, "Enabled", true) ~= false
+    self.NameLabel.Text = tostring(previewSetting(self, name, "Text", player and player.DisplayName or "Player"))
+    local nameColor = previewSetting(self, name, "Color", white)
+    self.NameLabel.TextColor3 = typeof(nameColor) == "Color3" and nameColor or white
+
+    local distance = esp.Distance
+    self.DistanceLabel.Visible = previewSetting(self, distance, "Enabled", true) ~= false
+    self.DistanceLabel.Text = tostring(previewSetting(self, distance, "Text", "25 studs"))
+    local distanceColor = previewSetting(self, distance, "Color", palette[3])
+    self.DistanceLabel.TextColor3 = typeof(distanceColor) == "Color3" and distanceColor or palette[3]
+
+    local weapon = esp.Weapon
+    self.WeaponLabel.Visible = previewSetting(self, weapon, "Enabled", true) ~= false
+    self.WeaponLabel.Text = tostring(previewSetting(self, weapon, "Text", "Weapon"))
+    local weaponColor = previewSetting(self, weapon, "Color", white)
+    self.WeaponLabel.TextColor3 = typeof(weaponColor) == "Color3" and weaponColor or white
+
+    local health = esp.HealthBar
+    local healthEnabled = previewSetting(self, health, "Enabled", true) ~= false
+    local healthValue = tonumber(previewSetting(self, health, "Value", 100)) or 100
+    local healthMax = math.max(1, tonumber(previewSetting(self, health, "Max", 100)) or 100)
+    local ratio = math.clamp(healthValue / healthMax, 0, 1)
+    local healthColor = previewSetting(self, health, "Color", Color3.fromRGB(75, 220, 110))
+    if typeof(healthColor) ~= "Color3" then healthColor = Color3.fromRGB(75, 220, 110) end
+    self.HealthBack.Visible = healthEnabled
+    self.HealthFill.BackgroundColor3 = healthColor
+    self.HealthFill.Size = UDim2.new(1, 0, ratio, 0)
+
+    local healthText = esp.HealthText
+    self.HealthLabel.Visible = previewSetting(self, healthText, "Enabled", false) ~= false
+    self.HealthLabel.Text = tostring(previewSetting(self, healthText, "Text", math.floor(healthValue + 0.5)))
+    local healthTextColor = previewSetting(self, healthText, "Color", white)
+    self.HealthLabel.TextColor3 = typeof(healthTextColor) == "Color3" and healthTextColor or white
+
+    local tracer = esp.Tracer
+    self.Tracer.Visible = previewSetting(self, tracer, "Enabled", false) ~= false
+    local tracerColor = previewSetting(self, tracer, "Color", accent)
+    self.Tracer.BackgroundColor3 = typeof(tracerColor) == "Color3" and tracerColor or accent
+    self.Tracer.Size = UDim2.new(0, math.clamp(tonumber(previewSetting(self, tracer, "Thickness", 1)) or 1, 1, 4), 0.14, 0)
+
+    local head = esp.HeadDot
+    self.HeadDot.Visible = previewSetting(self, head, "Enabled", false) ~= false
+    local headColor = previewSetting(self, head, "Color", boxColor)
+    self.HeadDot.BackgroundColor3 = typeof(headColor) == "Color3" and headColor or boxColor
+    local headSize = math.clamp(tonumber(previewSetting(self, head, "Size", 6)) or 6, 2, 18)
+    self.HeadDot.Size = UDim2.fromOffset(headSize, headSize)
+
+    local skeleton = esp.Skeleton
+    local skeletonEnabled = previewSetting(self, skeleton, "Enabled", false) ~= false
+    local skeletonColor = previewSetting(self, skeleton, "Color", white)
+    if typeof(skeletonColor) ~= "Color3" then skeletonColor = white end
+    for _, entry in ipairs(self.SkeletonLines) do
+        entry.Line.Visible = skeletonEnabled
+        entry.Line.BackgroundColor3 = skeletonColor
+    end
+    self:_LayoutSkeleton()
+
+    local chams = esp.Chams
+    local chamsEnabled = previewSetting(self, chams, "Enabled", false) ~= false
+    if self.Highlight then
+        self.Highlight.Enabled = chamsEnabled
+        local fill = previewSetting(self, chams, "Color", accent)
+        local outline = previewSetting(self, chams, "OutlineColor", white)
+        self.Highlight.FillColor = typeof(fill) == "Color3" and fill or accent
+        self.Highlight.OutlineColor = typeof(outline) == "Color3" and outline or white
+        self.Highlight.FillTransparency = math.clamp(tonumber(previewSetting(self, chams, "Transparency", 0.45)) or 0.45, 0, 1)
+        self.Highlight.OutlineTransparency = math.clamp(tonumber(previewSetting(self, chams, "OutlineTransparency", 0)) or 0, 0, 1)
+    end
+    self.HeaderIcon:Color(accent)
+    self.Dynamic = previewHasDynamic(self.ESP)
+    self.Dirty = false
+end
+
+function ESPPreview:_Step(dt)
+    if self.Destroyed or not self.Enabled then return end
+    if self.AutoRotate then
+        self:_SetModelRotation((self.Yaw + (tonumber(self.RotationSpeed) or 12) * dt) % 360)
+    end
+    if self.Dirty or self.Dynamic or self.AutoRotate or Runtime.ThemeDirty then self:_RenderESP() end
+end
+
+function ESPPreview:SetESP(options)
+    if type(options) ~= "table" then return self end
+    for name, value in pairs(options) do
+        local key = previewOptionName(name)
+        local current = self.ESP[key]
+        if type(current) ~= "table" then
+            current = {}
+            self.ESP[key] = current
+        end
+        if type(value) == "boolean" then
+            current.Enabled = value
+        elseif type(value) == "table" then
+            for property, setting in pairs(value) do current[property] = setting end
+        else
+            current.Enabled = value
+        end
+    end
+    self.Dirty = true
+    if self.Window.Wake then self.Window:Wake() end
+    return self
+end
+
+function ESPPreview:SetOption(name, value)
+    return self:SetESP({[previewOptionName(name)] = value})
+end
+
+function ESPPreview:SetHealth(value, maximum)
+    local update = {Value = value}
+    if maximum ~= nil then update.Max = maximum end
+    return self:SetESP({HealthBar = update})
+end
+
+function ESPPreview:SetBackground(color, transparency)
+    if typeof(color) == "Color3" then
+        self.Viewport.BackgroundColor3 = color
+        themedBackgrounds[self.Viewport] = nil
+    end
+    if transparency ~= nil then
+        self.Viewport.BackgroundTransparency = math.clamp(tonumber(transparency) or 0, 0, 1)
+    end
+    return self
+end
+
+function ESPPreview:SetLighting(options)
+    options = type(options) == "table" and options or {}
+    if typeof(options.Ambient) == "Color3" then self.Viewport.Ambient = options.Ambient end
+    if typeof(options.Color) == "Color3" then self.Viewport.LightColor = options.Color end
+    if typeof(options.Direction) == "Vector3" then self.Viewport.LightDirection = options.Direction end
+    return self
+end
+
+function ESPPreview:GetESP()
+    return copyPreviewTable(self.ESP)
+end
+
+function ESPPreview:SetEnabled(value)
+    self.Enabled = value ~= false
+    self.Root.Visible = self.Enabled and (self.Window.Visible or self.Window.Alpha > 0)
+    if self.Window.Wake then self.Window:Wake() end
+    return self
+end
+
+ESPPreview.SetVisible = ESPPreview.SetEnabled
+
+function ESPPreview:SetSide(side)
+    self.Side = string.lower(tostring(side or "auto"))
+    self:_Layout()
+    return self
+end
+
+function ESPPreview:SetLayout(options)
+    options = type(options) == "table" and options or {}
+    if options.Side ~= nil then self.Side = string.lower(tostring(options.Side)) end
+    if options.Align ~= nil then self.Align = tostring(options.Align) end
+    if options.Gap ~= nil then self.Gap = math.max(0, tonumber(options.Gap) or self.Gap) end
+    if options.Margin ~= nil then self.Margin = math.max(0, tonumber(options.Margin) or self.Margin) end
+    if typeof(options.Offset) == "Vector2" then self.Offset = options.Offset end
+    self:_Layout()
+    return self
+end
+
+function ESPPreview:SetTitle(value)
+    self.Title = tostring(value or "ESP Preview")
+    self.TitleLabel:SetText(self.Title)
+    return self
+end
+
+function ESPPreview:SetIcon(value)
+    self.Icon = value
+    self.HeaderIcon:SetIcon(value)
+    return self
+end
+
+function ESPPreview:SetSize(width, height)
+    if typeof(width) == "Vector2" then width, height = width.X, width.Y end
+    self.Width = math.clamp(math.floor(tonumber(width) or self.Width), 150, 420)
+    self.Height = math.clamp(math.floor(tonumber(height) or self.Height), 220, 600)
+    self.Root.Size = UDim2.fromOffset(self.Width, self.Height)
+    self.Body.Size = UDim2.new(1, -16, 1, -52)
+    self:SetCamera(self.CameraOptions)
+    self:_LayoutSkeleton()
+    self:_Layout()
+    return self
+end
+
+function ESPPreview:SetRotation(yaw, autoRotate, speed)
+    if autoRotate ~= nil then self.AutoRotate = autoRotate == true end
+    if speed ~= nil then self.RotationSpeed = tonumber(speed) or self.RotationSpeed end
+    self:_SetModelRotation(yaw or self.Yaw)
+    if self.Window.Wake then self.Window:Wake() end
+    return self
+end
+
+function ESPPreview:Refresh()
+    self.Dirty = true
+    self:_RenderESP()
+    self:_Layout()
+    return self
+end
+
+function ESPPreview:GetResolvedSide()
+    return self.ResolvedSide
+end
+
+function ESPPreview:Destroy()
+    if self.Destroyed then return end
+    self.Destroyed = true
+    for index, preview in ipairs(self.Window.Previews) do
+        if preview == self then table.remove(self.Window.Previews, index) break end
+    end
+    self.Maid:Destroy()
+end
+
+function Window:CreateESPPreview(options)
+    options = type(options) == "table" and options or {}
+    local width = math.clamp(math.floor(tonumber(options.Width) or 220), 150, 420)
+    local height = math.clamp(math.floor(tonumber(options.Height) or WINDOW_H), 220, 600)
+    local root = paint(rect(self.Gui, 0, 0, width, height, palette[1], 5), 1)
+    root.Name = "ESPPreview"
+    root.ZIndex = 3
+    root.ClipsDescendants = true
+    local rootStroke = new("UIStroke", root, {Color = palette[5], Thickness = 1, Transparency = 0.35})
+    local previewScale = new("UIScale", root, {Scale = self.ScaleCurrent})
+    local header = paint(rect(root, 0, 0, width, 38, palette[2]), 2)
+    header.Size = UDim2.new(1, 0, 0, 38)
+    local headerIcon = iconLabel(header, options.Icon or self.Icon or {"eye", "scan-eye"}, 12, 10, 18, accent, "E")
+    local titleLabel = text(header, options.Name or options.Title or "ESP Preview", 38, 0, width - 48, 38, 13, white, nil, {Bold = true})
+    titleLabel.Object.Size = UDim2.new(1, -48, 1, 0)
+    local body = paint(rect(root, 8, 44, width - 16, height - 52, palette[2], 4), 2)
+    body.Size = UDim2.new(1, -16, 1, -52)
+    body.ClipsDescendants = true
+    local viewport = new("ViewportFrame", body, {
+        Name = "Character",
+        BackgroundColor3 = palette[2],
+        BackgroundTransparency = 0,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(6, 6),
+        Size = UDim2.new(1, -12, 1, -12),
+        Ambient = Color3.fromRGB(150, 150, 160),
+        LightColor = Color3.fromRGB(255, 255, 255),
+        LightDirection = Vector3.new(-1, -1, -1),
+        ZIndex = 4,
+    })
+    themedBackgrounds[viewport] = 2
+    local world = new("WorldModel", viewport)
+    local camera = new("Camera", viewport, {FieldOfView = 34})
+    viewport.CurrentCamera = camera
+    local overlay = transparent(body, 6, 6, width - 28, height - 64)
+    overlay.Name = "ESP"
+    overlay.Size = UDim2.new(1, -12, 1, -12)
+    overlay.ZIndex = 5
+
+    local box = transparent(overlay, 0, 0, 1, 1)
+    box.Position = UDim2.fromScale(0.23, 0.1)
+    box.Size = UDim2.fromScale(0.54, 0.76)
+    box.ZIndex = 6
+    local boxStroke = new("UIStroke", box, {Color = white, Thickness = 1})
+    local boxCorners = {}
+    local cornerData = {
+        {UDim2.fromScale(0, 0), UDim2.fromOffset(18, 1), Vector2.zero},
+        {UDim2.fromScale(0, 0), UDim2.fromOffset(1, 18), Vector2.zero},
+        {UDim2.fromScale(1, 0), UDim2.fromOffset(18, 1), Vector2.new(1, 0)},
+        {UDim2.fromScale(1, 0), UDim2.fromOffset(1, 18), Vector2.new(1, 0)},
+        {UDim2.fromScale(0, 1), UDim2.fromOffset(18, 1), Vector2.new(0, 1)},
+        {UDim2.fromScale(0, 1), UDim2.fromOffset(1, 18), Vector2.new(0, 1)},
+        {UDim2.fromScale(1, 1), UDim2.fromOffset(18, 1), Vector2.new(1, 1)},
+        {UDim2.fromScale(1, 1), UDim2.fromOffset(1, 18), Vector2.new(1, 1)},
+    }
+    for _, data in ipairs(cornerData) do
+        local line = rect(box, 0, 0, 1, 1, white)
+        line.Position, line.Size, line.AnchorPoint, line.ZIndex = data[1], data[2], data[3], 7
+        line.Visible = false
+        boxCorners[#boxCorners + 1] = line
+    end
+
+    local nameLabel = text(overlay, "Player", 0, 0, 1, 1, 11, white, "center", {Bold = true}).Object
+    nameLabel.Position = UDim2.fromScale(0.15, 0.015)
+    nameLabel.Size = UDim2.fromScale(0.7, 0.075)
+    nameLabel.ZIndex = 8
+    local distanceLabel = text(overlay, "25 studs", 0, 0, 1, 1, 10, palette[3], "center").Object
+    distanceLabel.Position = UDim2.fromScale(0.15, 0.865)
+    distanceLabel.Size = UDim2.fromScale(0.7, 0.06)
+    distanceLabel.ZIndex = 8
+    local weaponLabel = text(overlay, "Weapon", 0, 0, 1, 1, 10, white, "center").Object
+    weaponLabel.Position = UDim2.fromScale(0.15, 0.925)
+    weaponLabel.Size = UDim2.fromScale(0.7, 0.06)
+    weaponLabel.ZIndex = 8
+    local healthBack = rect(overlay, 0, 0, 4, 1, Color3.fromRGB(7, 8, 10), 2)
+    healthBack.Position = UDim2.fromScale(0.19, 0.1)
+    healthBack.Size = UDim2.new(0, 4, 0.76, 0)
+    healthBack.AnchorPoint = Vector2.new(1, 0)
+    healthBack.ZIndex = 7
+    local healthFill = rect(healthBack, 0, 0, 4, 1, Color3.fromRGB(75, 220, 110), 2)
+    healthFill.AnchorPoint = Vector2.new(0, 1)
+    healthFill.Position = UDim2.fromScale(0, 1)
+    healthFill.Size = UDim2.fromScale(1, 1)
+    healthFill.ZIndex = 8
+    local healthLabel = text(overlay, "100", 0, 0, 36, 14, 9, white, "right", {Bold = true}).Object
+    healthLabel.Position = UDim2.fromScale(0.19, 0.1)
+    healthLabel.AnchorPoint = Vector2.new(1, 0)
+    healthLabel.ZIndex = 8
+    local tracer = rect(overlay, 0, 0, 1, 1, accent)
+    tracer.AnchorPoint = Vector2.new(0.5, 1)
+    tracer.Position = UDim2.fromScale(0.5, 1)
+    tracer.Size = UDim2.new(0, 1, 0.14, 0)
+    tracer.ZIndex = 6
+    local headDot = rect(overlay, 0, 0, 6, 6, white, 99)
+    headDot.AnchorPoint = Vector2.new(0.5, 0.5)
+    headDot.Position = UDim2.fromScale(0.5, 0.27)
+    headDot.ZIndex = 8
+
+    local skeletonPairs = {
+        {Vector2.new(0.5, 0.25), Vector2.new(0.5, 0.34)},
+        {Vector2.new(0.5, 0.34), Vector2.new(0.37, 0.38)},
+        {Vector2.new(0.37, 0.38), Vector2.new(0.31, 0.52)},
+        {Vector2.new(0.31, 0.52), Vector2.new(0.29, 0.64)},
+        {Vector2.new(0.5, 0.34), Vector2.new(0.63, 0.38)},
+        {Vector2.new(0.63, 0.38), Vector2.new(0.69, 0.52)},
+        {Vector2.new(0.69, 0.52), Vector2.new(0.71, 0.64)},
+        {Vector2.new(0.5, 0.34), Vector2.new(0.5, 0.59)},
+        {Vector2.new(0.5, 0.59), Vector2.new(0.42, 0.73)},
+        {Vector2.new(0.42, 0.73), Vector2.new(0.39, 0.85)},
+        {Vector2.new(0.5, 0.59), Vector2.new(0.58, 0.73)},
+        {Vector2.new(0.58, 0.73), Vector2.new(0.61, 0.85)},
+    }
+    local skeletonLines = {}
+    for _, pair in ipairs(skeletonPairs) do
+        local line = previewLine(overlay, 7)
+        line.Visible = false
+        skeletonLines[#skeletonLines + 1] = {Line = line, From = pair[1], To = pair[2]}
+    end
+
+    local defaults = {
+        Box = {Enabled = true, Color = white, Thickness = 1, Style = "Regular"},
+        Name = {Enabled = true, Text = player and player.DisplayName or "Player", Color = white},
+        HealthBar = {Enabled = true, Value = 100, Max = 100, Color = Color3.fromRGB(75, 220, 110)},
+        HealthText = {Enabled = false, Color = white},
+        Distance = {Enabled = true, Text = "25 studs", Color = palette[3]},
+        Weapon = {Enabled = true, Text = "Weapon", Color = white},
+        Tracer = {Enabled = false, Color = accent, Thickness = 1},
+        HeadDot = {Enabled = false, Color = white, Size = 6},
+        Skeleton = {Enabled = false, Color = white, Thickness = 1},
+        Chams = {Enabled = false, Color = accent, OutlineColor = white, Transparency = 0.45},
+    }
+    local preview = setmetatable({
+        Window = self, Root = root, RootStroke = rootStroke, Scale = previewScale,
+        Header = header, HeaderIcon = headerIcon, TitleLabel = titleLabel,
+        Body = body, Viewport = viewport, World = world, Camera = camera, Overlay = overlay,
+        Box = box, BoxStroke = boxStroke, BoxCorners = boxCorners,
+        NameLabel = nameLabel, DistanceLabel = distanceLabel, WeaponLabel = weaponLabel,
+        HealthBack = healthBack, HealthFill = healthFill, HealthLabel = healthLabel,
+        Tracer = tracer, HeadDot = headDot, SkeletonLines = skeletonLines,
+        ESP = defaults, Width = width, Height = height, Enabled = options.Enabled ~= false,
+        Side = options.Side or "auto", Align = options.Align or "top", Gap = options.Gap or 10,
+        Margin = options.Margin or 8, Offset = options.Offset or Vector2.zero,
+        Title = options.Name or options.Title or "ESP Preview", Icon = options.Icon,
+        CameraOptions = copyPreviewTable(options.Camera or {}), Yaw = tonumber(options.Yaw) or 0,
+        AutoRotate = options.AutoRotate == true, RotationSpeed = tonumber(options.RotationSpeed) or 12,
+        Dirty = true, Dynamic = false,
+        Maid = Maid.new(Library.Maid),
+    }, ESPPreview)
+    preview.Maid:Add(root)
+    self.Previews[#self.Previews + 1] = preview
+    if type(options.ESP) == "table" then preview:SetESP(options.ESP) end
+    local directOptions = {}
+    for _, key in ipairs({"Box", "Name", "HealthBar", "HealthText", "Distance", "Weapon", "Tracer", "HeadDot", "Skeleton", "Chams"}) do
+        if options[key] ~= nil then directOptions[key] = options[key] end
+    end
+    if next(directOptions) ~= nil then preview:SetESP(directOptions) end
+    local modelSource
+    if options.Model ~= nil then
+        modelSource = options.Model
+    elseif options.Character ~= nil then
+        modelSource = options.Character
+    else
+        modelSource = options.Player
+    end
+    if modelSource == nil and options.UseLocalCharacter == false then modelSource = false end
+    preview:SetModel(modelSource)
+    if options.BackgroundColor ~= nil or options.BackgroundTransparency ~= nil then
+        preview:SetBackground(options.BackgroundColor, options.BackgroundTransparency)
+    end
+    if type(options.Lighting) == "table" then preview:SetLighting(options.Lighting) end
+    preview:_RenderESP()
+    preview:_Layout()
+    root.Visible = preview.Enabled and (self.Visible or self.Alpha > 0)
+    return preview
+end
+
+Window.CreateVisualPreview = Window.CreateESPPreview
+
+function Library:CreateESPPreview(options)
+    assert(self.Window, "CreateWindow must be called before CreateESPPreview")
+    return self.Window:CreateESPPreview(options)
+end
+
+Library.CreateVisualPreview = Library.CreateESPPreview
+
+function Window:GetESPPreviews()
+    local previews = {}
+    for _, preview in ipairs(self.Previews) do
+        if not preview.Destroyed then previews[#previews + 1] = preview end
+    end
+    return previews
+end
+
+function Library:GetESPPreviews()
+    return self.Window and self.Window:GetESPPreviews() or {}
+end
+
 function Window:SetTheme(index)
     Library:SetTheme(index)
 end
@@ -2632,6 +3439,7 @@ function Window:SelectTab(name)
     if not tab or self.Current == tab then return end
     self.Opened = nil
     self.Current = tab
+    if self.Wake then self:Wake() end
     state.Tab = tab.Name
     self.Scroll.CanvasSize = UDim2.fromOffset(0, tab.Height + PAD * 2)
     self.Scroll.CanvasPosition = Vector2.new(0, 0)
@@ -5083,6 +5891,7 @@ function Library:SetWatermarkEnabled(value)
     local window = self.Window
     if not window then return end
     window.WatermarkConfig.Enabled = value and true or false
+    window.UpdateOpenVisibility()
     return window.WatermarkConfig.Enabled
 end
 
@@ -5874,6 +6683,7 @@ function Library:GetMemoryStats()
         Elements = elements,
         Popups = window and #window.Popups or 0,
         Notifications = window and #window.Notifications or 0,
+        Previews = window and #window.Previews or 0,
         Instances = instances,
         FadeCaches = fadeCount,
         Sweeps = Runtime.Stats.Sweeps,
@@ -5883,9 +6693,9 @@ end
 function Library:MemoryReport()
     local s = self:GetMemoryStats()
     return string.format(
-        "WolfUi memory: %.0f KB lua | %d instances | %d elements | %d conns (%d total, %d swept) | %d updates | %d maids (%d freed) | %d popups | %d notifs",
+        "WolfUi memory: %.0f KB lua | %d instances | %d elements | %d conns (%d total, %d swept) | %d updates | %d maids (%d freed) | %d popups | %d notifs | %d previews",
         s.LuaKB, s.Instances, s.Elements, s.Connections, s.ConnectionsTotal, s.ConnectionsSwept,
-        s.Updates + s.OverlayUpdates, s.Maids, s.MaidsDestroyed, s.Popups, s.Notifications)
+        s.Updates + s.OverlayUpdates, s.Maids, s.MaidsDestroyed, s.Popups, s.Notifications, s.Previews)
 end
 
 Library.Runtime = Runtime
