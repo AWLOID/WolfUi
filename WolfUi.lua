@@ -524,11 +524,30 @@ local function fadeTargets(root)
     return cache.Targets
 end
 
-local function fadeGroup(root, alpha)
+local function visibleFadeTargets(root)
+    local targets = {}
+    local function collect(object, visible)
+        if object ~= root and object:IsA("GuiObject") then
+            visible = visible and object.Visible
+        end
+        if not visible then return end
+        local properties = fadeProperties(object)
+        if #properties > 0 then
+            targets[#targets + 1] = {Object = object, Properties = properties}
+        end
+        for _, child in ipairs(object:GetChildren()) do
+            collect(child, visible)
+        end
+    end
+    collect(root, true)
+    return targets
+end
+
+local function fadeTargetList(targets, alpha)
     if alpha >= 1 then return end
-    for _, target in ipairs(fadeTargets(root)) do
+    for _, target in ipairs(targets) do
         local object = target.Object
-        if object == root or object.Parent then
+        if object.Parent then
             local values = fadeValues[object] or {}
             for _, property in ipairs(target.Properties) do
                 if values[property] == nil then values[property] = object[property] end
@@ -537,6 +556,10 @@ local function fadeGroup(root, alpha)
             fadeValues[object] = values
         end
     end
+end
+
+local function fadeGroup(root, alpha)
+    fadeTargetList(fadeTargets(root), alpha)
 end
 
 local function new(class, parent, props)
@@ -768,7 +791,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.6.0",
+    Version = "5.6.1",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -1168,6 +1191,8 @@ function Library:CreateWindow(opts)
         Initialized = false,
         UpdateAccumulator = 0,
         RenderCache = {},
+        MainFadeTargets = nil,
+        MainFadeDirty = true,
         ActiveUntil = os.clock() + 1,
     }, Window)
     function window:Wake(duration)
@@ -1213,6 +1238,8 @@ function Library:CreateWindow(opts)
     frame.Active = true
     frame.ClipsDescendants = true
     window.Frame = frame
+    connect(frame.DescendantAdded, function() window.MainFadeDirty = true end)
+    connect(frame.DescendantRemoving, function() window.MainFadeDirty = true end)
 
     local scale = new("UIScale", frame, {Scale = 1})
     window.UIScale = scale
@@ -2522,6 +2549,7 @@ function Library:CreateWindow(opts)
         frame.Visible = window.Visible or window.Alpha > 0
         window.PopupLayer.Visible = frame.Visible
         if not frame.Visible then return end
+        local mainTransitioning = window.Alpha < 0.999
 
         if runUi then
             local uiK = motionFactor(18, uiDt)
@@ -2538,7 +2566,7 @@ function Library:CreateWindow(opts)
                 page.Interactable = tabActive and window.Visible
                 if page.Visible then
                     page.Position = UDim2.fromOffset(PAD + roundPixel(tab.Slide), PAD)
-                    fadeGroup(page, tab.Alpha)
+                    if not mainTransitioning then fadeGroup(page, tab.Alpha) end
                 elseif not tabActive then
                     tab.Slide = 0
                     page.Position = UDim2.fromOffset(PAD, PAD)
@@ -2562,7 +2590,7 @@ function Library:CreateWindow(opts)
                     object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
                     object.Interactable = show and window.Visible
                     if object.Visible then
-                        fadeGroup(object, pop.Alpha)
+                        fadeGroup(object, pop.Alpha * window.Alpha)
                         object.BackgroundColor3 = palette[1]
                         object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
                         local s = math.max(0.001, scale.Scale)
@@ -2583,8 +2611,13 @@ function Library:CreateWindow(opts)
         local animatedPosition = UDim2.fromOffset(window.Position.X, window.Position.Y + revealOffset)
         frame.Position = animatedPosition
         popupLayer.Position = animatedPosition
-        fadeGroup(frame, window.Alpha)
-        fadeGroup(popupLayer, window.Alpha)
+        if mainTransitioning then
+            if window.MainFadeDirty or not window.MainFadeTargets then
+                window.MainFadeTargets = visibleFadeTargets(frame)
+                window.MainFadeDirty = false
+            end
+            fadeTargetList(window.MainFadeTargets, window.Alpha)
+        end
     end)
 
     return window
@@ -2597,6 +2630,7 @@ function Window:SetVisible(value)
     self.Frame.Interactable = self.Visible
     self.PopupLayer.Visible = self.Frame.Visible
     self.PopupLayer.Interactable = self.Visible
+    self.MainFadeDirty = true
     if not self.Visible then
         self.Opened = nil
         self.CancelDrag()
@@ -2687,6 +2721,7 @@ function Window:SelectTab(name)
     tab.ExitSlide = 0
     self.Opened = nil
     self.Current = tab
+    self.MainFadeDirty = true
     if self.Wake then self:Wake() end
     state.Tab = tab.Name
     self.Scroll.CanvasSize = UDim2.fromOffset(0, tab.Height + PAD * 2)
@@ -3823,6 +3858,8 @@ function Tab:AddDropdown(opts)
     local name = opts.Name or "Dropdown"
     local flag = opts.Flag or (self.Name .. "." .. name)
     local multiple = opts.Multiple and true or false
+    local enabled = opts.Enabled ~= false
+    local emptyText = tostring(opts.EmptyText or "No options available")
     local options = {}
     for _, option in ipairs(opts.Options or {"One", "Two", "Three"}) do
         options[#options + 1] = tostring(option)
@@ -3856,10 +3893,12 @@ function Tab:AddDropdown(opts)
     local controlGlow, arrowSpin = 0, 0
     step(function(dt, k)
         local open = pop:IsActive()
-        controlGlow = approach(controlGlow, (controlHover or open) and 1 or 0, k)
+        local available = enabled and #options > 0
+        controlGlow = approach(controlGlow, available and (controlHover or open) and 1 or 0, k)
         arrowSpin = approach(arrowSpin, open and 180 or 0, k)
         control.BackgroundColor3 = palette[4]:Lerp(palette[5], controlGlow)
         arrow:Color(palette[3]:Lerp(white, controlGlow * 0.6))
+        arrow:Alpha(available and 1 or 0.3)
         arrow.Object.Rotation = arrowSpin
     end, control)
     local list = new("ScrollingFrame", pop.Object, {
@@ -3908,6 +3947,7 @@ function Tab:AddDropdown(opts)
     bindTitle(api, title, opts)
 
     local function previewText()
+        if #options == 0 then return emptyText end
         if multiple then
             local parts = {}
             for index, option in ipairs(options) do
@@ -3932,8 +3972,10 @@ function Tab:AddDropdown(opts)
             local copy = {}
             for index in pairs(selection) do copy[index] = true end
             Library.Flags[flag] = copy
-        else
+        elseif #options > 0 then
             Library.Flags[flag] = selection
+        else
+            Library.Flags[flag] = nil
         end
         Library.Flags[flag .. ".Text"] = previewText()
         preview:SetText(previewText())
@@ -3953,6 +3995,10 @@ function Tab:AddDropdown(opts)
         if tonumber(opts.MaxRows) == 0 then visibleRows = #options end
         list.ScrollingEnabled = #options > visibleRows
         pop.Height = math.max(ROW_H, visibleRows * ROW_H)
+        local available = enabled and #options > 0
+        control.Active = available
+        pcall(function() control.Interactable = available end)
+        if not available then pop:Close() end
 
         for index, option in ipairs(options) do
             local firstRow = index == 1
@@ -4011,7 +4057,9 @@ function Tab:AddDropdown(opts)
         end
     end, pop.Object)
 
-    connect(control.Activated, function() pop:Toggle(control) end)
+    connect(control.Activated, function()
+        if enabled and #options > 0 then pop:Toggle(control) end
+    end)
 
     function api:Get() return selectedValue() end
     function api:Set(value, silent)
@@ -4033,17 +4081,39 @@ function Tab:AddDropdown(opts)
         push(not silent)
     end
     function api:SetOptions(list_)
+        local previousNames = {}
+        if multiple then
+            for index, option in ipairs(options) do
+                if selection[index] then previousNames[option] = true end
+            end
+        else
+            local previous = options[selection]
+            if previous then previousNames[previous] = true end
+        end
         options = {}
         for _, option in ipairs(list_ or {}) do options[#options + 1] = tostring(option) end
         if multiple then
             selection = {}
+            for index, option in ipairs(options) do
+                if previousNames[option] then selection[index] = true end
+            end
         else
-            selection = math.min(selection, math.max(1, #options))
+            selection = 1
+            for index, option in ipairs(options) do
+                if previousNames[option] then selection = index break end
+            end
         end
         buildRows()
         push(false)
     end
     function api:GetOptions() return options end
+    function api:SetEnabled(value)
+        enabled = value ~= false
+        buildRows()
+        return enabled
+    end
+    function api:GetEnabled() return enabled end
+    function api:HasOptions() return #options > 0 end
 
     buildRows()
     push(false)
@@ -4168,6 +4238,7 @@ function Tab:AddButton(opts)
     local name = opts.Name or "Button"
     local w = self:_width(opts.Width)
     local compact = opts.Compact and true or false
+    local enabled = opts.Enabled ~= false
     local card = self:_card(w, compact and 31 or 68, name)
 
     local control, title
@@ -4201,12 +4272,21 @@ function Tab:AddButton(opts)
         connect(caption.Object:GetPropertyChangedSignal("Text"), placeIcon)
     end
 
+    local flash, color, hover = 0, palette[4], false
     local api = baseApi(self, card, nil)
     function api:SetText(value) caption:SetText(value) end
     function api:SetIcon(value)
         if icon then icon:SetIcon(value) end
     end
     if title then bindTitle(api, title, opts) end
+    function api:SetEnabled(value)
+        enabled = value ~= false
+        control.Active = enabled
+        pcall(function() control.Interactable = enabled end)
+        if not enabled then hover = false end
+        return enabled
+    end
+    function api:GetEnabled() return enabled end
 
     if opts.Tooltip then self.Window:Tooltip(control, opts.Tooltip) end
 
@@ -4224,10 +4304,10 @@ function Tab:AddButton(opts)
     end
     api.Mini = mini
 
-    local flash, color, hover = 0, palette[4], false
-    connect(control.MouseEnter, function() hover = true end)
+    connect(control.MouseEnter, function() hover = enabled end)
     connect(control.MouseLeave, function() hover = false end)
     connect(control.Activated, function()
+        if not enabled then return end
         flash = 1 / 9
         if self.Window then self.Window.ButtonPressed:Fire(self.Name .. "." .. name) end
         if opts.Callback then task.spawn(opts.Callback) end
@@ -4243,7 +4323,10 @@ function Tab:AddButton(opts)
         end
         color = color:Lerp(target, math.min(1, 10 * dt))
         control.BackgroundColor3 = color
+        caption:Alpha(enabled and 1 or 0.38)
+        if icon then icon:Alpha(enabled and 1 or 0.38) end
     end, control)
+    api:SetEnabled(enabled)
     return api
 end
 
@@ -4783,13 +4866,19 @@ function Tab:AddConfigManager(opts)
         Name = opts.ListLabel or "Saved configs",
         Flag = pickerFlag,
         Options = Library:ListConfigs(),
+        EmptyText = opts.EmptyText or "No saved configs",
         Width = 0.5,
     })
     Library.NoSaveFlags[pickerFlag] = true
     Library.NoSaveFlags[pickerFlag .. ".Text"] = true
 
+    local loadButton, deleteButton
     local function refresh()
         picker:SetOptions(Library:ListConfigs())
+        local available = picker:HasOptions()
+        if loadButton then loadButton:SetEnabled(available) end
+        if deleteButton then deleteButton:SetEnabled(available) end
+        return available
     end
 
     local function chosen()
@@ -4814,7 +4903,7 @@ function Tab:AddConfigManager(opts)
             })
         end,
     })
-    self:AddButton({
+    loadButton = self:AddButton({
         Name = "Load config",
         Text = "Load",
         Compact = true,
@@ -4828,7 +4917,7 @@ function Tab:AddConfigManager(opts)
             })
         end,
     })
-    self:AddButton({
+    deleteButton = self:AddButton({
         Name = "Delete config",
         Text = "Delete",
         Compact = true,
@@ -4857,6 +4946,8 @@ function Tab:AddConfigManager(opts)
         Compact = true,
         Callback = refresh,
     })
+
+    refresh()
 
     return {
         Refresh = refresh,
