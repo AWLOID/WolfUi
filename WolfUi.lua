@@ -788,6 +788,7 @@ local SUB_MAX_HEIGHT = 176
 local INTERNAL_FLAGS = {
     Scale = true, Accent = true, AccentAlpha = true,
     FadeAnimations = true, ScaleAnimations = true, Tab = true,
+    ScrollBarThickness = true,
 }
 
 local Library = {
@@ -806,6 +807,7 @@ local Library = {
     ScaleAnimations = true,
     ScaleDuration = 0.22,
     ScaleOptions = {100, 75, 50},
+    ScrollBarThickness = 3,
     Theme = 1,
     Scale = 75,
     Accent = accent,
@@ -985,6 +987,19 @@ function Library:SetLimits(opts)
     end
     if self.Window then self.Window.Layout() end
     return self.Limits
+end
+
+-- Thickness (in pixels) of the custom scroll indicator line on the main content
+-- list. Pass 0 to hide it entirely. Live-updates immediately if a window exists.
+function Library:SetScrollBarThickness(thickness)
+    self.ScrollBarThickness = math.clamp(math.floor(tonumber(thickness) or 3), 0, 12)
+    if self.Window and self.Window.LayoutScrollBar then self.Window.LayoutScrollBar() end
+    fireChange("ScrollBarThickness", self.ScrollBarThickness)
+    return self.ScrollBarThickness
+end
+
+function Library:GetScrollBarThickness()
+    return self.ScrollBarThickness
 end
 
 function Library:SetScaleOptions(list)
@@ -1448,6 +1463,47 @@ function Library:CreateWindow(opts)
     local rail = transparent(frame, WINDOW_W - RAIL_W, 0, RAIL_W, WINDOW_H)
     rail.Name = "Rail"
     window.Rail = rail
+
+    -- Custom scroll indicator for the main content list (the function list).
+    -- The ScrollingFrame's native bar is force-disabled everywhere in this library
+    -- (see `new`, ScrollBarThickness = 0), so this track+thumb pair is the only
+    -- visible scroll position indicator anywhere in the UI: sharp corners (no
+    -- UICorner / radius passed to `rect`), sized by Library.ScrollBarThickness so
+    -- a dev (or the built-in settings slider added below) can resize it live.
+    local scrollTrack = rect(frame, WINDOW_W - RAIL_W, 0, Library.ScrollBarThickness, WINDOW_H, palette[2])
+    scrollTrack.Name = "ScrollTrack"
+    scrollTrack.ZIndex = 2
+    local scrollThumb = rect(scrollTrack, 0, 0, Library.ScrollBarThickness, WINDOW_H, palette[5])
+    scrollThumb.Name = "ScrollThumb"
+    scrollThumb.ZIndex = 3
+    window.ScrollTrack = scrollTrack
+    window.ScrollThumb = scrollThumb
+
+    local function layoutScrollBar()
+        local thickness = math.max(0, roundPixel(Library.ScrollBarThickness))
+        scrollTrack.Position = UDim2.fromOffset(WINDOW_W - RAIL_W + (RAIL_W - thickness) / 2, 0)
+        scrollTrack.Size = UDim2.fromOffset(thickness, WINDOW_H)
+        scrollThumb.Size = UDim2.new(1, 0, scrollThumb.Size.Y.Scale, 0)
+    end
+    window.LayoutScrollBar = layoutScrollBar
+    layoutScrollBar()
+
+    step(function()
+        local canvasHeight = scroll.CanvasSize.Y.Offset
+        local viewHeight = scroll.AbsoluteSize.Y
+        local visible = Library.ScrollBarThickness > 0 and canvasHeight > viewHeight and viewHeight > 0
+        scrollTrack.Visible = visible
+        if not visible then return end
+        local ratio = math.clamp(viewHeight / math.max(1, canvasHeight), 0, 1)
+        local thumbHeight = math.max(20, roundPixel(viewHeight * ratio))
+        local maxScroll = math.max(1, canvasHeight - viewHeight)
+        local travel = math.max(0, viewHeight - thumbHeight)
+        local posY = travel * math.clamp(scroll.CanvasPosition.Y / maxScroll, 0, 1)
+        scrollThumb.Size = UDim2.fromOffset(scrollTrack.AbsoluteSize.X, thumbHeight)
+        scrollThumb.Position = UDim2.fromOffset(0, roundPixel(posY))
+        scrollTrack.BackgroundColor3 = palette[2]
+        scrollThumb.BackgroundColor3 = palette[5]
+    end, scroll)
 
     local function inside(point, object)
         if not object then return false end
@@ -2566,7 +2622,12 @@ function Library:CreateWindow(opts)
                 page.Interactable = tabActive and window.Visible
                 if page.Visible then
                     page.Position = UDim2.fromOffset(PAD + roundPixel(tab.Slide), PAD)
-                    if not mainTransitioning then fadeGroup(page, tab.Alpha) end
+                    -- Tab fade always runs on its own alpha; the window-level fade below
+                    -- (fadeTargetList over MainFadeTargets) additionally scales everything
+                    -- inside `frame`, including this page, so the two combine smoothly
+                    -- instead of one being skipped mid-transition (that skip used to be
+                    -- the source of the menu appearing to close "unevenly").
+                    fadeGroup(page, tab.Alpha)
                 elseif not tabActive then
                     tab.Slide = 0
                     page.Position = UDim2.fromOffset(PAD, PAD)
@@ -2574,7 +2635,7 @@ function Library:CreateWindow(opts)
             end
 
             for _, pop in ipairs(window.Popups) do
-                local show = pop:IsActive()
+                local show = pop:IsActive() and window.Visible
                 local object = pop.Object
                 if not show and pop.Alpha == 0 then
                     object.Visible = false
@@ -2590,7 +2651,12 @@ function Library:CreateWindow(opts)
                     object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
                     object.Interactable = show and window.Visible
                     if object.Visible then
-                        fadeGroup(object, pop.Alpha * window.Alpha)
+                        -- Popups live under `frame` too, so the window-level fade pass
+                        -- already applies window.Alpha to them once it walks the tree;
+                        -- only blend the popup's own open/close alpha here to avoid
+                        -- double-applying window.Alpha (which used to make popups fade
+                        -- out faster than the rest of the menu, breaking sync).
+                        fadeGroup(object, pop.Alpha)
                         object.BackgroundColor3 = palette[1]
                         object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
                         local s = math.max(0.001, scale.Scale)
@@ -2612,10 +2678,14 @@ function Library:CreateWindow(opts)
         frame.Position = animatedPosition
         popupLayer.Position = animatedPosition
         if mainTransitioning then
-            if window.MainFadeDirty or not window.MainFadeTargets then
-                window.MainFadeTargets = visibleFadeTargets(frame)
-                window.MainFadeDirty = false
-            end
+            -- Re-snapshot every frame while transitioning. The old "only rebuild when
+            -- dirty" cache could miss objects that become Visible mid-transition (a tab
+            -- switching in, a popup opening) or keep fading objects that just went
+            -- invisible, so different parts of the menu would visually desync during
+            -- open/close. One extra GetDescendants pass per transitioning frame is cheap
+            -- and guarantees the whole menu fades as a single, synchronized unit.
+            window.MainFadeTargets = visibleFadeTargets(frame)
+            window.MainFadeDirty = false
             fadeTargetList(window.MainFadeTargets, window.Alpha)
         end
     end)
@@ -3249,6 +3319,25 @@ local function attachSettings(tab, parent, x, y, size, opts)
         if type(items) ~= "table" then return end
         local controls = menu:AddElements(items)
         for key, control in pairs(controls) do menu.Controls[key] = control end
+    end
+    -- Fully developer-customizable: `Items`/`Elements` and `Build` accept any mix
+    -- of Tab:Add* element specs (see Tab:AddElements), so a script author can put
+    -- whatever controls they want in this popup -- it is not limited to a fixed
+    -- built-in list. `IncludeScrollBarSlider` is only a convenience default; a
+    -- dev can omit it, override its options, or add their own slider instead.
+    if opts.IncludeScrollBarSlider ~= false then
+        addElements({
+            {
+                Type = "Slider",
+                Name = opts.ScrollBarSliderName or "Scrollbar Size",
+                Flag = "ScrollBarThickness",
+                Min = 0,
+                Max = 12,
+                Default = Library.ScrollBarThickness,
+                Suffix = "px",
+                Callback = function(value) Library:SetScrollBarThickness(value) end,
+            },
+        })
     end
     addElements(opts.Items or opts.Elements)
     if type(opts.Build) == "function" then
@@ -5419,6 +5508,7 @@ function Library:GetConfig()
     end
     config.FadeDuration = self.FadeDuration
     config.ScaleDuration = self.ScaleDuration
+    config.ScrollBarThickness = self.ScrollBarThickness
     config.Accent = serialize(state.Accent)
     config.AccentAlpha = state.AccentAlpha
     if self.Window then
@@ -5452,6 +5542,7 @@ function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
     if config.FadeDuration ~= nil then self:SetFadeDuration(config.FadeDuration) end
     if config.ScaleDuration ~= nil then self:SetScaleDuration(config.ScaleDuration) end
+    if config.ScrollBarThickness ~= nil then self:SetScrollBarThickness(config.ScrollBarThickness) end
     if type(config.Watermark) == "table" and self.Window then
         local opts = {}
         for key, value in pairs(config.Watermark) do
