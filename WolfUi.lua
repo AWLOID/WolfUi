@@ -48,52 +48,6 @@ do
     Icons = (ok and type(result) == "table") and result or {}
 end
 
--- BuilderIcons: Roblox's built-in vector icon font. No HTTP request or asset id needed.
--- Use it by passing an icon value as "builder:name" / "bi:name" or {BuilderIcon = "name", Bold = true}.
-local BuilderIconsFont = {}
-do
-    local okRegular, regular = pcall(Font.new,
-        "rbxasset://LuaPackages/Packages/_Index/BuilderIcons/BuilderIcons/BuilderIcons.json",
-        Enum.FontWeight.Regular, Enum.FontStyle.Normal)
-    local okBold, bold = pcall(Font.new,
-        "rbxasset://LuaPackages/Packages/_Index/BuilderIcons/BuilderIcons/BuilderIcons.json",
-        Enum.FontWeight.Bold, Enum.FontStyle.Normal)
-    BuilderIconsFont.Regular = okRegular and regular or UI_FONT
-    BuilderIconsFont.Bold = okBold and bold or UI_FONT_BOLD
-end
-
-local function builderIconName(value)
-    if type(value) == "table" then
-        local name = value.BuilderIcon or value.Builder
-        if type(name) == "string" and name ~= "" then
-            return name, value.Bold == true
-        end
-        return nil
-    end
-    if type(value) ~= "string" then return nil end
-    local name = string.match(value, "^[Bb]uilder:%s*(.+)$") or string.match(value, "^[Bb][Ii]:%s*(.+)$")
-    if type(name) == "string" and name ~= "" then return name, false end
-    return nil
-end
-
--- Searches a list of icon candidates (as used everywhere Icon = {...} appears) for the
--- first entry requesting a BuilderIcons glyph, so it can take priority over the atlas.
-local function builderIconFromList(value)
-    if type(value) ~= "table" or (value.Id ~= nil or value.AssetId ~= nil or value.Image ~= nil
-        or value.Url ~= nil or value.URL ~= nil) then
-        return builderIconName(value)
-    end
-    local isNameList = value[1] ~= nil
-    if isNameList then
-        for _, entry in ipairs(value) do
-            local name, bold = builderIconName(entry)
-            if name then return name, bold end
-        end
-        return nil
-    end
-    return builderIconName(value)
-end
-
 local function looksLikeSheet(sheet)
     if type(sheet) ~= "table" then return false end
     for _, data in pairs(sheet) do
@@ -653,44 +607,9 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
 end
 
 local function iconLabel(parent, names, x, y, size, color, fallback)
-    local builderName, builderBold = builderIconFromList(names)
-    local image, offset, sheetSize, tinted, customColor
-    if not builderName then
-        image, offset, sheetSize, tinted, customColor = resolveIcon(names)
-    end
+    local image, offset, sheetSize, tinted, customColor = resolveIcon(names)
     local object, isImage
     local themed = color == nil or color == white
-    if builderName then
-        isImage = false
-        object = new("TextLabel", parent, {
-            BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(roundPixel(x), roundPixel(y)),
-            Size = UDim2.fromOffset(roundPixel(size), roundPixel(size)),
-            Text = builderName,
-            FontFace = builderBold and BuilderIconsFont.Bold or BuilderIconsFont.Regular,
-            TextSize = size,
-            TextColor3 = color or white,
-            TextXAlignment = Enum.TextXAlignment.Center,
-            TextYAlignment = Enum.TextYAlignment.Center,
-            ZIndex = 2,
-        })
-        if themed then foregroundIcons[object] = true end
-        local api = {Object = object, IsImage = false, Tinted = true, IsBuilderIcon = true}
-        function api:Color(v)
-            foregroundIcons[object] = nil
-            object.TextColor3 = v
-        end
-        function api:Alpha(v) object.TextTransparency = 1 - math.clamp(v, 0, 1) end
-        function api:SetIcon(value)
-            local replacement = iconLabel(object.Parent, value, 0, 0, size, color, fallback)
-            replacement.Object.Position, replacement.Object.Size = object.Position, object.Size
-            object:Destroy()
-            object, isImage = replacement.Object, replacement.IsImage
-            self.Object, self.IsImage, self.Tinted, self.IsBuilderIcon =
-                object, isImage, replacement.Tinted, replacement.IsBuilderIcon
-        end
-        return api
-    end
     if image then
         isImage = true
         object = new("ImageLabel", parent, {
@@ -887,14 +806,14 @@ local function transitionAlpha(current, target, dt, duration)
 end
 
 function Library:SetFadeAnimations(enabled, duration)
-    self.FadeAnimations = true
+    self.FadeAnimations = enabled ~= false
     if duration ~= nil then self.FadeDuration = math.clamp(tonumber(duration) or 0.24, 0.08, 2) end
     fireChange("FadeAnimations", self.FadeAnimations)
     return self.FadeAnimations
 end
 
 function Library:GetFadeAnimations()
-    return true, self.FadeDuration
+    return self.FadeAnimations ~= false, self.FadeDuration
 end
 
 function Library:SetFadeDuration(duration)
@@ -902,14 +821,14 @@ function Library:SetFadeDuration(duration)
 end
 
 function Library:SetScaleAnimations(enabled, duration)
-    self.ScaleAnimations = true
+    self.ScaleAnimations = enabled ~= false
     if duration ~= nil then self.ScaleDuration = math.clamp(tonumber(duration) or 0.22, 0.08, 2) end
     fireChange("ScaleAnimations", self.ScaleAnimations)
     return self.ScaleAnimations
 end
 
 function Library:GetScaleAnimations()
-    return true, self.ScaleDuration
+    return self.ScaleAnimations ~= false, self.ScaleDuration
 end
 
 function Library:SetFont(font, boldFont)
@@ -1104,8 +1023,9 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     data.Maid = Maid.new(Runtime.Owner)
     function data:Destroy()
         if self.Destroyed then return end
+        -- Also covers the case where a nested child popup is the one currently opened.
+        if self:IsActive() then window.Opened = self.Parent end
         self.Destroyed = true
-        if window.Opened == self then window.Opened = self.Parent end
         for index, popup in ipairs(window.Popups) do
             if popup == self then table.remove(window.Popups, index) break end
         end
@@ -1138,6 +1058,8 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
         end
         if window.Wake then window:Wake() end
     end
+    -- Destroying the owning element must also remove the popup frame and its list entry.
+    data.Maid:Add(function() data:Destroy() end)
     return data
 end
 function Library:CreateWindow(opts)
@@ -1170,7 +1092,7 @@ function Library:CreateWindow(opts)
     state.Theme = 1
     state.Scale = math.clamp(tonumber(opts.Scale) or 75, 20, 400)
     state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or Color3.fromRGB(126, 139, 209)
-    state.AccentAlpha = opts.AccentAlpha or 1
+    state.AccentAlpha = math.clamp(tonumber(opts.AccentAlpha) or 1, 0, 1)
     state.Tab = nil
     accent = state.Accent
     for i, color in ipairs(themes[state.Theme]) do palette[i] = color end
@@ -1476,6 +1398,9 @@ function Library:CreateWindow(opts)
     local scrollThumb = rect(scrollTrack, 0, 0, Library.ScrollBarThickness, WINDOW_H, palette[5])
     scrollThumb.Name = "ScrollThumb"
     scrollThumb.ZIndex = 3
+    -- Scroll indicator is kept for layout/API compatibility but is fully transparent.
+    scrollTrack.BackgroundTransparency = 1
+    scrollThumb.BackgroundTransparency = 1
     window.ScrollTrack = scrollTrack
     window.ScrollThumb = scrollThumb
 
@@ -2704,6 +2629,7 @@ function Window:SetVisible(value)
     if not self.Visible then
         self.Opened = nil
         self.CancelDrag()
+        if self.PendingKeybind and self.PendingKeybind.Cancel then self.PendingKeybind:Cancel() end
         self.PendingKeybind = nil
     end
     if self.UpdateOpenVisibility then self.UpdateOpenVisibility() end
@@ -3216,6 +3142,10 @@ local function createMiniButton(window, config)
         button.Position = UDim2.fromOffset(math.floor(target.X + 0.5), math.floor(target.Y + 0.5))
     end
     mini.Update = overlayStep(updateMini)
+    if Runtime.Owner then
+        -- Mini buttons created by an element (toggle/button) die with that element.
+        Runtime.Owner:Add(function() mini:Destroy() end)
+    end
     window.LayoutMini()
     updateMini(0, 1)
 
@@ -3325,7 +3255,7 @@ local function attachSettings(tab, parent, x, y, size, opts)
     -- whatever controls they want in this popup -- it is not limited to a fixed
     -- built-in list. `IncludeScrollBarSlider` is only a convenience default; a
     -- dev can omit it, override its options, or add their own slider instead.
-    if opts.IncludeScrollBarSlider ~= false then
+    if opts.IncludeScrollBarSlider == true then
         addElements({
             {
                 Type = "Slider",
@@ -3632,6 +3562,14 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     Library.Flags[flag] = color
     if useAlpha then Library.Flags[flag .. ".Alpha"] = alphaValue end
     Library.Elements[flag] = api
+    if useAlpha then
+        -- Lets LoadConfig restore the saved alpha instead of only writing the flag.
+        Library.Elements[flag .. ".Alpha"] = {
+            Flag = flag .. ".Alpha",
+            Get = function() return alphaValue end,
+            Set = function(_, newAlpha) api:Set(nil, tonumber(newAlpha)) end,
+        }
+    end
     if opts.Callback then task.spawn(opts.Callback, color, alphaValue) end
     return api
 end
@@ -3681,8 +3619,17 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     end
 
     function bind:Get() return self.Key end
+    function bind:Cancel() caption:SetText(keyName(self.Key)) end
 
     window.Keybinds[#window.Keybinds + 1] = bind
+    if Runtime.Owner then
+        -- Without this a destroyed element's keybind keeps firing its callback.
+        Runtime.Owner:Add(function()
+            local index = table.find(window.Keybinds, bind)
+            if index then table.remove(window.Keybinds, index) end
+            if window.PendingKeybind == bind then window.PendingKeybind = nil end
+        end)
+    end
 
     connect(button.Activated, function()
         window.PendingKeybind = bind
@@ -4165,7 +4112,7 @@ function Tab:AddDropdown(opts)
                 end
                 value = found or selection
             end
-            selection = math.clamp(tonumber(value) or 1, 1, math.max(1, #options))
+            selection = math.clamp(math.floor(tonumber(value) or 1), 1, math.max(1, #options))
         end
         push(not silent)
     end
@@ -4250,7 +4197,7 @@ function Tab:AddTextBox(opts)
 
     local maxLength = math.max(0, math.floor(tonumber(opts.MaxLength) or 0))
     local api = baseApi(self, card, flag)
-    local suppress = false
+    local suppressText = nil
     local numeric = opts.Numeric == true
 
     local function push(fire)
@@ -4275,7 +4222,13 @@ function Tab:AddTextBox(opts)
                 return
             end
         end
-        if suppress then return end
+        -- Signals can be deferred, so a boolean flag is already reset when this runs.
+        -- Compare with the text written by a silent Set instead.
+        if suppressText ~= nil and box.Text == suppressText then
+            suppressText = nil
+            return
+        end
+        suppressText = nil
         push(true)
     end)
 
@@ -4299,9 +4252,9 @@ function Tab:AddTextBox(opts)
 
     function api:Set(value, silent)
         local previous = box.Text
-        suppress = silent == true
-        box.Text = tostring(value == nil and "" or value)
-        suppress = false
+        local newText = tostring(value == nil and "" or value)
+        suppressText = (silent == true and newText ~= previous) and newText or nil
+        box.Text = newText
         if silent then
             Library.Flags[flag] = box.Text
         elseif box.Text == previous then
@@ -4835,10 +4788,10 @@ end
 
 function Tab:AddPlayerDropdown(opts)
     opts = opts or {}
-    local function names()
+    local function names(excluded)
         local list = {}
         for _, player in ipairs(Players:GetPlayers()) do
-            if opts.IncludeSelf ~= false or player ~= Players.LocalPlayer then
+            if player ~= excluded and (opts.IncludeSelf ~= false or player ~= Players.LocalPlayer) then
                 list[#list + 1] = player.Name
             end
         end
@@ -4857,9 +4810,10 @@ function Tab:AddPlayerDropdown(opts)
         Callback = opts.Callback,
     })
 
-    function api:Refresh() self:SetOptions(names()) end
+    function api:Refresh(excluded) self:SetOptions(names(excluded)) end
     connect(Players.PlayerAdded, function() api:Refresh() end)
-    connect(Players.PlayerRemoving, function() api:Refresh() end)
+    -- The leaving player is still in GetPlayers() during PlayerRemoving.
+    connect(Players.PlayerRemoving, function(leaving) api:Refresh(leaving) end)
 
     function api:GetPlayer()
         local value = api:Get()
@@ -5582,6 +5536,7 @@ function Library:LoadConfig(config)
                 mini.Position = Vector2.new(saved.X, saved.Y)
             end
         end
+        self.Window.LayoutMini()
     end
     for flag, raw in pairs(config.Flags or {}) do
         local element = self.Elements[flag]
@@ -5970,8 +5925,11 @@ function Library:Unload()
                 if element.Maid then pcall(element.Maid.Destroy, element.Maid) end
             end
         end
-        for _, popup in ipairs(self.Window.Popups or {}) do
-            if popup.Maid then pcall(popup.Maid.Destroy, popup.Maid) end
+        -- Popup destruction removes entries from this list, so walk it backwards.
+        local popups = self.Window.Popups or {}
+        for index = #popups, 1, -1 do
+            local popup = popups[index]
+            if popup and popup.Maid then pcall(popup.Maid.Destroy, popup.Maid) end
         end
         for _, notif in ipairs(self.Window.Notifications or {}) do
             if notif.Maid then pcall(notif.Maid.Destroy, notif.Maid) end
@@ -6103,34 +6061,5 @@ end
 Library.Runtime = Runtime
 Library.Palette = palette
 Library.Icons = IconSheet
-
--- Standalone BuilderIcons helper (same API as the module you can require on its own).
--- Use icon values "builder:name" / {BuilderIcon = "name"} anywhere the library accepts
--- an Icon, or call these directly to place a BuilderIcons glyph yourself.
-Library.BuilderIcons = {
-    Regular = BuilderIconsFont.Regular,
-    Bold = BuilderIconsFont.Bold,
-}
-function Library.BuilderIcons:GetFont(bold)
-    return bold and self.Bold or self.Regular
-end
-function Library.BuilderIcons:Create(parent, iconName, bold, size, color)
-    local label = Instance.new("TextLabel")
-    label.Name = "Icon_" .. iconName
-    label.FontFace = self:GetFont(bold)
-    label.Text = iconName
-    label.TextSize = size or 18
-    label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
-    label.BackgroundTransparency = 1
-    label.Size = UDim2.fromOffset((size or 18) + 2, (size or 18) + 2)
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.TextYAlignment = Enum.TextYAlignment.Center
-    label.Parent = parent
-    return label
-end
-function Library.BuilderIcons:Set(label, iconName, bold)
-    label.Text = iconName
-    label.FontFace = self:GetFont(bold)
-end
 
 return Library
