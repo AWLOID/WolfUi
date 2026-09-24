@@ -4860,7 +4860,1396 @@ local elementMethods = {
     list = "AddList",
     configmanager = "AddConfigManager",
     configs = "AddConfigManager",
+    cards = "AddCardGrid",
+    cardgrid = "AddCardGrid",
+    cardselector = "AddCardGrid",
+    cardpicker = "AddCardGrid",
+    skins = "AddCardGrid",
 }
+
+-- ============================================================================
+-- Shared helpers for CardGrid / Search
+-- ============================================================================
+local RARITY_COLORS = {
+    common = Color3.fromRGB(176, 195, 217),
+    uncommon = Color3.fromRGB(94, 152, 217),
+    rare = Color3.fromRGB(75, 105, 255),
+    mythical = Color3.fromRGB(136, 71, 255),
+    epic = Color3.fromRGB(136, 71, 255),
+    legendary = Color3.fromRGB(211, 44, 230),
+    ancient = Color3.fromRGB(235, 75, 75),
+    covert = Color3.fromRGB(235, 75, 75),
+    contraband = Color3.fromRGB(228, 174, 57),
+    gold = Color3.fromRGB(228, 174, 57),
+}
+Library.RarityColors = RARITY_COLORS
+
+local function resolveColor(value, fallback)
+    if typeof(value) == "Color3" then return value end
+    if type(value) == "string" then
+        local key = string.lower(value)
+        if key == "accent" then return accent end
+        if key == "text" then return white end
+        if key == "muted" then return palette[3] end
+        if RARITY_COLORS[key] then return RARITY_COLORS[key] end
+        if string.match(value, "^#?%x%x%x%x%x%x$") then return fromHex(value) or fallback end
+    end
+    return fallback
+end
+
+local function normalizeKeywords(value)
+    if type(value) == "table" then
+        local parts = {}
+        for _, item in ipairs(value) do parts[#parts + 1] = tostring(item) end
+        return table.concat(parts, " ")
+    elseif value ~= nil then
+        return tostring(value)
+    end
+    return nil
+end
+
+-- Lower-case that also handles Cyrillic (byte length is preserved).
+local function searchLower(value)
+    value = string.lower(tostring(value or ""))
+    local ok, result = pcall(function()
+        return (string.gsub(value, utf8.charpattern, function(ch)
+            local code = utf8.codepoint(ch)
+            if code >= 0x410 and code <= 0x42F then return utf8.char(code + 32) end
+            if code == 0x401 then return utf8.char(0x451) end
+            return ch
+        end))
+    end)
+    return ok and result or value
+end
+
+local function escapeRich(value)
+    return (string.gsub(tostring(value or ""), "[&<>\"']", {
+        ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&apos;",
+    }))
+end
+
+local function highlightText(value, query, color)
+    value = tostring(value or "")
+    local lowered = searchLower(value)
+    local needle = searchLower(string.match(tostring(query or ""), "^%s*(.-)%s*$") or "")
+    local s, e
+    if needle ~= "" then s, e = string.find(lowered, needle, 1, true) end
+    if not s then
+        local first = string.match(needle, "%S+")
+        if first then s, e = string.find(lowered, first, 1, true) end
+    end
+    if not s then return escapeRich(value) end
+    return escapeRich(string.sub(value, 1, s - 1)) .. '<font color="#' .. toHex(color) .. '">'
+        .. escapeRich(string.sub(value, s, e)) .. "</font>" .. escapeRich(string.sub(value, e + 1))
+end
+
+local function fieldScore(haystack, needle)
+    if needle == "" or haystack == "" then return 0 end
+    if haystack == needle then return 100 end
+    local s = string.find(haystack, needle, 1, true)
+    if s == 1 then return 80 end
+    if s then
+        local prev = string.sub(haystack, s - 1, s - 1)
+        if prev == " " or prev == "_" or prev == "-" or prev == "." then return 70 end
+        return 55
+    end
+    return 0
+end
+
+local function subsequence(haystack, needle)
+    local position = 1
+    for ch in string.gmatch(needle, utf8.charpattern) do
+        local found = string.find(haystack, ch, position, true)
+        if not found then return false end
+        position = found + #ch
+    end
+    return true
+end
+
+local function scaleTypeOf(value)
+    if typeof(value) == "EnumItem" then return value end
+    local key = string.lower(tostring(value or "fit"))
+    if key == "crop" or key == "fill" then return Enum.ScaleType.Crop end
+    if key == "stretch" then return Enum.ScaleType.Stretch end
+    return Enum.ScaleType.Fit
+end
+
+-- ============================================================================
+-- CardGrid: selectable picture cards (skin changer style).
+-- The developer decides everything: columns, sizes, limits, colors, callbacks.
+-- ============================================================================
+function Tab:AddCardGrid(opts)
+    opts = opts or {}
+    local window = self.Window
+    local name = opts.Name or "Cards"
+    local flag = opts.Flag or (self.Name .. "." .. name)
+    local w = self:_width(opts.Width)
+    local columns = math.max(1, math.floor(tonumber(opts.Columns) or 3))
+    local gap = math.max(0, math.floor(tonumber(opts.Gap) or 8))
+    local tileH = math.max(36, math.floor(tonumber(opts.CardHeight or opts.TileHeight) or 96))
+    local radius = math.max(0, math.floor(tonumber(opts.CornerRadius) or 4))
+    local titleSize = math.max(8, math.floor(tonumber(opts.TitleSize) or 11))
+    local titleAlign = opts.TitleAlign or "center"
+    local showTitles = opts.ShowTitles ~= false
+    local showCheck = opts.ShowCheck ~= false
+    local showOrder = opts.ShowOrder == true
+    local checkShape = string.lower(tostring(opts.CheckShape or "square"))
+    local checkStyle = string.lower(tostring(opts.CheckStyle or "always"))
+    local checkPosition = string.lower(tostring(opts.CheckPosition or "topright"))
+    local strokeThickness = math.max(1, tonumber(opts.StrokeThickness) or 1.5)
+    local imagePadding = math.max(0, math.floor(tonumber(opts.ImagePadding) or 4))
+    local imageBackground = opts.ImageBackground ~= false
+    local useCardColor = opts.UseCardColor == true
+    local single = string.lower(tostring(opts.Mode or "multi")) == "single"
+    local maxSelected = tonumber(opts.MaxSelected or opts.Max or opts.Limit)
+    if single then maxSelected = 1 end
+    if maxSelected then maxSelected = math.max(1, math.floor(maxSelected)) end
+    local minSelected = math.max(0, math.floor(tonumber(opts.MinSelected) or 0))
+    local replaceOnLimit = opts.ReplaceOnLimit
+    if replaceOnLimit == nil then replaceOnLimit = single end
+    local withSearch = opts.Search == true or type(opts.Search) == "table"
+    local searchOptions = type(opts.Search) == "table" and opts.Search or {}
+    local showHeader = opts.ShowHeader
+    if showHeader == nil then showHeader = opts.Name ~= nil end
+    local showCounter = showHeader and opts.ShowCounter ~= false
+
+    local defs = {}
+    local function normalize(source, index)
+        local def = {}
+        if type(source) == "table" then
+            for key, value in pairs(source) do def[key] = value end
+        else
+            def.Name = tostring(source)
+        end
+        def.Name = tostring(def.Name or def.Title or def.Id or ("Card " .. tostring(index)))
+        def.Id = tostring(def.Id or def.Name)
+        return def
+    end
+    local function setDefs(list)
+        defs = {}
+        local used = {}
+        for index, source in ipairs(list or {}) do
+            local def = normalize(source, index)
+            local base, suffix = def.Id, 1
+            while used[def.Id] do
+                suffix = suffix + 1
+                def.Id = base .. "#" .. suffix
+            end
+            used[def.Id] = true
+            defs[#defs + 1] = def
+        end
+    end
+    setDefs(opts.Cards or opts.Items or opts.Options)
+
+    local contentW = w - 20
+    local tileW = math.max(24, math.floor((contentW - gap * (columns - 1)) / columns))
+    local gridY = 10
+    if showHeader then gridY = opts.Description and 44 or 30 end
+    local searchY = gridY
+    if withSearch then gridY = gridY + 34 end
+    local totalRows = math.max(1, math.ceil(#defs / columns))
+    local visibleRows = math.max(1, math.floor(tonumber(opts.Rows)
+        or math.min(totalRows, math.max(1, math.floor(tonumber(opts.MaxRows) or 2)))))
+    local gridH = visibleRows * tileH + (visibleRows - 1) * gap
+    local card = self:_card(w, gridY + gridH + 10, name)
+    local api = baseApi(self, card, flag)
+
+    local title, counter, searchBox
+    if showHeader then
+        title = text(card, name, 10, 10, w - 90, 14, 12, white)
+        if opts.Description then muted(card, opts.Description, 10, 26, w - 20, 14, 11) end
+        bindTitle(api, title, opts)
+    end
+    if showCounter then counter = muted(card, "", w - 80, 10, 70, 14, 11, "right") end
+
+    if withSearch then
+        local holder = paint(rect(card, 10, searchY, contentW, 26, palette[4], 3), 4)
+        iconLabel(holder, {"search", "zoom-in"}, 8, 7, 12, palette[3], "?")
+        searchBox = new("TextBox", holder, {
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(26, 0),
+            Size = UDim2.fromOffset(contentW - 34, 26),
+            Text = "",
+            PlaceholderText = tostring(searchOptions.Placeholder or opts.SearchPlaceholder or "Search..."),
+            PlaceholderColor3 = palette[3],
+            ClearTextOnFocus = false,
+            Font = UI_FONT,
+            TextSize = 11,
+            TextColor3 = white,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 2,
+        })
+        step(function()
+            searchBox.PlaceholderColor3 = palette[3]
+            searchBox.TextColor3 = white
+        end, searchBox)
+    end
+
+    local PAD_IN = 2
+    local grid = new("ScrollingFrame", card, {
+        Name = "Grid",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(10 - PAD_IN, gridY - PAD_IN),
+        Size = UDim2.fromOffset(contentW + PAD_IN * 2, gridH + PAD_IN * 2),
+        CanvasSize = UDim2.fromOffset(0, 0),
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ElasticBehavior = Enum.ElasticBehavior.Never,
+        ClipsDescendants = true,
+        Active = true,
+        ZIndex = 2,
+    })
+    local empty = muted(grid, tostring(opts.EmptyText or "Nothing found"), 0, 0,
+        contentW + PAD_IN * 2, gridH + PAD_IN * 2, 11, "center")
+    empty.Object.Visible = false
+
+    local entries, byId = {}, {}
+    local selected, order = {}, {}
+    local filterText = ""
+    local owner = Runtime.Owner
+    local tilesMaid
+    local counterFlash = 0
+
+    local function orderIndex(id)
+        for index, value in ipairs(order) do
+            if value == id then return index end
+        end
+    end
+    local function snapshot()
+        local copy = {}
+        for index, id in ipairs(order) do copy[index] = id end
+        return copy
+    end
+    local function selectedDefs()
+        local list = {}
+        for _, id in ipairs(order) do
+            if byId[id] then list[#list + 1] = byId[id].Def end
+        end
+        return list
+    end
+
+    local function push(fire, def, isSelected)
+        local copy = snapshot()
+        Library.Flags[flag] = copy
+        fireChange(flag, copy)
+        if fire then
+            if def and type(def.Callback) == "function" then task.spawn(def.Callback, isSelected, def) end
+            if opts.Callback then task.spawn(opts.Callback, copy, def, isSelected) end
+        end
+    end
+
+    local function reject(id, reason)
+        local entry = byId[id]
+        if entry then entry.Shake = 1 end
+        counterFlash = 1
+        if reason == "max" then
+            if opts.OnLimit then task.spawn(opts.OnLimit, maxSelected, entry and entry.Def) end
+            if opts.LimitNotify then
+                local ok, message = pcall(string.format, tostring(opts.LimitText or "You can select up to %d"), maxSelected)
+                Library:Notify({Title = name, Text = ok and message or tostring(opts.LimitText), Type = "warning", Duration = 2})
+            end
+        elseif reason == "min" then
+            if opts.OnMinimum then task.spawn(opts.OnMinimum, minSelected, entry and entry.Def) end
+        elseif reason == "locked" then
+            if opts.OnLocked then task.spawn(opts.OnLocked, entry and entry.Def) end
+        end
+        if window.Wake then window:Wake(0.5) end
+    end
+
+    local function addSelection(id, force)
+        local entry = byId[id]
+        if not entry or selected[id] then return false end
+        if not force and (entry.Def.Disabled or entry.Def.Locked) then
+            reject(id, "locked")
+            return false
+        end
+        local replaced
+        if maxSelected and #order >= maxSelected then
+            if replaceOnLimit then
+                replaced = table.remove(order, 1)
+                selected[replaced] = nil
+            else
+                if not force then reject(id, "max") end
+                return false
+            end
+        end
+        selected[id] = true
+        order[#order + 1] = id
+        return true, replaced
+    end
+
+    local function removeSelection(id, force)
+        if not selected[id] then return false end
+        if not force and #order <= minSelected then
+            reject(id, "min")
+            return false
+        end
+        selected[id] = nil
+        local index = orderIndex(id)
+        if index then table.remove(order, index) end
+        return true
+    end
+
+    local function toggleId(id)
+        local entry = byId[id]
+        if not entry then return end
+        if opts.OnCardClick then task.spawn(opts.OnCardClick, entry.Def, selected[id] == true) end
+        if selected[id] then
+            if removeSelection(id) then push(true, entry.Def, false) end
+        else
+            local ok, replaced = addSelection(id)
+            if ok then
+                local old = replaced and byId[replaced]
+                if old and type(old.Def.Callback) == "function" then task.spawn(old.Def.Callback, false, old.Def) end
+                push(true, entry.Def, true)
+            end
+        end
+    end
+
+    local function matches(def, query)
+        if def.Hidden == true then return false end
+        if query == "" then return true end
+        if type(opts.Filter) == "function" then
+            local ok, result = pcall(opts.Filter, def, query)
+            if ok then return result and true or false end
+        end
+        local hay = searchLower(def.Name .. " " .. tostring(def.Description or def.Subtitle or "") .. " "
+            .. (normalizeKeywords(def.Keywords or def.Tags) or "") .. " " .. tostring(def.Rarity or ""))
+        for word in string.gmatch(query, "%S+") do
+            if not string.find(hay, word, 1, true) then return false end
+        end
+        return true
+    end
+
+    local function layout(instant)
+        local query = searchLower(filterText)
+        local index = 0
+        for _, entry in ipairs(entries) do
+            local visible = matches(entry.Def, query)
+            local wasVisible = entry.Tile.Visible
+            entry.Tile.Visible = visible
+            if visible then
+                entry.TX = PAD_IN + (index % columns) * (tileW + gap)
+                entry.TY = PAD_IN + math.floor(index / columns) * (tileH + gap)
+                if instant or not entry.Placed or not wasVisible then
+                    entry.X, entry.Y, entry.Placed = entry.TX, entry.TY, true
+                    if not instant then entry.Scale = 0.85 end
+                end
+                index = index + 1
+            end
+        end
+        local rows = math.max(1, math.ceil(index / columns))
+        grid.CanvasSize = UDim2.fromOffset(0, index == 0 and 0 or (PAD_IN * 2 + rows * tileH + (rows - 1) * gap))
+        empty.Object.Visible = index == 0
+        if window.Wake then window:Wake(0.5) end
+    end
+
+    local function buildTile(def)
+        local tile = rect(grid, 0, 0, tileW, tileH, palette[4], radius, "TextButton")
+        tile.Name = def.Id
+        tile.ZIndex = 3
+        local stroke = new("UIStroke", tile, {Thickness = 1, Transparency = 0.4})
+        stroke.Color = palette[5]
+        stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        local uiScale = new("UIScale", tile, {Scale = 1})
+
+        local subtitle = def.Description or def.Subtitle
+        local textH = showTitles and (subtitle and 32 or 20) or 0
+        local imgW = tileW - 12
+        local imageH = math.max(10, tileH - 12 - textH)
+        local rarity = resolveColor(def.Color or def.Rarity, nil)
+
+        local holder
+        if imageBackground then
+            holder = rect(tile, 6, 6, imgW, imageH, palette[1], math.max(0, radius - 1))
+            holder.BackgroundTransparency = 0.35
+        else
+            holder = transparent(tile, 6, 6, imgW, imageH)
+        end
+        holder.ZIndex = 3
+        holder.ClipsDescendants = true
+        if rarity and opts.RarityGlow ~= false then
+            local glow = rect(holder, 0, 0, imgW, imageH, rarity, math.max(0, radius - 1))
+            glow.ZIndex = 3
+            new("UIGradient", glow, {
+                Rotation = 90,
+                Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 1),
+                    NumberSequenceKeypoint.new(1, 0.6),
+                }),
+            })
+            local line = rect(holder, 0, imageH - 2, imgW, 2, rarity)
+            line.ZIndex = 4
+        end
+
+        local image, iconApi
+        local imageId = directIcon(def.Image or def.Photo or def.Thumbnail)
+        if imageId then
+            image = new("ImageLabel", holder, {
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Position = UDim2.fromOffset(imagePadding, imagePadding),
+                Size = UDim2.fromOffset(math.max(1, imgW - imagePadding * 2), math.max(1, imageH - imagePadding * 2)),
+                Image = imageId,
+                ImageColor3 = resolveColor(def.ImageColor, pureWhite),
+                ScaleType = scaleTypeOf(def.ImageScale or opts.ImageScale),
+                Rotation = tonumber(def.ImageRotation) or 0,
+                ZIndex = 5,
+            })
+            if typeof(def.ImageRectOffset) == "Vector2" then image.ImageRectOffset = def.ImageRectOffset end
+            if typeof(def.ImageRectSize) == "Vector2" then image.ImageRectSize = def.ImageRectSize end
+        else
+            local iconSize = math.floor(math.min(imgW, imageH) * 0.5)
+            iconApi = iconLabel(holder, def.Icon or opts.DefaultIcon or {"image", "package", "box"},
+                (imgW - iconSize) / 2, (imageH - iconSize) / 2, iconSize, palette[3],
+                string.upper(string.sub(def.Name, 1, 1)))
+            iconApi.Object.ZIndex = 5
+        end
+
+        local titleLabel, subLabel
+        if showTitles then
+            titleLabel = text(tile, def.Name, 6, 6 + imageH + 4, imgW, 14, titleSize, palette[3], titleAlign,
+                {Bold = opts.BoldTitles == true})
+            titleLabel.Object.ZIndex = 4
+            if subtitle then
+                subLabel = text(tile, subtitle, 6, 6 + imageH + 17, imgW, 12, 10, palette[3], titleAlign)
+                subLabel.Object.ZIndex = 4
+            end
+        end
+
+        if def.Badge then
+            local caption = tostring(def.Badge)
+            local bw = math.min(imgW - 8, TextService:GetTextSize(caption, 9, UI_FONT_BOLD, Vector2.new(1000, 14)).X + 10)
+            local badge = rect(tile, 10, 10, bw, 14, resolveColor(def.BadgeColor, rarity or accent), 3)
+            badge.ZIndex = 6
+            local badgeText = text(badge, caption, 0, 0, bw, 14, 9, pureWhite, "center", {Bold = true})
+            badgeText.Object.ZIndex = 7
+            badgeText:Color(resolveColor(def.BadgeTextColor, pureWhite))
+        end
+
+        local check, checkStroke, checkFill, checkMark, orderLabel
+        if showCheck then
+            local size = 14
+            local cx = string.find(checkPosition, "left", 1, true) and 10 or (tileW - 10 - size)
+            local cy = string.find(checkPosition, "bottom", 1, true) and (6 + imageH - 4 - size) or 10
+            local round = checkShape == "circle" and 7 or 3
+            check = rect(tile, cx, cy, size, size, palette[1], round)
+            check.ZIndex = 6
+            check.BackgroundTransparency = 0.15
+            checkStroke = new("UIStroke", check, {Thickness = 1, Transparency = 0.3})
+            checkStroke.Color = palette[5]
+            checkFill = rect(check, 7, 7, 0, 0, accent, round)
+            checkFill.ZIndex = 7
+            if showOrder then
+                orderLabel = text(check, "", 0, 0, size, size, 9, pureWhite, "center", {Bold = true})
+                orderLabel.Object.ZIndex = 8
+                orderLabel:Color(pureWhite)
+            else
+                checkMark = iconLabel(check, {"check"}, 1, 1, 12, black, "v")
+                checkMark.Object.ZIndex = 8
+            end
+        end
+
+        local lock
+        if def.Locked or def.Disabled then
+            lock = iconLabel(tile, def.LockIcon or opts.LockIcon or {"lock", "lock-keyhole"},
+                (tileW - 16) / 2, 6 + (imageH - 16) / 2, 16, white, "x")
+            lock.Object.ZIndex = 9
+        end
+
+        local entry = {
+            Def = def, Id = def.Id, Tile = tile, Stroke = stroke, UIScale = uiScale,
+            Image = image, IconApi = iconApi, Title = titleLabel, Sub = subLabel,
+            SubColor = resolveColor(def.SubtitleColor, opts.RaritySubtitle and rarity or nil),
+            Check = check, CheckStroke = checkStroke, CheckFill = checkFill, CheckMark = checkMark,
+            Order = orderLabel, Lock = lock, Rarity = rarity,
+            Sel = selected[def.Id] and 1 or 0, Hov = 0, Scale = 1, Shake = 0,
+            X = 0, Y = 0, TX = 0, TY = 0,
+        }
+        connect(tile.MouseEnter, function() entry.Hovered = true end)
+        connect(tile.MouseLeave, function() entry.Hovered = false; entry.Pressed = false end)
+        connect(tile.MouseButton1Down, function() entry.Pressed = true end)
+        connect(tile.MouseButton1Up, function() entry.Pressed = false end)
+        connect(tile.Activated, function()
+            entry.Pressed = false
+            toggleId(def.Id)
+        end)
+        if def.OnRightClick or opts.OnRightClick then
+            connect(tile.MouseButton2Click, function()
+                local callback = def.OnRightClick or opts.OnRightClick
+                task.spawn(callback, def, selected[def.Id] == true)
+            end)
+        end
+        if def.Tooltip then window:Tooltip(tile, def.Tooltip) end
+        return entry
+    end
+
+    local function rebuild()
+        if tilesMaid then tilesMaid:Destroy() end
+        tilesMaid = Maid.new(owner)
+        entries, byId = {}, {}
+        withOwner(tilesMaid, function()
+            for _, def in ipairs(defs) do
+                local entry = buildTile(def)
+                tilesMaid:Add(entry.Tile)
+                entries[#entries + 1] = entry
+                byId[def.Id] = entry
+            end
+        end)
+        for index = #order, 1, -1 do
+            if not byId[order[index]] then
+                selected[order[index]] = nil
+                table.remove(order, index)
+            end
+        end
+        layout(true)
+    end
+
+    step(function(dt, k)
+        local tintBase = resolveColor(opts.SelectedColor, accent)
+        local fast = motionFactor(24, dt)
+        local busy = false
+        if counter then
+            counterFlash = math.max(0, counterFlash - dt * 2)
+            local count = #order
+            local caption
+            if type(opts.CounterFormat) == "function" then
+                local ok, result = pcall(opts.CounterFormat, count, maxSelected)
+                caption = ok and tostring(result) or ""
+            elseif type(opts.CounterFormat) == "string" then
+                local ok, result = pcall(string.format, opts.CounterFormat, count, maxSelected or 0)
+                caption = ok and result or ""
+            elseif maxSelected then
+                caption = string.format("%d/%d", count, maxSelected)
+            else
+                caption = tostring(count)
+            end
+            counter:SetText(caption)
+            local full = maxSelected ~= nil and count >= maxSelected
+            counter:Color(palette[3]:Lerp(tintBase, full and 1 or 0):Lerp(Color3.fromRGB(240, 100, 100), counterFlash))
+            if counterFlash > 0 then busy = true end
+        end
+        for _, e in ipairs(entries) do
+            if e.Tile.Visible then
+                local isSel = selected[e.Id] == true
+                local locked = e.Def.Disabled or e.Def.Locked
+                e.Sel = approach(e.Sel, isSel and 1 or 0, k)
+                e.Hov = approach(e.Hov, (e.Hovered and not locked) and 1 or 0, k)
+                e.Scale = approach(e.Scale, e.Pressed and 0.94 or 1, fast)
+                e.X = approach(e.X, e.TX, k)
+                e.Y = approach(e.Y, e.TY, k)
+                local shakeX = 0
+                if e.Shake > 0 then
+                    e.Shake = math.max(0, e.Shake - dt * 3)
+                    shakeX = math.sin(e.Shake * 38) * 4 * e.Shake
+                    busy = true
+                end
+                if math.abs(e.X - e.TX) > 0.5 or math.abs(e.Y - e.TY) > 0.5 or math.abs(e.Scale - 1) > 0.005 then
+                    busy = true
+                end
+                e.Tile.Position = UDim2.fromOffset(roundPixel(e.X + shakeX), roundPixel(e.Y))
+                e.UIScale.Scale = e.Scale
+                local tint = (useCardColor and e.Rarity) or tintBase
+                e.Tile.BackgroundColor3 = palette[4]:Lerp(palette[5], e.Hov * 0.7)
+                    :Lerp(tint, e.Sel * 0.16 * state.AccentAlpha)
+                e.Stroke.Color = palette[5]:Lerp(tint, e.Sel)
+                e.Stroke.Transparency = 0.4 * (1 - e.Sel)
+                e.Stroke.Thickness = 1 + (strokeThickness - 1) * e.Sel
+                local dim = locked and 0.45 or 1
+                if e.Title then
+                    e.Title:Color(palette[3]:Lerp(white, math.max(e.Sel, e.Hov * 0.6)))
+                    e.Title:Alpha(dim)
+                end
+                if e.Sub then
+                    e.Sub:Color(e.SubColor or palette[3])
+                    e.Sub:Alpha(dim)
+                end
+                if e.Image then e.Image.ImageTransparency = 1 - dim end
+                if e.IconApi then
+                    e.IconApi:Color(palette[3]:Lerp(white, math.max(e.Sel, e.Hov)))
+                    e.IconApi:Alpha(dim)
+                end
+                if e.Check then
+                    local a = e.Sel
+                    e.CheckFill.Position = UDim2.fromOffset(roundPixel(7 * (1 - a)), roundPixel(7 * (1 - a)))
+                    e.CheckFill.Size = UDim2.fromOffset(roundPixel(14 * a), roundPixel(14 * a))
+                    e.CheckFill.BackgroundColor3 = tint
+                    e.CheckFill.BackgroundTransparency = 1 - a * state.AccentAlpha
+                    e.CheckStroke.Color = palette[5]:Lerp(tint, a)
+                    if e.CheckMark then e.CheckMark:Alpha(a) end
+                    if e.Order then
+                        local position = orderIndex(e.Id)
+                        e.Order:SetText(position and tostring(position) or "")
+                        e.Order:Alpha(a)
+                    end
+                    e.Check.Visible = checkStyle ~= "selected" or a > 0.01 or e.Hov > 0.01
+                end
+            end
+        end
+        if busy and window.Wake then window:Wake(0.15) end
+    end, card)
+
+    function api:Get() return snapshot() end
+    function api:GetSelected() return selectedDefs() end
+    function api:IsSelected(id) return selected[tostring(id)] == true end
+    function api:Select(id, silent)
+        id = tostring(id)
+        local ok = addSelection(id)
+        if ok then push(not silent, byId[id].Def, true) end
+        return ok == true
+    end
+    function api:Deselect(id, silent)
+        id = tostring(id)
+        local ok = removeSelection(id, true)
+        if ok then push(not silent, byId[id] and byId[id].Def, false) end
+        return ok
+    end
+    function api:ToggleCard(id) toggleId(tostring(id)) end
+    function api:Set(value, silent)
+        selected, order = {}, {}
+        local list = {}
+        if type(value) == "table" then
+            if value[1] ~= nil then
+                for _, item in ipairs(value) do list[#list + 1] = tostring(item) end
+            else
+                for key, item in pairs(value) do
+                    if item == true then list[#list + 1] = tostring(key) end
+                end
+            end
+        elseif value ~= nil then
+            list[1] = tostring(value)
+        end
+        for _, id in ipairs(list) do addSelection(id, true) end
+        push(not silent)
+    end
+    function api:Clear(silent)
+        selected, order = {}, {}
+        push(not silent)
+    end
+    function api:SelectAll(silent)
+        for _, e in ipairs(entries) do
+            if maxSelected and #order >= maxSelected then break end
+            if not (e.Def.Disabled or e.Def.Locked) and not selected[e.Id] then addSelection(e.Id, true) end
+        end
+        push(not silent)
+    end
+    function api:SetMax(value)
+        maxSelected = tonumber(value) and math.max(1, math.floor(tonumber(value))) or nil
+        while maxSelected and #order > maxSelected do
+            selected[table.remove(order)] = nil
+        end
+        push(false)
+        return maxSelected
+    end
+    function api:GetMax() return maxSelected end
+    function api:SetMin(value) minSelected = math.max(0, math.floor(tonumber(value) or 0)) end
+    function api:SetReplaceOnLimit(value) replaceOnLimit = value == true end
+    function api:SetCards(list)
+        setDefs(list)
+        rebuild()
+        push(false)
+    end
+    function api:GetCards() return defs end
+    function api:GetCard(id)
+        local entry = byId[tostring(id)]
+        return entry and entry.Def
+    end
+    function api:AddCard(def, index)
+        local list = {}
+        for i, item in ipairs(defs) do list[i] = item end
+        local position = math.clamp(math.floor(tonumber(index) or (#list + 1)), 1, #list + 1)
+        table.insert(list, position, def)
+        self:SetCards(list)
+        return defs[position]
+    end
+    function api:RemoveCard(id)
+        id = tostring(id)
+        local list = {}
+        for _, item in ipairs(defs) do
+            if item.Id ~= id then list[#list + 1] = item end
+        end
+        self:SetCards(list)
+    end
+    function api:UpdateCard(id, changes)
+        local entry = byId[tostring(id)]
+        if not entry or type(changes) ~= "table" then return nil end
+        for key, value in pairs(changes) do entry.Def[key] = value end
+        entry.Def.Id = tostring(id)
+        rebuild()
+        return entry.Def
+    end
+    function api:SetCardDisabled(id, value) return self:UpdateCard(id, {Disabled = value and true or false}) end
+    function api:SetCardHidden(id, value) return self:UpdateCard(id, {Hidden = value and true or false}) end
+    function api:SetFilter(value)
+        filterText = tostring(value or "")
+        if searchBox and searchBox.Text ~= filterText then searchBox.Text = filterText end
+        layout(false)
+    end
+    function api:GetFilter() return filterText end
+    function api:ScrollTo(id)
+        local entry = byId[tostring(id)]
+        if entry then grid.CanvasPosition = Vector2.new(0, math.max(0, entry.TY - PAD_IN)) end
+    end
+    api.Grid = grid
+
+    if searchBox then
+        connect(searchBox:GetPropertyChangedSignal("Text"), function() api:SetFilter(searchBox.Text) end)
+    end
+
+    rebuild()
+    local defaults = opts.Default
+    if defaults == nil then
+        defaults = {}
+        for _, def in ipairs(defs) do
+            if def.Selected or def.Default then defaults[#defaults + 1] = def.Id end
+        end
+    end
+    api:Set(defaults, true)
+    if opts.Callback and #order > 0 then task.spawn(opts.Callback, snapshot()) end
+    return api
+end
+
+function Tab:AddCards(opts) return self:AddCardGrid(opts) end
+function Tab:AddCardSelector(opts) return self:AddCardGrid(opts) end
+
+-- ============================================================================
+-- Search: magnifier icon on the rail that expands into a search bar and finds
+-- any element (or custom entry) inside the script.
+-- ============================================================================
+local SEARCH_KIND_ICONS = {
+    Tab = {"folder", "layout-grid"},
+    Toggle = {"toggle-right", "check-square"},
+    Slider = {"sliders-horizontal", "sliders"},
+    Button = {"mouse-pointer-click", "pointer", "square"},
+    Dropdown = {"chevron-down", "list"},
+    PlayerDropdown = {"users", "user"},
+    ColorPicker = {"palette", "pipette"},
+    Keybind = {"keyboard"},
+    TextBox = {"type", "text-cursor"},
+    CardGrid = {"layout-grid", "grid"},
+    List = {"list"},
+    Stepper = {"hash", "plus-square"},
+    Segmented = {"columns", "rows"},
+    Settings = {"settings"},
+    MiniButton = {"zap"},
+    Custom = {"zap", "star"},
+}
+Library.SearchIcons = SEARCH_KIND_ICONS
+
+function Window:AddSearch(opts)
+    opts = opts or {}
+    if self.Search and self.Search.Destroy then self.Search:Destroy() end
+    local window = self
+    local maid = Maid.new(Library.Maid)
+    local search = {Items = {}, Results = {}}
+
+    withOwner(maid, function()
+        local frame = window.Frame
+        local height = math.max(18, math.floor(tonumber(opts.Height) or 24))
+        local collapsedW = height
+        local expandedW = math.max(120, math.floor(tonumber(opts.Width) or 220))
+        local iconSize = math.max(8, math.floor(tonumber(opts.IconSize) or 12))
+        local rowH = math.max(20, math.floor(tonumber(opts.RowHeight) or 28))
+        local maxVisible = math.max(1, math.floor(tonumber(opts.MaxVisible) or 6))
+        local limit = math.max(1, math.floor(tonumber(opts.MaxResults) or 30))
+        local includeTabs = opts.IncludeTabs ~= false
+        local fuzzy = opts.Fuzzy ~= false
+        local highlight = opts.Highlight ~= false
+        local collapseOnBlur = opts.CollapseOnBlur ~= false
+        local animation = string.lower(tostring(opts.Animation or "spring"))
+        local frequency = tonumber(opts.Speed) or 3.2
+        local damping = tonumber(opts.Damping) or 0.72
+        local duration = tonumber(opts.Duration) or 0.25
+        local keybind = opts.Keybind ~= nil and keyFromName(opts.Keybind) or nil
+        local radius = opts.CornerRadius ~= nil and math.max(0, math.floor(tonumber(opts.CornerRadius) or 0))
+            or math.floor(height / 2)
+
+        local rightX, centerY
+        if typeof(opts.Position) == "Vector2" then
+            rightX, centerY = opts.Position.X, opts.Position.Y
+        else
+            local slot = window.RailCount
+            window.RailCount = window.RailCount + 1
+            rightX, centerY = WINDOW_W - 4, 15 + slot * 20
+        end
+
+        local container = rect(frame, rightX - collapsedW, centerY - height / 2, collapsedW, height,
+            palette[2], radius, "TextButton")
+        container.Name = "Search"
+        container.ZIndex = 20
+        container.ClipsDescendants = true
+        container.BackgroundTransparency = 1
+        maid:Add(container)
+        local stroke = new("UIStroke", container, {Thickness = 1, Transparency = 1})
+        stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+        local iconPad = math.floor((collapsedW - iconSize) / 2)
+        local icon = iconLabel(container, opts.Icon or {"search", "scan-search", "zoom-in"},
+            iconPad, math.floor((height - iconSize) / 2), iconSize, palette[3], "?")
+        icon.Object.ZIndex = 22
+        local boxX = iconPad + iconSize + 6
+        local box = new("TextBox", container, {
+            Name = "Query",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(boxX, 0),
+            Size = UDim2.fromOffset(expandedW - boxX - height, height),
+            Text = "",
+            PlaceholderText = tostring(opts.Placeholder or "Search..."),
+            PlaceholderColor3 = palette[3],
+            ClearTextOnFocus = false,
+            Font = UI_FONT,
+            TextSize = math.max(8, math.floor(tonumber(opts.TextSize) or 11)),
+            TextColor3 = white,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ClipsDescendants = true,
+            ZIndex = 22,
+            Visible = false,
+        })
+        local clear = transparent(container, 0, math.floor((height - 16) / 2), 16, 16, "TextButton")
+        clear.ZIndex = 23
+        local clearIcon = iconLabel(clear, {"x"}, 2, 2, 12, palette[3], "x")
+        clearIcon.Object.ZIndex = 24
+
+        local panel = rect(frame, rightX - expandedW, centerY + height / 2 + 4, expandedW, 1, palette[1], 5)
+        panel.Name = "SearchResults"
+        panel.ZIndex = 20
+        panel.ClipsDescendants = true
+        panel.Visible = false
+        panel.Active = true
+        maid:Add(panel)
+        local panelStroke = new("UIStroke", panel, {Thickness = 1, Transparency = 0.4})
+        local list = new("ScrollingFrame", panel, {
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(4, 4),
+            Size = UDim2.fromOffset(expandedW - 8, rowH),
+            CanvasSize = UDim2.fromOffset(0, 0),
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            ElasticBehavior = Enum.ElasticBehavior.Never,
+            Active = true,
+            ZIndex = 21,
+        })
+        local emptyLabel = muted(list, tostring(opts.EmptyText or "Nothing found"), 8, 0, expandedW - 24, rowH, 11)
+        emptyLabel.Object.ZIndex = 22
+
+        local expanded, progress, velocity = false, 0, 0
+        local panelAlpha, panelHeight = 0, 1
+        local dismissed, hovered = false, false
+        local selectedIndex = 1
+        local rows, rowsMaid = {}, nil
+        local scrollTarget, scrollUntil = nil, 0
+        local highlights = {}
+        local query = ""
+
+        local function collect()
+            local out = {}
+            for _, tab in ipairs(window.TabList) do
+                local tabName = tostring(tab.Title or tab.Name)
+                if includeTabs and tab.Searchable ~= false then
+                    out[#out + 1] = {Kind = "Tab", Name = tabName, Tab = tab}
+                end
+                for _, element in ipairs(tab.Elements) do
+                    local object = element.Object
+                    if element.Searchable ~= false and not element.Destroyed and typeof(object) == "Instance"
+                        and object.Parent and not (object:IsA("GuiObject") and not object.Visible) then
+                        local label = element.SearchName or object.Name
+                        if label and label ~= "" then
+                            out[#out + 1] = {
+                                Kind = element.SearchKind or "Element", Name = tostring(label),
+                                Description = element.SearchDescription, Keywords = element.SearchKeywords,
+                                Tab = tab, TabName = tabName, Element = element,
+                            }
+                        end
+                    end
+                end
+            end
+            for _, item in ipairs(search.Items) do out[#out + 1] = item end
+            return out
+        end
+
+        local function scoreEntry(entry, words)
+            local nameValue = searchLower(entry.Name)
+            local fields = {
+                {nameValue, 1},
+                {searchLower(entry.Keywords or ""), 0.8},
+                {searchLower(entry.Description or ""), 0.5},
+                {searchLower(entry.TabName or ""), 0.35},
+            }
+            local total = 0
+            for _, word in ipairs(words) do
+                local best = 0
+                for _, field in ipairs(fields) do
+                    local value = fieldScore(field[1], word) * field[2]
+                    if value > best then best = value end
+                end
+                if best == 0 and fuzzy and subsequence(nameValue, word) then best = 8 end
+                if best == 0 then return 0 end
+                total = total + best
+            end
+            return total
+        end
+
+        local function runSearch(value)
+            local words = {}
+            for word in string.gmatch(searchLower(value), "%S+") do words[#words + 1] = word end
+            local results = {}
+            if #words == 0 and opts.ShowAllOnEmpty ~= true then return results end
+            for position, entry in ipairs(collect()) do
+                local score = #words == 0 and 1 or scoreEntry(entry, words)
+                if score > 0 and type(opts.Filter) == "function" then
+                    local ok, keep = pcall(opts.Filter, entry, value)
+                    if ok and keep == false then score = 0 end
+                end
+                if score > 0 then
+                    entry.Score, entry.Order = score, position
+                    results[#results + 1] = entry
+                end
+            end
+            table.sort(results, function(a, b)
+                if a.Score ~= b.Score then return a.Score > b.Score end
+                return a.Order < b.Order
+            end)
+            for index = #results, limit + 1, -1 do results[index] = nil end
+            return results
+        end
+
+        local function renderRows()
+            if rowsMaid then rowsMaid:Destroy() end
+            rowsMaid = Maid.new(maid)
+            rows = {}
+            local results = search.Results
+            local rowW = expandedW - 8
+            withOwner(rowsMaid, function()
+                for index, result in ipairs(results) do
+                    local row = rect(list, 0, (index - 1) * rowH, rowW, rowH, palette[5], 4, "TextButton")
+                    row.BackgroundTransparency = 1
+                    row.ZIndex = 22
+                    rowsMaid:Add(row)
+                    local rowIcon = iconLabel(row, result.Icon or SEARCH_KIND_ICONS[result.Kind] or SEARCH_KIND_ICONS.Custom,
+                        8, math.floor((rowH - 12) / 2), 12, palette[3], "*")
+                    rowIcon.Object.ZIndex = 23
+                    local metaText = tostring(result.Hint or (result.Kind == "Tab" and (opts.TabHint or "Tab"))
+                        or result.TabName or result.Kind or "")
+                    local metaW = math.min(90, math.ceil(TextService:GetTextSize(metaText, 10, UI_FONT,
+                        Vector2.new(1000, rowH)).X) + 2)
+                    local titleLabel = text(row, "", 26, 0, math.max(20, rowW - 26 - metaW - 14), rowH, 11, white, nil,
+                        {RichText = true})
+                    titleLabel.Object.ZIndex = 23
+                    titleLabel.Object.Text = highlight and highlightText(result.Name, query, accent) or escapeRich(result.Name)
+                    local meta = muted(row, metaText, rowW - metaW - 8, 0, metaW, rowH, 10, "right")
+                    meta.Object.ZIndex = 23
+                    local entry = {Object = row, Icon = rowIcon, Hover = 0, Hovered = false}
+                    connect(row.MouseEnter, function()
+                        entry.Hovered = true
+                        selectedIndex = index
+                    end)
+                    connect(row.MouseLeave, function() entry.Hovered = false end)
+                    connect(row.Activated, function() search:Choose(result) end)
+                    rows[index] = entry
+                end
+            end)
+            list.CanvasSize = UDim2.fromOffset(0, #results * rowH)
+            list.CanvasPosition = Vector2.new(0, 0)
+            emptyLabel.Object.Visible = #results == 0
+        end
+
+        local function refresh()
+            query = box.Text
+            search.Results = runSearch(query)
+            selectedIndex = 1
+            renderRows()
+            if type(opts.OnSearch) == "function" then task.spawn(opts.OnSearch, query, search.Results) end
+            window:Wake(0.5)
+        end
+
+        local function ensureVisible()
+            local top = (selectedIndex - 1) * rowH
+            local view = list.Size.Y.Offset
+            local position = list.CanvasPosition.Y
+            if top < position then
+                list.CanvasPosition = Vector2.new(0, top)
+            elseif top + rowH > position + view then
+                list.CanvasPosition = Vector2.new(0, top + rowH - view)
+            end
+            window:Wake(0.3)
+        end
+
+        local function flashElement(object)
+            if not object or not object.Parent or opts.Flash == false then return end
+            local old = object:FindFirstChild("WolfSearchHighlight")
+            if old then old:Destroy() end
+            local outline = Instance.new("UIStroke")
+            outline.Name = "WolfSearchHighlight"
+            outline.Thickness = tonumber(opts.HighlightThickness) or 2
+            outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            outline.Color = resolveColor(opts.HighlightColor, accent)
+            outline.Transparency = 0
+            outline.Parent = object
+            highlights[#highlights + 1] = {Stroke = outline, Time = 0}
+        end
+
+        local function focusElement(element)
+            local object = element.Object
+            if not object or not object.Parent then return end
+            local offset, current = 0, object
+            while current and current ~= element.Tab.Page and current:IsA("GuiObject") do
+                offset = offset + current.Position.Y.Offset
+                current = current.Parent
+            end
+            local maxY = math.max(0, window.Scroll.CanvasSize.Y.Offset - WINDOW_H)
+            scrollTarget = math.clamp(offset + PAD - (tonumber(opts.ScrollMargin) or 24), 0, maxY)
+            scrollUntil = os.clock() + 0.8
+            flashElement(object)
+        end
+
+        function search:Choose(result)
+            result = result or self.Results[selectedIndex]
+            if not result then return end
+            if type(opts.OnSelect) == "function" then
+                local ok, handled = pcall(opts.OnSelect, result)
+                if ok and handled == false then return end
+            end
+            if type(result.Tab) == "table" and window.Tabs[result.Tab.Name] == result.Tab then
+                window:SelectTab(result.Tab)
+            end
+            if result.Element then focusElement(result.Element) end
+            if type(result.Callback) == "function" then task.spawn(result.Callback, result) end
+            if opts.CloseOnSelect ~= false then
+                self:Close(opts.ClearOnSelect ~= false)
+            else
+                dismissed = true
+            end
+        end
+
+        function search:Open(focus)
+            expanded = true
+            dismissed = false
+            window:Wake(0.8)
+            if focus ~= false then
+                task.defer(function()
+                    if not search.Destroyed and box.Parent and expanded then box:CaptureFocus() end
+                end)
+            end
+            if type(opts.OnOpen) == "function" then task.spawn(opts.OnOpen) end
+        end
+        function search:Close(clearQuery)
+            expanded = false
+            if box:IsFocused() then box:ReleaseFocus() end
+            if clearQuery ~= false and box.Text ~= "" then box.Text = "" end
+            window:Wake(0.8)
+            if type(opts.OnClose) == "function" then task.spawn(opts.OnClose) end
+        end
+        function search:Toggle()
+            if expanded then self:Close() else self:Open() end
+        end
+        function search:IsOpen() return expanded end
+        function search:Focus() self:Open(true) end
+        function search:SetQuery(value)
+            if not expanded then self:Open(false) end
+            box.Text = tostring(value or "")
+        end
+        function search:GetQuery() return box.Text end
+        function search:Search(value) return runSearch(tostring(value or "")) end
+        function search:Refresh() refresh() end
+        function search:SetPlaceholder(value) box.PlaceholderText = tostring(value or "") end
+        function search:AddItem(item)
+            item = type(item) == "table" and item or {Name = tostring(item)}
+            local entry = {}
+            for key, value in pairs(item) do entry[key] = value end
+            entry.Name = tostring(entry.Name or entry.Title or "Item")
+            entry.Id = entry.Id or entry.Name
+            entry.Kind = entry.Kind or "Custom"
+            entry.Keywords = normalizeKeywords(entry.Keywords or entry.Tags)
+            if type(entry.Tab) == "string" then entry.Tab = window.Tabs[entry.Tab] end
+            if type(entry.Tab) == "table" then entry.TabName = entry.TabName or tostring(entry.Tab.Title or entry.Tab.Name) end
+            self.Items[#self.Items + 1] = entry
+            if query ~= "" then refresh() end
+            return entry
+        end
+        function search:RemoveItem(id)
+            for index = #self.Items, 1, -1 do
+                local item = self.Items[index]
+                if item == id or item.Id == id or item.Name == id then table.remove(self.Items, index) end
+            end
+            if query ~= "" then refresh() end
+        end
+        function search:ClearItems()
+            table.clear(self.Items)
+            if query ~= "" then refresh() end
+        end
+        function search:Destroy()
+            if self.Destroyed then return end
+            self.Destroyed = true
+            if window.Search == self then window.Search = nil end
+            maid:Destroy()
+        end
+        search.Object, search.Box, search.Panel = container, box, panel
+
+        for _, item in ipairs(type(opts.Items) == "table" and opts.Items or {}) do search:AddItem(item) end
+
+        connect(box:GetPropertyChangedSignal("Text"), function()
+            dismissed = false
+            refresh()
+        end)
+        connect(container.Activated, function()
+            if not expanded then search:Open(true) else box:CaptureFocus() end
+        end)
+        connect(container.MouseEnter, function() hovered = true end)
+        connect(container.MouseLeave, function() hovered = false end)
+        connect(clear.Activated, function()
+            if box.Text ~= "" then
+                box.Text = ""
+                box:CaptureFocus()
+            else
+                search:Close()
+            end
+        end)
+        connect(box.Focused, function() dismissed = false end)
+        connect(box.FocusLost, function(enterPressed)
+            if enterPressed then
+                if search.Results[selectedIndex] then search:Choose(search.Results[selectedIndex]) end
+                return
+            end
+            if collapseOnBlur and box.Text == "" then
+                task.delay(0.15, function()
+                    if not search.Destroyed and expanded and not box:IsFocused() and box.Text == "" then
+                        search:Close(false)
+                    end
+                end)
+            end
+        end)
+
+        local function inside(point, object)
+            if not object.Visible then return false end
+            local p, s = object.AbsolutePosition, object.AbsoluteSize
+            return point.X >= p.X and point.X <= p.X + s.X and point.Y >= p.Y and point.Y <= p.Y + s.Y
+        end
+        connect(UIS.InputBegan, function(input, processed)
+            local kind = input.UserInputType
+            if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
+                if expanded then
+                    local point = Vector2.new(input.Position.X, input.Position.Y)
+                    if not inside(point, container) and not inside(point, panel) then
+                        dismissed = true
+                        if collapseOnBlur and box.Text == "" then search:Close(false) end
+                    end
+                end
+                return
+            end
+            if kind ~= Enum.UserInputType.Keyboard then return end
+            if box:IsFocused() then
+                local count = #search.Results
+                if input.KeyCode == Enum.KeyCode.Down and count > 0 then
+                    selectedIndex = selectedIndex % count + 1
+                    ensureVisible()
+                elseif input.KeyCode == Enum.KeyCode.Up and count > 0 then
+                    selectedIndex = (selectedIndex - 2) % count + 1
+                    ensureVisible()
+                elseif input.KeyCode == Enum.KeyCode.Escape then
+                    search:Close(true)
+                end
+                return
+            end
+            if processed or UIS:GetFocusedTextBox() then return end
+            if keybind and input.KeyCode == keybind and window.Visible then search:Open(true) end
+        end)
+        if opts.Tooltip then window:Tooltip(container, opts.Tooltip) end
+
+        step(function(dt, k)
+            local target = expanded and 1 or 0
+            if Library.FadeAnimations == false or animation == "none" then
+                progress, velocity = target, 0
+            elseif animation == "smooth" then
+                progress = approach(progress, target, motionFactor(4.25 / math.max(0.05, duration), dt))
+                velocity = 0
+                if math.abs(progress - target) < 0.001 then progress = target end
+            else
+                local remaining = dt
+                local omega = frequency * 2 * math.pi
+                while remaining > 0 do
+                    local h = math.min(remaining, 1 / 120)
+                    velocity = velocity + (omega * omega * (target - progress) - 2 * damping * omega * velocity) * h
+                    progress = progress + velocity * h
+                    remaining = remaining - h
+                end
+                if math.abs(progress - target) < 0.001 and math.abs(velocity) < 0.01 then
+                    progress, velocity = target, 0
+                end
+            end
+            local busy = progress ~= target
+            local p = math.max(0, progress)
+            local shown = math.clamp(p, 0, 1)
+            local width = collapsedW + (expandedW - collapsedW) * math.min(p, 1.06)
+            container.Position = UDim2.fromOffset(roundPixel(rightX - width), roundPixel(centerY - height / 2))
+            container.Size = UDim2.fromOffset(roundPixel(width), height)
+            local hoverAmount = (hovered and not expanded) and 1 or 0
+            local opacity = 1 - math.clamp(tonumber(opts.Transparency) or 0, 0, 1)
+            container.BackgroundColor3 = resolveColor(opts.Background, palette[2]):Lerp(palette[5], hoverAmount * 0.4)
+            container.BackgroundTransparency = 1 - math.max(shown, hoverAmount * 0.6) * opacity
+            stroke.Color = palette[5]:Lerp(resolveColor(opts.FocusColor, accent), box:IsFocused() and 0.8 or 0)
+            stroke.Transparency = 1 - shown * 0.6
+            icon:Color(expanded and resolveColor(opts.IconColor, accent) or (hovered and white or palette[3]))
+            icon.Object.Rotation = math.sin(shown * math.pi) * -20
+            local textAlpha = math.clamp((p - 0.35) / 0.65, 0, 1)
+            box.Visible = textAlpha > 0.01
+            box.TextTransparency = 1 - textAlpha
+            box.PlaceholderColor3 = palette[3]
+            box.TextColor3 = white
+            clear.Visible = textAlpha > 0.5
+            clear.Position = UDim2.fromOffset(roundPixel(width - height + (height - 16) / 2), math.floor((height - 16) / 2))
+            clearIcon:Color(palette[3])
+            clearIcon:Alpha(textAlpha)
+
+            local results = search.Results
+            local showPanel = expanded and not dismissed and (box.Text ~= "" or opts.ShowAllOnEmpty == true)
+            local count = math.max(1, math.min(#results, maxVisible))
+            local targetHeight = showPanel and (count * rowH + 8) or 1
+            panelHeight = approach(panelHeight, targetHeight, motionFactor(18, dt))
+            if math.abs(panelHeight - targetHeight) < 0.5 then panelHeight = targetHeight else busy = true end
+            local panelTarget = showPanel and 1 or 0
+            panelAlpha = transitionAlpha(panelAlpha, panelTarget, dt, duration)
+            if panelAlpha ~= panelTarget then busy = true end
+            panel.Visible = panelAlpha > 0.01
+            if panel.Visible then
+                panel.Position = UDim2.fromOffset(roundPixel(rightX - expandedW), roundPixel(centerY + height / 2 + 4))
+                panel.Size = UDim2.fromOffset(expandedW, math.max(1, roundPixel(panelHeight)))
+                panel.BackgroundColor3 = resolveColor(opts.PanelBackground, palette[1])
+                panel.BackgroundTransparency = 0
+                panelStroke.Color = palette[5]
+                list.Size = UDim2.fromOffset(expandedW - 8, math.max(1, count * rowH))
+                list.ScrollingEnabled = #results > maxVisible
+                for index, row in ipairs(rows) do
+                    local active = index == selectedIndex
+                    row.Hover = approach(row.Hover, (active or row.Hovered) and 1 or 0, k)
+                    row.Object.BackgroundColor3 = palette[5]
+                    row.Object.BackgroundTransparency = 1 - row.Hover * 0.85
+                    row.Icon:Color(palette[3]:Lerp(accent, row.Hover))
+                end
+                if panelAlpha < 1 then fadeGroup(panel, panelAlpha) end
+            end
+
+            if scrollTarget then
+                local scroll = window.Scroll
+                local nextY = approach(scroll.CanvasPosition.Y, scrollTarget, motionFactor(14, dt))
+                if math.abs(nextY - scrollTarget) < 0.5 or os.clock() > scrollUntil then
+                    nextY = scrollTarget
+                    scrollTarget = nil
+                end
+                scroll.CanvasPosition = Vector2.new(0, nextY)
+                busy = true
+            end
+            local flashDuration = math.max(0.2, tonumber(opts.HighlightDuration) or 1.4)
+            for index = #highlights, 1, -1 do
+                local item = highlights[index]
+                item.Time = item.Time + dt
+                local t = item.Time / flashDuration
+                if t >= 1 or not item.Stroke.Parent then
+                    item.Stroke:Destroy()
+                    table.remove(highlights, index)
+                else
+                    local pulse = 0.55 + 0.45 * math.cos(item.Time * math.pi * 4)
+                    item.Stroke.Transparency = 1 - (1 - t) * pulse
+                    busy = true
+                end
+            end
+            if busy then window:Wake(0.15) end
+        end, container)
+    end)
+
+    self.Search = search
+    return search
+end
+
+function Library:AddSearch(opts)
+    if self.Window then return self.Window:AddSearch(opts) end
+end
+
+function Library:GetSearch()
+    return self.Window and self.Window.Search or nil
+end
+
+-- ============================================================================
+-- Themes: custom palettes, switching, per-slot overrides.
+-- Slots: Window, Card, Muted, Control, Stroke, Flash, Text (or indexes 1..7).
+-- ============================================================================
+local PALETTE_SLOTS = {
+    Window = 1, Background = 1, Card = 2, Sidebar = 2, Muted = 3, Control = 4,
+    Hover = 5, Stroke = 5, Flash = 6, Text = 7,
+}
+
+local function themeColor(value)
+    if typeof(value) == "Color3" then return value end
+    if type(value) == "table" then
+        return Color3.fromRGB(tonumber(value[1]) or 0, tonumber(value[2]) or 0, tonumber(value[3]) or 0)
+    end
+    if type(value) == "string" then return fromHex(value) end
+    return nil
+end
+
+function Library:AddTheme(themeName, colors)
+    assert(type(colors) == "table", "WolfUi: AddTheme expects a color table")
+    local base = themes[1]
+    local theme = {}
+    for index = 1, 7 do theme[index] = base[index] end
+    for key, value in pairs(colors) do
+        local slot = type(key) == "number" and key or PALETTE_SLOTS[key]
+        local color = themeColor(value)
+        if slot and slot >= 1 and slot <= 7 and color then theme[slot] = color end
+    end
+    themeName = tostring(themeName or ("Theme" .. tostring(#themes + 1)))
+    for index, existing in ipairs(THEME_NAMES) do
+        if existing == themeName then
+            themes[index] = theme
+            if state.Theme == index then Runtime.ThemeDirty = true end
+            return index
+        end
+    end
+    themes[#themes + 1] = theme
+    THEME_NAMES[#THEME_NAMES + 1] = themeName
+    return #themes
+end
+
+function Library:SetTheme(value)
+    local index = tonumber(value)
+    if not index then
+        for i, existing in ipairs(THEME_NAMES) do
+            if string.lower(existing) == string.lower(tostring(value)) then index = i break end
+        end
+    end
+    if not index or not themes[index] then return nil end
+    state.Theme = index
+    self.Theme = index
+    Runtime.ThemeDirty = true
+    if self.Window and self.Window.Wake then self.Window:Wake(1) end
+    for _, listener in ipairs(changeListeners) do task.spawn(listener, "Theme", THEME_NAMES[index]) end
+    return THEME_NAMES[index]
+end
+
+function Library:GetTheme()
+    return THEME_NAMES[state.Theme], state.Theme
+end
+
+function Library:GetThemes()
+    local list = {}
+    for index, existing in ipairs(THEME_NAMES) do list[index] = existing end
+    return list
+end
+
+function Library:SetPaletteColor(slot, color)
+    local index = type(slot) == "number" and slot or PALETTE_SLOTS[slot]
+    local value = themeColor(color)
+    if not index or not value or not themes[state.Theme] then return nil end
+    themes[state.Theme][index] = value
+    Runtime.ThemeDirty = true
+    if self.Window and self.Window.Wake then self.Window:Wake(1) end
+    return value
+end
+
+Library:AddTheme("Graphite", {{18, 18, 20}, {24, 24, 27}, {150, 150, 158}, {32, 32, 36}, {44, 44, 50}, {70, 70, 78}, {240, 240, 245}})
+Library:AddTheme("Midnight", {{10, 12, 20}, {14, 17, 28}, {140, 150, 180}, {20, 24, 40}, {30, 36, 58}, {55, 65, 100}, {235, 240, 255}})
+Library:AddTheme("Forest", {{9, 14, 11}, {12, 19, 15}, {140, 165, 150}, {17, 27, 21}, {25, 40, 31}, {45, 70, 55}, {235, 250, 240}})
 
 function Tab:AddElements(items)
     assert(type(items) == "table", "WolfUi: AddElements expects a table")
@@ -5465,6 +6854,7 @@ function Library:GetConfig()
     config.ScrollBarThickness = self.ScrollBarThickness
     config.Accent = serialize(state.Accent)
     config.AccentAlpha = state.AccentAlpha
+    config.Theme = THEME_NAMES[state.Theme]
     if self.Window then
         local wm = self.Window.WatermarkConfig
         config.Watermark = {}
@@ -5521,6 +6911,7 @@ function Library:LoadConfig(config)
             end
         end
     end
+    if config.Theme ~= nil and self.SetTheme then pcall(self.SetTheme, self, config.Theme) end
     if config.Accent then self:SetAccent(deserialize(config.Accent), config.AccentAlpha) end
     if config.Scale and self.Window then self.Window:SetScale(config.Scale, true) end
     if type(config.Mini) == "table" and self.Window then
@@ -5991,7 +7382,8 @@ end
 
 for name, fn in pairs(Tab) do
     if type(fn) == "function" and string.sub(name, 1, 3) == "Add"
-        and name ~= "AddElements" and name ~= "AddSelect" and name ~= "AddColor" and name ~= "AddInput" then
+        and name ~= "AddElements" and name ~= "AddSelect" and name ~= "AddColor" and name ~= "AddInput"
+        and name ~= "AddCards" and name ~= "AddCardSelector" then
         Tab[name] = function(self, ...)
             local maid = Maid.new(self.Maid or Library.Maid)
             local ok, result = pcall(withOwner, maid, fn, self, ...)
@@ -5999,7 +7391,21 @@ for name, fn in pairs(Tab) do
                 maid:Destroy()
                 error(result, 0)
             end
-            return ownElement(self, result, maid)
+            local api = ownElement(self, result, maid)
+            local opts = select(1, ...)
+            if type(api) == "table" then
+                if type(opts) == "table" then
+                    api.SearchName = opts.SearchName or opts.Name or opts.Title or opts.Text or api.SearchName
+                    api.SearchDescription = opts.Description or api.SearchDescription
+                    api.SearchKeywords = normalizeKeywords(opts.Keywords or opts.Tags or opts.SearchKeywords)
+                        or api.SearchKeywords
+                    if opts.Searchable == false then api.Searchable = false end
+                elseif type(opts) == "string" and api.SearchName == nil then
+                    api.SearchName = opts
+                end
+                api.SearchKind = string.sub(name, 4)
+            end
+            return api
         end
     end
 end
