@@ -1,5 +1,6 @@
--- WolfUI 5.7.0 | Black Frost
--- Single Black theme; search removed; balanced card grids.
+-- WolfUI 5.7.1 | Black Frost
+-- Single Black theme; permanent frosted finish; balanced card grids.
+-- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -713,7 +714,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.7.0",
+    Version = "5.7.1",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -1171,26 +1172,34 @@ function Library:CreateWindow(opts)
     window.TabChanged = new("BindableEvent", events, {Name = "TabChanged"})
     window.ButtonPressed = new("BindableEvent", events, {Name = "ButtonPressed"})
 
-    local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 10, "Frame"), 1)
+    local frame = paint(rect(gui, 0, 0, WINDOW_W, WINDOW_H, palette[1], 12, "Frame"), 1)
     frame.Name = "Window"
     frame.ZIndex = 2
     frame.Active = true
     frame.ClipsDescendants = true
     window.Frame = frame
-    local glass = type(opts.Glass) == "table" and opts.Glass or {}
-    frame.BackgroundTransparency = math.clamp(tonumber(glass.Transparency) or 0.16, 0, 0.45)
+    -- Permanent Black Frost styling: no theme or glass configuration switches.
+    frame.BackgroundTransparency = 0.22
     new("UIGradient", frame, {
-        Rotation = 90,
-        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(195, 195, 195)),
+        Rotation = 110,
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 190, 190)),
     })
-    new("UIStroke", frame, {
-        Color = Color3.fromRGB(110, 110, 110), Thickness = 1, Transparency = 0.62,
+    local glassEdge = new("UIStroke", frame, {
+        Color = Color3.fromRGB(128, 128, 128), Thickness = 1, Transparency = 0.58,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
     })
+    new("UIGradient", glassEdge, {
+        Rotation = 100,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.05),
+            NumberSequenceKeypoint.new(0.5, 0.4),
+            NumberSequenceKeypoint.new(1, 0.65),
+        }),
+    })
     -- Roblox post-processing blurs the 3D scene, never UI text or controls.
-    -- Set Glass = {Blur = false} to keep just the translucent matte finish.
-    local blurSize = glass.Blur == false and 0 or math.clamp(tonumber(glass.Blur) or 10, 0, 24)
-    if blurSize > 0 then
+    -- Always create our own effect; closing/unloading restores the scene.
+    local blurSize = 14
+    do
         local effect = Instance.new("BlurEffect")
         effect.Name = "WolfUIFrost"
         effect.Size, effect.Enabled = 0, false
@@ -1347,7 +1356,11 @@ function Library:CreateWindow(opts)
     connect(UIS.WindowFocusReleased, cancelDrag)
 
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
-    sidebar.BackgroundTransparency = 0.28
+    sidebar.BackgroundTransparency = 0.24
+    new("UIGradient", sidebar, {
+        Rotation = 90,
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205)),
+    })
     new("UIStroke", sidebar, {Color = palette[5], Thickness = 1, Transparency = 0.55,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     sidebar.Name = "Sidebar"
@@ -2920,8 +2933,12 @@ function Tab:_grow()
 end
 function Tab:_card(w, h, name)
     local x, y = self:_place(w, h)
-    local card = paint(rect(self.Page, x, y, w, h, palette[2], 7), 2)
-    card.BackgroundTransparency = 0.18
+    local card = paint(rect(self.Page, x, y, w, h, palette[2], 8), 2)
+    card.BackgroundTransparency = 0.2
+    new("UIGradient", card, {
+        Rotation = 100,
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(218, 218, 218)),
+    })
     new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = 0.65,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     card.Name = name or "Element"
@@ -5222,7 +5239,11 @@ function Tab:AddCardGrid(opts)
         local tile = rect(grid, 0, 0, tileW, tileH, palette[4], radius, "TextButton")
         tile.Name = def.Id
         tile.ZIndex = 3
-        tile.BackgroundTransparency = 0.12
+        tile.BackgroundTransparency = 0.16
+        new("UIGradient", tile, {
+            Rotation = 105,
+            Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(220, 220, 220)),
+        })
         local stroke = new("UIStroke", tile, {Thickness = 1, Transparency = 0.45})
         stroke.Color = palette[5]
         stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
