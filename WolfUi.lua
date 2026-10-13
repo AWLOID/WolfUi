@@ -1,4 +1,4 @@
--- WolfUI 5.7.4 | Black Frost
+-- WolfUI 5.7.5 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -517,9 +517,10 @@ local function new(class, parent, props)
         object.TopImage = ""
         object.MidImage = ""
         object.BottomImage = ""
-    elseif class == "UIStroke" and props and props.Color then
+    elseif class == "UIStroke" then
+        object.LineJoinMode = Enum.LineJoinMode.Round
         for index = 1, 6 do
-            if palette[index] and props.Color == palette[index] then
+            if props and palette[index] and props.Color == palette[index] then
                 themedStrokes[object] = index
                 break
             end
@@ -699,7 +700,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.7.4",
+    Version = "5.7.5",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -5005,8 +5006,8 @@ function Tab:AddCardGrid(opts)
     local columns = math.max(1, math.floor(tonumber(opts.Columns) or 3))
     local gap = math.max(0, math.floor(tonumber(opts.Gap) or 8))
     local tileH = math.max(36, math.floor(tonumber(opts.CardHeight or opts.TileHeight) or 96))
-    local radius = math.max(0, math.floor(tonumber(opts.CornerRadius) or 7))
-    local titleSize = math.max(8, math.floor(tonumber(opts.TitleSize) or 11))
+    local radius = math.max(4, math.floor(tonumber(opts.CornerRadius) or 7))
+    local titleSize = math.clamp(math.floor(tonumber(opts.TitleSize) or 11), 8, 16)
     local titleAlign = opts.TitleAlign or "center"
     -- ImageOnly hides all captions and reserves the entire card for its image.
     local imageOnly = opts.ImageOnly == true
@@ -5254,8 +5255,20 @@ function Tab:AddCardGrid(opts)
         local tile = rect(grid, 0, 0, tileW, tileH, palette[4], radius, "TextButton")
         tile.Name = def.Id
         tile.ZIndex = 3
-        tile.BackgroundTransparency = 0.16
-        new("UIGradient", tile, {
+        tile.BackgroundTransparency = 1
+        -- CanvasGroup masks the complete card, including the caption footer.
+        -- Its logical size stays fixed; animation belongs to the outer button.
+        local surface = rect(tile, 0, 0, tileW, tileH, palette[4], radius, "CanvasGroup")
+        surface.Name = "RoundedContent"
+        surface.BackgroundTransparency = 1
+        surface.Active = false
+        surface.Visible = false
+        surface.ZIndex = 3
+        local body = rect(surface, 0, 0, tileW, tileH, palette[4])
+        body.Name = "Background"
+        body.BackgroundTransparency = 0.16
+        body.ZIndex = 3
+        new("UIGradient", body, {
             Rotation = 105,
             Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(220, 220, 220)),
         })
@@ -5275,10 +5288,10 @@ function Tab:AddCardGrid(opts)
 
         local holder
         if imageBackground then
-            holder = rect(tile, inset, inset, imgW, imageH, palette[1], innerRadius)
+            holder = rect(surface, inset, inset, imgW, imageH, palette[1], innerRadius)
             holder.BackgroundTransparency = 0.35
         else
-            holder = rect(tile, inset, inset, imgW, imageH, palette[1], innerRadius)
+            holder = rect(surface, inset, inset, imgW, imageH, palette[1], innerRadius)
             holder.BackgroundTransparency = 1
         end
         holder.ZIndex = 3
@@ -5345,11 +5358,11 @@ function Tab:AddCardGrid(opts)
 
         local titleLabel, subLabel
         if showTitles then
-            titleLabel = text(tile, def.Name, inset, inset + imageH + 4, imgW, 14, titleSize, palette[3], titleAlign,
+            titleLabel = text(surface, def.Name, inset, inset + imageH + 4, imgW, 14, titleSize, palette[3], titleAlign,
                 {Bold = opts.BoldTitles == true})
             titleLabel.Object.ZIndex = 4
             if subtitle then
-                subLabel = text(tile, subtitle, inset, inset + imageH + 17, imgW, 12, 10, palette[3], titleAlign)
+                subLabel = text(surface, subtitle, inset, inset + imageH + 17, imgW, 12, 10, palette[3], titleAlign)
                 subLabel.Object.ZIndex = 4
             end
         end
@@ -5357,7 +5370,7 @@ function Tab:AddCardGrid(opts)
         if def.Badge and not imageOnly then
             local caption = tostring(def.Badge)
             local bw = math.max(1, math.min(imgW - 8, TextService:GetTextSize(caption, 9, UI_FONT_BOLD, Vector2.new(1000, 14)).X + 10))
-            local badge = rect(tile, 10, 10, bw, 14, resolveColor(def.BadgeColor, rarity or accent), 3)
+            local badge = rect(surface, 10, 10, bw, 14, resolveColor(def.BadgeColor, rarity or accent), 3)
             badge.ZIndex = 6
             local badgeText = text(badge, caption, 0, 0, bw, 14, 9, pureWhite, "center", {Bold = true})
             badgeText.Object.ZIndex = 7
@@ -5370,7 +5383,7 @@ function Tab:AddCardGrid(opts)
             local cx = string.find(checkPosition, "left", 1, true) and 10 or (tileW - 10 - size)
             local cy = string.find(checkPosition, "bottom", 1, true) and math.max(10, inset + imageH - 4 - size) or 10
             local round = checkShape == "circle" and 7 or 3
-            check = rect(tile, cx, cy, size, size, palette[1], round)
+            check = rect(surface, cx, cy, size, size, palette[1], round)
             check.ZIndex = 6
             check.BackgroundTransparency = 0.15
             checkStroke = new("UIStroke", check, {Thickness = 1, Transparency = 0.3})
@@ -5390,13 +5403,13 @@ function Tab:AddCardGrid(opts)
 
         local lock
         if def.Locked or def.Disabled then
-            lock = iconLabel(tile, def.LockIcon or opts.LockIcon or {"lock", "lock-keyhole"},
+            lock = iconLabel(surface, def.LockIcon or opts.LockIcon or {"lock", "lock-keyhole"},
                 (tileW - 16) / 2, inset + (imageH - 16) / 2, 16, white, "x")
             lock.Object.ZIndex = 9
         end
 
         local entry = {
-            Def = def, Id = def.Id, Tile = tile, Stroke = stroke, UIScale = uiScale,
+            Def = def, Id = def.Id, Tile = tile, Surface = surface, Body = body, Stroke = stroke, UIScale = uiScale,
             Image = image, IconApi = iconApi, Title = titleLabel, Sub = subLabel,
             SubColor = resolveColor(def.SubtitleColor, opts.RaritySubtitle and rarity or nil),
             Check = check, CheckStroke = checkStroke, CheckFill = checkFill, CheckMark = checkMark,
@@ -5472,6 +5485,7 @@ function Tab:AddCardGrid(opts)
         for _, e in ipairs(entries) do
             if e.Tile.Visible and math.min(e.Y, e.TY) + tileH >= viewportTop
                 and math.max(e.Y, e.TY) <= viewportBottom then
+                if not e.Surface.Visible then e.Surface.Visible = true end
                 e.OffscreenSettled = false
                 local isSel = selected[e.Id] == true
                 local locked = e.Def.Disabled or e.Def.Locked
@@ -5495,7 +5509,7 @@ function Tab:AddCardGrid(opts)
                     roundPixel(e.Y + tileH * (1 - e.Scale) / 2))
                 e.UIScale.Scale = e.Scale
                 local tint = (useCardColor and e.Rarity) or tintBase
-                e.Tile.BackgroundColor3 = palette[4]:Lerp(palette[5], e.Hov * 0.7)
+                e.Body.BackgroundColor3 = palette[4]:Lerp(palette[5], e.Hov * 0.7)
                     :Lerp(tint, e.Sel * 0.16 * state.AccentAlpha)
                 e.Stroke.Color = palette[5]:Lerp(tint, e.Sel)
                 e.Stroke.Transparency = 0.4 * (1 - e.Sel)
@@ -5530,6 +5544,7 @@ function Tab:AddCardGrid(opts)
                     e.Check.Visible = checkStyle ~= "selected" or a > 0.01 or e.Hov > 0.01
                 end
             elseif e.Tile.Visible then
+                if e.Surface.Visible then e.Surface.Visible = false end
                 e.X, e.Y = e.TX, e.TY
                 e.Scale, e.Hov, e.Shake = 1, 0, 0
                 e.Sel = selected[e.Id] and 1 or 0
