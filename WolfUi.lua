@@ -1,6 +1,5 @@
--- Delivery build: vote-popup-r3 / 2026-10-13 12:32 Europe/Kaliningrad
--- Includes card popup, compatibility fallback and notification tests.
--- WolfUI 5.8.1 | Black Frost
+-- Release: popup-r4 | 2026-10-13 | compact cards / vote count / camera culling
+-- WolfUI 5.9.0 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -702,7 +701,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.8.1",
+    Version = "5.9.0",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -5832,6 +5831,7 @@ function Tab:AddConfigManager(opts)
 end
 
 -- Persistent, image-based action notification, independent of main-menu visibility.
+Library.CardNotificationVersion="5.9.0"
 function Library:NotifyCards(opts)
     opts=opts or {}
     local window=self.Window
@@ -5839,69 +5839,90 @@ function Library:NotifyCards(opts)
     local maid=Maid.new(Library.Maid)
     local ok,result=pcall(function()
     local api={Maid=maid,Destroyed=false,Closing=false,Selected=nil,Cards={}}
-    local width,height=454,204
+    local width,height=338,164
+    local colors=Library.Palette or palette
     local tweenService=game:GetService("TweenService")
-    local panel=rect(window.Gui,0,0,width,height,Color3.fromRGB(19,20,23),14,"CanvasGroup")
+    local panel=rect(window.Gui,0,0,width,height,colors[2],10,"CanvasGroup")
     panel.Name="CardNotification"
     panel.AnchorPoint=Vector2.new(1,0)
     panel.ZIndex=80
     panel.GroupTransparency=1
-    panel.BackgroundTransparency=0.16
+    panel.BackgroundTransparency=0.20
     panel.ClipsDescendants=true
     maid:Add(panel)
     api.Object=panel
     local scale=new("UIScale",panel,{Scale=1})
-    new("UIStroke",panel,{Color=Color3.fromRGB(120,125,134),Thickness=1,Transparency=0.56})
-    new("UIGradient",panel,{Rotation=105,Color=ColorSequence.new(Color3.fromRGB(255,255,255),Color3.fromRGB(170,175,185))})
+    new("UIStroke",panel,{Color=colors[5],Thickness=1,Transparency=0.56})
+    new("UIGradient",panel,{Rotation=105,Color=ColorSequence.new(Color3.fromRGB(255,255,255),Color3.fromRGB(220,220,220))})
     local function label(parent,caption,x,y,w,h,size,color,bold)
         return new("TextLabel",parent,{BackgroundTransparency=1,BorderSizePixel=0,
             Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),Text=tostring(caption),
             Font=bold and UI_FONT_BOLD or UI_FONT,TextSize=size,TextColor3=color or white,
             TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=82})
     end
-    local iconBox=rect(panel,12,12,32,32,Color3.fromRGB(47,50,57),9)
-    iconBox.ZIndex=81
-    iconLabel(iconBox,opts.Icon or "map",8,8,16,white,"M")
-    label(panel,opts.Title or "Map vote",54,11,width-100,18,13,white,true)
-    local dot=rect(panel,54,36,5,5,Color3.fromRGB(124,205,157),3)
-    dot.ZIndex=82
-    local subtitle=label(panel,opts.Text or "Choose a map",65,30,width-116,18,10,Color3.fromRGB(168,174,183))
-    local close=rect(panel,width-39,13,26,26,Color3.fromRGB(48,50,57),8,"TextButton")
-    close.ZIndex=85;close.BackgroundTransparency=0.5;close.Text="×";close.TextSize=18;close.TextColor3=Color3.fromRGB(195,199,206)
-    local separator=rect(panel,12,54,width-24,1,Color3.fromRGB(108,112,124))
-    separator.ZIndex=81;separator.BackgroundTransparency=0.8
+    label(panel,opts.Title or "Map vote",10,8,152,17,12,colors[3],true)
+    local subtitle=label(panel,opts.Text or "Choose a map",10,27,width-20,15,9,colors[3])
+    subtitle.TextTransparency=0.36
+    local control=rect(panel,196,9,96,23,colors[4],6)
+    control.ZIndex=85;control.BackgroundTransparency=0.16
+    local value=label(control,"10",22,0,52,23,11,colors[3],true)
+    value.TextXAlignment=Enum.TextXAlignment.Center;value.ZIndex=87
+    local countValue=math.clamp(math.floor(tonumber(opts.Value) or 10),1,100)
+    local minus=rect(control,0,0,23,23,colors[4],6,"TextButton")
+    local plus=rect(control,73,0,23,23,colors[4],6,"TextButton")
+    for _,button in ipairs({minus,plus}) do button.ZIndex=88;button.TextColor3=colors[3];button.TextSize=14;button.BackgroundTransparency=1 end
+    minus.Text="−";plus.Text="+"
+    api.ValueLabel=value
+    function api:SetValue(number,silent)
+        if self.Destroyed or self.Closing then return end
+        countValue=math.clamp(math.floor(tonumber(number) or 10),1,100)
+        self.Value=countValue;value.Text=tostring(countValue)
+        if not silent and opts.ValueChanged then opts.ValueChanged(countValue,self) end
+    end
+    maid:Connect(minus.Activated,function() api:SetValue(countValue-1) end)
+    maid:Connect(plus.Activated,function() api:SetValue(countValue+1) end)
+    api:SetValue(countValue,true)
+    local close=rect(panel,width-35,8,25,25,colors[4],6,"TextButton")
+    close.ZIndex=89;close.BackgroundTransparency=1;close.Text="×";close.TextSize=17;close.TextColor3=colors[3]
     local cells={}
     local function applySelected()
         for _,cell in ipairs(cells) do
             local on=cell.Def and tostring(cell.Def.Id)==api.Selected
             cell.Edge.Transparency=on and 0.12 or 0.8
-            cell.Edge.Color=on and Color3.fromRGB(225,229,236) or Color3.fromRGB(105,111,123)
+            cell.Edge.Color=on and colors[3] or colors[5]
             cell.Check.Visible=on
         end
     end
     for index=1,3 do
-        local x=12+(index-1)*146
-        local group=rect(panel,x,66,138,126,Color3.fromRGB(34,36,41),9,"CanvasGroup")
-        group.ZIndex=82;group.ClipsDescendants=true
-        local edge=new("UIStroke",group,{Color=Color3.fromRGB(105,111,123),Thickness=1,Transparency=0.8})
-        local image=new("ImageLabel",group,{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,
+        local x=10+(index-1)*108
+        local group=rect(panel,x,51,102,103,colors[4],7,"CanvasGroup")
+        group.ZIndex=82;group.ClipsDescendants=true;group.BackgroundTransparency=0.16
+        new("UIGradient",group,{Rotation=105,Color=ColorSequence.new(Color3.fromRGB(255,255,255),Color3.fromRGB(220,220,220))})
+        local cellScale=new("UIScale",group,{Scale=1})
+        local edge=new("UIStroke",group,{Color=colors[5],Thickness=1,Transparency=0.55})
+        local image=new("ImageLabel",group,{Position=UDim2.fromOffset(6,6),Size=UDim2.fromOffset(90,73),
+            BackgroundColor3=colors[1],BackgroundTransparency=0.35,BorderSizePixel=0,
             Image="",ScaleType=Enum.ScaleType.Crop,ZIndex=83})
-        local placeholder=label(group,"MAP",10,31,118,32,23,Color3.fromRGB(151,158,173),true)
+        new("UICorner",image,{CornerRadius=UDim.new(0,3)})
+        local placeholder=label(group,"",6,26,90,30,18,colors[3],true)
         placeholder.TextXAlignment=Enum.TextXAlignment.Center
-        local shade=rect(group,0,0,138,126,Color3.new(0,0,0))
-        shade.ZIndex=84
-        new("UIGradient",shade,{Rotation=90,Transparency=NumberSequence.new({
-            NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(0.48,0.88),NumberSequenceKeypoint.new(1,0.18)})})
-        local title=label(group,"",10,85,118,19,11,white,true);title.ZIndex=85
-        local hint=label(group,"Click to dupe",10,105,118,14,9,Color3.fromRGB(186,192,203));hint.ZIndex=85
-        local pill=rect(group,96,8,34,22,Color3.fromRGB(15,16,20),11);pill.BackgroundTransparency=0.22;pill.ZIndex=85
-        local count=label(pill,"0",0,0,34,22,10,white,true);count.ZIndex=86;count.TextXAlignment=Enum.TextXAlignment.Center
-        local check=rect(group,8,8,21,21,Color3.fromRGB(221,227,236),7,"TextLabel")
-        check.ZIndex=85;check.Text="✓";check.TextSize=12;check.TextColor3=Color3.fromRGB(23,25,29);check.Visible=false
+        local title=label(group,"",6,83,90,14,10,colors[3],false)
+        title.TextXAlignment=Enum.TextXAlignment.Center;title.ZIndex=85
+        local pill=rect(group,71,10,21,17,colors[2],5);pill.BackgroundTransparency=0.1;pill.ZIndex=85
+        local count=label(pill,"0",0,0,21,17,9,colors[3],true);count.ZIndex=86;count.TextXAlignment=Enum.TextXAlignment.Center
+        local check=rect(group,10,10,16,16,colors[3],4,"TextLabel")
+        check.ZIndex=85;check.Font=UI_FONT_BOLD;check.Text="✓";check.TextSize=10;check.TextColor3=colors[1];check.Visible=false
         local button=new("TextButton",group,{Text="",BackgroundTransparency=1,AutoButtonColor=false,
             Size=UDim2.fromScale(1,1),ZIndex=90})
-        local cell={Group=group,Image=image,Placeholder=placeholder,Title=title,Hint=hint,Count=count,Check=check,Edge=edge}
+        local cell={Group=group,Image=image,Placeholder=placeholder,Title=title,Count=count,Check=check,Edge=edge}
         cells[index]=cell
+        local function hover(on)
+            if api.Destroyed or api.Closing then return end
+            local tween=tweenService:Create(cellScale,TweenInfo.new(0.12,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Scale=on and 0.97 or 1})
+            maid:Add(tween,"hover"..index);tween:Play()
+        end
+        maid:Connect(button.MouseEnter,function() hover(true) end)
+        maid:Connect(button.MouseLeave,function() hover(false) end)
         maid:Connect(button.Activated,function()
             if api.Destroyed or api.Closing or not cell.Def or cell.Def.Disabled then return end
             api:SetSelected(cell.Def.Id)
@@ -5921,7 +5942,7 @@ function Library:NotifyCards(opts)
                 cell.Image.Image=tostring(def.Image or "")
                 cell.Placeholder.Visible=not def.Image or def.Image==""
                 cell.Title.Text=tostring(def.Name or def.Title or "Map")
-                cell.Hint.Text=def.Disabled and "Unavailable" or tostring(def.Subtitle or "Click to dupe")
+                cell.Placeholder.Text=tostring(def.Name or "?"):sub(1,2):upper()
                 cell.Count.Text=tostring(def.Count or 0)
             end
         end
@@ -5944,23 +5965,26 @@ function Library:NotifyCards(opts)
         if self.Destroyed or self.Closing then return end
         self.Closing=true
         if opts.OnClose then opts.OnClose(reason or "manual",self) end
-        local tween=tweenService:Create(panel,TweenInfo.new(0.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{GroupTransparency=1})
+        local tween=tweenService:Create(panel,TweenInfo.new(0.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{GroupTransparency=1,Position=panel.Position+UDim2.fromOffset(0,8)})
         maid:Add(tween,"fade")
         maid:Once(tween.Completed,function() self:Destroy() end)
         tween:Play()
     end
     maid:Connect(close.Activated,function() api:Close("manual") end)
+    local targetPosition
     local function layout()
         local view=window.Gui.AbsoluteSize
         if view.X<=0 or view.Y<=0 then view=window.Viewport end
         local factor=math.min(1,math.max(0.1,(view.X-24)/width),math.max(0.1,(view.Y-24)/height))
         scale.Scale=factor
-        panel.Position=UDim2.new(1,-12,0,math.max(12,math.min(78,view.Y-height*factor-12)))
+        targetPosition=UDim2.new(1,-12,0,math.max(12,math.min(66,view.Y-height*factor-12)))
+        panel.Position=targetPosition
     end
     maid:Connect(window.Gui:GetPropertyChangedSignal("AbsoluteSize"),layout)
     layout()
+    panel.Position=targetPosition+UDim2.fromOffset(0,12)
     api:SetCards(opts.Cards or {})
-    local tween=tweenService:Create(panel,TweenInfo.new(0.22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{GroupTransparency=0})
+    local tween=tweenService:Create(panel,TweenInfo.new(0.22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{GroupTransparency=0,Position=targetPosition})
     maid:Add(tween,"fade");tween:Play()
     return api
     end)
