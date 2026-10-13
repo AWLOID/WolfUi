@@ -1,5 +1,5 @@
--- Release: popup-r6 | 2026-10-13 | hit chance threshold / Force Shoot override
--- WolfUI 5.9.1 | Black Frost
+-- Release: popup-r7 | 2026-10-13 | original menu check icon / vote respawn GUI cache
+-- WolfUI 5.9.2 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -701,7 +701,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.9.1",
+    Version = "5.9.2",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -4998,22 +4998,9 @@ end
 -- CardGrid: selectable picture cards (skin changer style).
 -- The developer decides everything: columns, sizes, limits, colors, callbacks.
 -- ============================================================================
--- One vector check mark shared by menu cards and card notifications.
+-- Use the exact original menu icon, including atlas crop and text fallback.
 function Library:CreateCheckMark(parent,x,y,size,color)
-    local object=rect(parent,x,y,size,size,nil,nil)
-    object.BackgroundTransparency=1
-    local first=rect(object,2,6,4,1.6,color,1)
-    first.AnchorPoint=Vector2.new(0,0.5);first.Rotation=45
-    local second=rect(object,4.8,8.8,8,1.6,color,1)
-    second.AnchorPoint=Vector2.new(0,0.5);second.Rotation=-45
-    local api={Object=object}
-    function api:Alpha(value)
-        local alpha=math.clamp(tonumber(value) or 0,0,1)
-        first.BackgroundTransparency=1-alpha;second.BackgroundTransparency=1-alpha
-        first.ZIndex=object.ZIndex+1;second.ZIndex=object.ZIndex+1
-    end
-    function api:Color(value) first.BackgroundColor3=value;second.BackgroundColor3=value end
-    return api
+    return iconLabel(parent,{"check"},x,y,size,color,"v")
 end
 
 function Tab:AddCardGrid(opts)
@@ -5415,7 +5402,7 @@ function Tab:AddCardGrid(opts)
                 orderLabel.Object.ZIndex = 8
                 orderLabel:Color(pureWhite)
             else
-                checkMark = Library:CreateCheckMark(check,1,1,12,black)
+                checkMark = iconLabel(check, {"check"}, 1, 1, 12, black, "v")
                 checkMark.Object.ZIndex = 8
             end
         end
@@ -5849,7 +5836,7 @@ function Tab:AddConfigManager(opts)
 end
 
 -- Persistent, image-based action notification, independent of main-menu visibility.
-Library.CardNotificationVersion="5.9.1"
+Library.CardNotificationVersion="5.9.2"
 function Library:NotifyCards(opts)
     opts=opts or {}
     local window=self.Window
@@ -5906,11 +5893,12 @@ function Library:NotifyCards(opts)
     local function applySelected()
         for _,cell in ipairs(cells) do
             local on=cell.Def and tostring(cell.Def.Id)==api.Selected
-            cell.Edge.Transparency=on and 0.12 or 0.8
+            cell.Edge.Transparency=on and 0 or 0.4
             cell.Edge.Color=on and colors[3] or colors[5]
             local tint=Library.Accent or colors[3]
             cell.Edge.Color=on and tint or colors[5]
             cell.CheckFill.BackgroundColor3=tint
+            cell.CheckFill.BackgroundTransparency=on and (1-(Library.AccentAlpha or 1)) or 1
             cell.CheckFill.Size=UDim2.fromOffset(on and 14 or 0,on and 14 or 0)
             cell.CheckFill.Position=UDim2.fromOffset(on and 0 or 7,on and 0 or 7)
             cell.CheckMark:Alpha(on and 1 or 0)
@@ -5932,11 +5920,12 @@ function Library:NotifyCards(opts)
         placeholder.TextXAlignment=Enum.TextXAlignment.Center
         local title=label(group,"",6,71,76,14,9,colors[3],false)
         title.TextXAlignment=Enum.TextXAlignment.Center;title.ZIndex=85
-        local pill=rect(group,58,9,20,17,colors[2],5);pill.BackgroundTransparency=0.1;pill.ZIndex=85
+        local pill=rect(group,10,9,20,17,colors[2],5);pill.BackgroundTransparency=0.1;pill.ZIndex=85
         local count=label(pill,"0",0,0,20,17,9,colors[3],true);count.ZIndex=86;count.TextXAlignment=Enum.TextXAlignment.Center
-        local check=rect(group,10,10,14,14,colors[1],3)
+        local check=rect(group,64,10,14,14,colors[1],3)
         check.ZIndex=85;check.BackgroundTransparency=0.15
         local checkStroke=new("UIStroke",check,{Color=colors[5],Thickness=1,Transparency=0.3})
+        checkStroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
         local checkFill=rect(check,7,7,0,0,Library.Accent or colors[3],3);checkFill.ZIndex=86
         local checkMark=Library:CreateCheckMark(check,1,1,12,Color3.new(0,0,0))
         checkMark.Object.ZIndex=87;checkMark:Alpha(0)
@@ -5967,22 +5956,27 @@ function Library:NotifyCards(opts)
             cell.Group.Visible=def~=nil
             if def then
                 self.Cards[index]=def
-                cell.Image.Image=tostring(def.Image or "")
+                if cell.Image.Image~=tostring(def.Image or "") then cell.Image.Image=tostring(def.Image or "") end
                 cell.Placeholder.Visible=not def.Image or def.Image==""
-                cell.Title.Text=tostring(def.Name or def.Title or "Map")
-                cell.Placeholder.Text=tostring(def.Name or "?"):sub(1,2):upper()
-                cell.Count.Text=tostring(def.Count or 0)
+                if cell.Title.Text~=tostring(def.Name or def.Title or "Map") then cell.Title.Text=tostring(def.Name or def.Title or "Map") end
+                if cell.Placeholder.Text~=tostring(def.Name or "?"):sub(1,2):upper() then cell.Placeholder.Text=tostring(def.Name or "?"):sub(1,2):upper() end
+                if cell.Count.Text~=tostring(def.Count or 0) then cell.Count.Text=tostring(def.Count or 0) end
             end
         end
         applySelected()
     end
     function api:SetSelected(id)
         if self.Destroyed then return end
-        self.Selected=id~=nil and tostring(id) or nil
+        local selected=id~=nil and tostring(id) or nil
+        if self.Selected==selected then return end
+        self.Selected=selected
         applySelected()
     end
     function api:SetText(value)
-        if not self.Destroyed then subtitle.Text=tostring(value or "") end
+        if not self.Destroyed then
+            local caption=tostring(value or "")
+            if subtitle.Text~=caption then subtitle.Text=caption end
+        end
     end
     function api:Destroy()
         if self.Destroyed then return end
