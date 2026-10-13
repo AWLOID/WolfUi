@@ -1,5 +1,5 @@
--- Release: popup-r7 | 2026-10-13 | original menu check icon / vote respawn GUI cache
--- WolfUI 5.9.2 | Black Frost
+-- Release: 6.0.0 | 2026-10-13 | layout engine / groups / notification center
+-- WolfUI 6.0.0 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -275,6 +275,7 @@ end
 function Maid:Clean()
     local tasks = self._tasks
     self._tasks = {}
+    self.UiObjects = nil
     for child in pairs(self._children) do
         child:Destroy()
     end
@@ -387,7 +388,14 @@ local function runUpdates(collection, dt, k, renderCache)
             collection[writeIndex] = update
             writeIndex = writeIndex + 1
             if not object or isRendered(object, renderCache) then
-                update.Callback(dt, k)
+                local ok, err = pcall(update.Callback, dt, k)
+                if not ok then
+                    -- One faulty extension must not stop every control's animation.
+                    update.Alive = false
+                    Runtime.Stats.UpdateErrors = (Runtime.Stats.UpdateErrors or 0) + 1
+                    Runtime.Stats.LastUpdateError = tostring(err)
+                    warn("WolfUi: disabled failed UI update: " .. tostring(err))
+                end
             end
         end
     end
@@ -701,7 +709,11 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.9.2",
+    Version = "6.0.0",
+    Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1}),
+    Design = table.freeze({CardRadius = 8, PopupRadius = 8, ControlRadius = 3,
+        CardTransparency = 0.20, StrokeTransparency = 0.65, Gap = 10, Padding = 10}),
+    NotificationOptions = {Width = 250, MaxVisible = 5, Position = "Right", Gap = 8, PauseOnHover = true},
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -1067,6 +1079,16 @@ function Library:CreateWindow(opts)
         Library:Unload()
     end
 
+    -- Dimensions are chosen before building controls; existing callers retain 590 x 350.
+    local requested = opts.Size
+    local sizeX, sizeY
+    if typeof(requested) == "Vector2" then sizeX, sizeY = requested.X, requested.Y
+    elseif type(requested) == "table" then sizeX, sizeY = requested.X or requested[1], requested.Y or requested[2] end
+    WINDOW_W = math.clamp(math.floor(tonumber(sizeX or opts.Width) or 590), 480, 1040)
+    WINDOW_H = math.clamp(math.floor(tonumber(sizeY or opts.Height) or 350), 300, 780)
+    CONTENT_W, W = WINDOW_W - SIDEBAR_W - RAIL_W, WINDOW_W - SIDEBAR_W - RAIL_W - PAD * 2
+    if type(opts.Notifications) == "table" then self:SetNotificationOptions(opts.Notifications) end
+
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive, Runtime.Owner = {}, {}, {}, true, nil
     Runtime.ThemeDirty = true
     Library.Maid = Maid.new()
@@ -1112,6 +1134,8 @@ function Library:CreateWindow(opts)
         Opened = nil,
         Keybinds = {},
         Notifications = {},
+        NotificationIds = {},
+        Size = Vector2.new(WINDOW_W, WINDOW_H),
         Current = nil,
         RailCount = 0,
         Mini = {},
@@ -1986,7 +2010,8 @@ function Library:CreateWindow(opts)
     tooltip.Visible = false
     tooltip.ZIndex = 60
     new("UIStroke", tooltip, {Color = palette[5], Thickness = 1, Transparency = 0.4})
-    local tooltipText = text(tooltip, "", 6, 0, 10, 20, 11, white)
+    local tooltipText = text(tooltip, "", 6, 4, 10, 12, 11, white, nil, {Wrap = true})
+    local tooltipHeight = 20
 
     local function floating(object, config, onPress, onDrop)
         local startPoint, startPos
@@ -2338,18 +2363,20 @@ function Library:CreateWindow(opts)
             local caption = window.TooltipText
             if caption ~= tooltipCaption then
                 tooltipCaption = caption
-                local bounds = TextService:GetTextSize(caption, 11, UI_FONT, Vector2.new(4000, 20))
+                local bounds = TextService:GetTextSize(caption, 11, UI_FONT,
+                    Vector2.new(math.max(40, math.min(220, viewport.X - 24)), 10000))
                 tooltipWidth = bounds.X + 12
+                tooltipHeight = bounds.Y + 8
                 tooltipText:SetText(caption)
-                tooltipText:Width(bounds.X + 2)
-                tooltip.Size = UDim2.fromOffset(roundPixel(tooltipWidth), 20)
+                tooltipText.Object.Size = UDim2.fromOffset(roundPixel(bounds.X + 2), roundPixel(bounds.Y))
+                tooltip.Size = UDim2.fromOffset(roundPixel(tooltipWidth), roundPixel(tooltipHeight))
             end
             tooltip.Visible = true
             tooltip.BackgroundColor3 = palette[1]
             local origin = window.TooltipObject.AbsolutePosition
             tooltip.Position = UDim2.fromOffset(
                 math.clamp(origin.X, 0, math.max(0, viewport.X - tooltipWidth)),
-                math.clamp(origin.Y - 24, 0, math.max(0, viewport.Y - 20))
+                math.clamp(origin.Y - tooltipHeight - 4, 0, math.max(0, viewport.Y - tooltipHeight))
             )
         else
             tooltip.Visible = false
@@ -2362,6 +2389,25 @@ function Library:CreateWindow(opts)
     notifyHolder.Size = UDim2.new(0, 250, 1, -16)
     notifyHolder.ZIndex = 30
     window.NotifyHolder = notifyHolder
+    local notifyScale = new("UIScale", notifyHolder, {Scale = 1})
+    function window.LayoutNotifications()
+        local config, widest, total = Library.NotificationOptions, Library.NotificationOptions.Width, 0
+        for _, notif in ipairs(window.Notifications) do
+            widest = math.max(widest, notif.Width)
+            total = total + notif.Height + config.Gap
+        end
+        local factor = math.min(1, math.max(0.2, (window.Viewport.X - 16) / widest))
+        notifyScale.Scale = factor
+        notifyHolder.Size = UDim2.fromOffset(widest, math.max(1, (window.Viewport.Y - 16) / factor))
+        notifyHolder.Position = config.Position == "Left" and UDim2.fromOffset(8, 8)
+            or UDim2.new(1, -widest * factor - 8, 0, 8)
+        while #window.Notifications > 1 and total - config.Gap > (window.Viewport.Y - 16) / factor do
+            local oldest = window.Notifications[1]
+            total = total - oldest.Height - config.Gap
+            oldest:Destroy()
+        end
+    end
+    window.LayoutNotifications()
 
     connect(UIS.InputBegan, function(input, processed)
 
@@ -2531,7 +2577,11 @@ function Library:CreateWindow(opts)
         local camera = workspace.CurrentCamera
         local viewportChanged = camera and camera.ViewportSize ~= window.Viewport
         local scaleChanged = window.StepScale(dt)
-        if viewportChanged then window.LayoutMini() end
+        if viewportChanged then
+            window.LayoutMini()
+            window.LayoutNotifications()
+            tooltipCaption = nil
+        end
         if viewportChanged or scaleChanged then
             runUi = true
             uiDt = dt
@@ -2547,7 +2597,12 @@ function Library:CreateWindow(opts)
 
         for index = #window.Notifications, 1, -1 do
             local notif = window.Notifications[index]
-            if not notif.Sticky then notif.Life = notif.Life - dt end
+            if notif.Destroyed then
+                table.remove(window.Notifications, index)
+            else
+            if not notif.Sticky and not (notif.Hover and Library.NotificationOptions.PauseOnHover) then
+                notif.Life = math.max(0, notif.Life - dt)
+            end
             local target = (notif.Life > 0) and 1 or 0
             notif.Alpha = fadeAlpha(notif.Alpha, target, dt)
             notif.Y = approach(notif.Y, notif.TargetY, motionFactor(20, dt))
@@ -2560,18 +2615,21 @@ function Library:CreateWindow(opts)
                 notif.Progress.BackgroundColor3 = tint
                 notif.Progress.Visible = not notif.Sticky
                 notif.Progress.Size = UDim2.fromOffset(
-                    roundPixel(250 * math.clamp(notif.Life / math.max(0.01, notif.Duration or 4), 0, 1)), 2)
+                    roundPixel(notif.Width * math.clamp(notif.Life / math.max(0.01, notif.Duration or 4), 0, 1)), 2)
             end
-            notif.Object.Position = UDim2.fromOffset(roundPixel(260 * (1 - notif.Alpha)), roundPixel(notif.Y))
+            notif.Object.Position = UDim2.fromOffset(roundPixel((notif.Width + 10) * (1 - notif.Alpha) * (Library.NotificationOptions.Position == "Left" and -1 or 1)), roundPixel(notif.Y))
             if notif.Life <= 0 and notif.Alpha <= 0.01 then
                 if notif.Maid then notif.Maid:Destroy() else notif.Object:Destroy() end
+                if notif.Id and window.NotificationIds[notif.Id] == notif then window.NotificationIds[notif.Id] = nil end
+                notif.Destroyed = true
                 table.remove(window.Notifications, index)
+            end
             end
         end
         local offset = 0
         for _, notif in ipairs(window.Notifications) do
             notif.TargetY = offset
-            offset = offset + notif.Height + 8
+            offset = offset + notif.Height + Library.NotificationOptions.Gap
         end
 
         window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
@@ -2685,6 +2743,15 @@ function Window:SetVisible(value)
     if self.UpdateOpenVisibility then self.UpdateOpenVisibility() end
 end
 
+function Window:GetSize() return self.Size end
+
+function Window:Center()
+    self.Position = (self.Viewport - self.Size * self.ScaleCurrent) / 2
+    self.Layout()
+    self:Wake()
+    return self
+end
+
 function Window:GetVisible()
     return self.Visible
 end
@@ -2765,20 +2832,23 @@ function Window:SelectTab(name)
     end
     tab.Slide = previous and (direction * slide * (1 - math.clamp(tab.Alpha or 0, 0, 1))) or 0
     tab.ExitSlide = 0
+    if previous then previous.ScrollPosition = self.Scroll.CanvasPosition.Y end
     self.Opened = nil
     self.Current = tab
     self.MainFadeDirty = true
     if self.Wake then self:Wake() end
     state.Tab = tab.Name
     self.Scroll.CanvasSize = UDim2.fromOffset(0, tab.Height + PAD * 2)
-    self.Scroll.CanvasPosition = Vector2.new(0, 0)
+    self.Scroll.CanvasPosition = Vector2.new(0, math.clamp(tab.ScrollPosition or 0, 0,
+        math.max(0, tab.Height + PAD * 2 - self.Scroll.AbsoluteSize.Y)))
     fireChange("Tab", tab.Name)
     self.TabChanged:Fire(tab.Name)
 end
 
 function Window:CreateTab(opts)
     opts = opts or {}
-    local name = opts.Name or ("Tab" .. tostring(#self.TabList + 1))
+    local name = tostring(opts.Name or ("Tab" .. tostring(#self.TabList + 1)))
+    if self.Tabs[name] then error("WolfUi: duplicate tab name '" .. name .. "'", 2) end
     local index = #self.TabList + 1
 
     local page = new("Frame", self.Scroll, {
@@ -2900,6 +2970,10 @@ end
 function Tab:_place(w, h)
     local total = self:_pageWidth()
     local cursor = self.Cursor
+    self.LayoutItems = self.LayoutItems or {}
+    local item = {Width = w, Height = h, Break = self.LayoutBreak == true}
+    self.LayoutBreak = false
+    self.LayoutItems[#self.LayoutItems + 1] = item
     if cursor.X > 0 and cursor.X + w > total + 0.5 then
         cursor.Y = cursor.Y + cursor.RowHeight + GAP
         cursor.X = 0
@@ -2913,10 +2987,12 @@ function Tab:_place(w, h)
         cursor.X = 0
         cursor.RowHeight = 0
     end
+    item.X, item.Y = x, y
     return x, y
 end
 
 function Tab:_newline()
+    self.LayoutBreak = true
     local cursor = self.Cursor
     if cursor.X > 0 then
         cursor.Y = cursor.Y + cursor.RowHeight + GAP
@@ -2929,6 +3005,7 @@ function Tab:_grow()
     local cursor = self.Cursor
     local height = cursor.Y + cursor.RowHeight
     self.Height = height
+    if (self.LayoutDepth or 0) > 0 then self.LayoutDirty = true return end
     self.Page.Size = UDim2.fromOffset(self:_pageWidth(), math.max(1, height))
     if self.OnResize then self.OnResize(height) end
     if self.Window and self.Window.Current == self then
@@ -2937,17 +3014,128 @@ function Tab:_grow()
 end
 function Tab:_card(w, h, name)
     local x, y = self:_place(w, h)
-    local card = paint(rect(self.Page, x, y, w, h, palette[2], 8), 2)
-    card.BackgroundTransparency = 0.2
+    local card = paint(rect(self.Page, x, y, w, h, palette[2], Library.Design.CardRadius), 2)
+    card.BackgroundTransparency = Library.Design.CardTransparency
     new("UIGradient", card, {
         Rotation = 100,
         Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(218, 218, 218)),
     })
-    new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = 0.65,
+    new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = Library.Design.StrokeTransparency,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     card.Name = name or "Element"
+    local record = self:_track(card)
+    if Runtime.Owner then
+        local owner = Runtime.Owner
+        owner.UiObjects = owner.UiObjects or {}
+        owner.UiObjects[card] = true
+        owner:Add(card)
+        if record then self:_watchLayout(record, owner) end
+    end
     self:_grow()
     return card
+end
+
+
+-- Layout records keep mixed columns, section breaks and changing heights in sync.
+-- Reflow only writes positions; the width of a constructed control is immutable.
+function Tab:_track(object, maid)
+    if not object or object.Parent ~= self.Page then return end
+    local record
+    for _, item in ipairs(self.LayoutItems or {}) do
+        if item.Object == object then
+            item.Width, item.Height = object.Size.X.Offset, object.Size.Y.Offset
+            return item
+        end
+        if not item.Object and item.X == object.Position.X.Offset and item.Y == object.Position.Y.Offset then
+            record = item
+        end
+    end
+    if not record then return end
+    record.Object = object
+    if maid then self:_watchLayout(record, maid) end
+    return record
+end
+
+function Tab:_watchLayout(record, maid)
+    if record.Watched then return end
+    record.Watched = true
+    local object = record.Object
+    maid:Connect(object:GetPropertyChangedSignal("Visible"), function() self:Reflow() end)
+    maid:Connect(object:GetPropertyChangedSignal("Size"), function()
+        record.Height = object.Size.Y.Offset
+        record.Width = object.Size.X.Offset
+        self:Reflow()
+    end)
+    maid:Add(function()
+        record.Removed = true
+        record.Object = nil
+        for index, item in ipairs(self.LayoutItems or {}) do
+            if item == record then table.remove(self.LayoutItems, index) break end
+        end
+        if Runtime.Alive and not self.Destroyed then self:Reflow() end
+    end)
+end
+
+function Tab:BeginUpdate()
+    self.LayoutDepth = (self.LayoutDepth or 0) + 1
+    return self
+end
+
+function Tab:EndUpdate()
+    self.LayoutDepth = math.max(0, (self.LayoutDepth or 0) - 1)
+    if self.LayoutDepth == 0 then self:Reflow() end
+    return self
+end
+
+function Tab:Batch(callback)
+    self:BeginUpdate()
+    local ok, result = pcall(callback, self)
+    self:EndUpdate()
+    if not ok then error(result, 0) end
+    return result
+end
+
+function Tab:Reflow()
+    if self.Destroyed or self.Reflowing then return end
+    if (self.LayoutDepth or 0) > 0 then self.LayoutDirty = true return end
+    self.LayoutDirty, self.Reflowing = false, true
+    local cursor, total = {X = 0, Y = 0, RowHeight = 0}, self:_pageWidth()
+    for _, item in ipairs(self.LayoutItems or {}) do
+        local object = item.Object
+        if not item.Removed and (not object or object.Parent and object.Visible) then
+            if cursor.X > 0 and (item.Break or cursor.X + item.Width > total + 0.5) then
+                cursor.Y = cursor.Y + cursor.RowHeight + GAP
+                cursor.X, cursor.RowHeight = 0, 0
+            end
+            item.X, item.Y = cursor.X, cursor.Y
+            if object then object.Position = UDim2.fromOffset(item.X, item.Y) end
+            cursor.X = cursor.X + item.Width + GAP
+            cursor.RowHeight = math.max(cursor.RowHeight, item.Height)
+            if cursor.X >= total then
+                cursor.Y = cursor.Y + cursor.RowHeight + GAP
+                cursor.X, cursor.RowHeight = 0, 0
+            end
+        end
+    end
+    self.Cursor = cursor
+    self:_grow()
+    if self.Window and self.Window.Current == self then
+        local scroll = self.Window.Scroll
+        local maximum = math.max(0, self.Height + PAD * 2 - scroll.AbsoluteSize.Y)
+        if scroll.CanvasPosition.Y > maximum then scroll.CanvasPosition = Vector2.new(0, maximum) end
+    end
+    self.Reflowing = false
+    if self.Window and self.Window.Wake then self.Window:Wake() end
+end
+
+function Tab:ScrollTo(element)
+    if not self.Window or self.IsSubMenu or self.IsGroup then return false end
+    local object = type(element) == "table" and element.Object or element
+    if not object or object.Parent ~= self.Page then return false end
+    self.Window:SelectTab(self)
+    self.Window.Scroll.CanvasPosition = Vector2.new(0, math.clamp(object.Position.Y.Offset, 0,
+        math.max(0, self.Height + PAD * 2 - self.Window.Scroll.AbsoluteSize.Y)))
+    return true
 end
 
 local function baseApi(tab, card, flag)
@@ -2958,6 +3146,14 @@ local function baseApi(tab, card, flag)
         Library.Elements[flag] = api
     end
     tab.Elements[#tab.Elements + 1] = api
+    if Runtime.Owner then
+        Runtime.Owner:Add(function()
+            if flag and Library.Elements[flag] == api then Library.Elements[flag] = nil end
+            for index, element in ipairs(tab.Elements) do
+                if element == api then table.remove(tab.Elements, index) break end
+            end
+        end)
+    end
     return api
 end
 
@@ -3164,6 +3360,9 @@ local function createMiniButton(window, config)
     connect(button.MouseLeave, function() hover = false end)
 
     local alpha, tint = mini.Active and 1 or 0, palette[3]
+    local corner = button:FindFirstChildOfClass("UICorner")
+    local geometryWidth, geometryHeight, geometryCaption
+    local savedX, savedY, shownPosition = nil, nil, mini.Target
     local function updateMini(dt, k)
         if mini.Destroyed then return end
         if config.Sync then
@@ -3182,7 +3381,8 @@ local function createMiniButton(window, config)
         icon:Alpha(1 - mini.Transparency)
         local width, height = mini.Width, mini.Height
         local size = math.min(width, height)
-        local corner = button:FindFirstChildOfClass("UICorner")
+        if geometryWidth ~= width or geometryHeight ~= height or geometryCaption ~= caption then
+        geometryWidth, geometryHeight, geometryCaption = width, height, caption
         if corner then corner.CornerRadius = UDim.new(0, math.max(3, math.floor(size / 4))) end
         local iconSize = math.floor(caption and size * 0.42 or size * 0.5)
         icon.Object.Position = UDim2.fromOffset(math.floor((width - iconSize) / 2), caption and math.floor(height * 0.16) or math.floor((height - iconSize) / 2))
@@ -3193,13 +3393,20 @@ local function createMiniButton(window, config)
             label.Object.Position = UDim2.fromOffset(2, math.floor(height * 0.56))
             label.Object.Size = UDim2.fromOffset(width - 4, math.floor(height * 0.32))
         end
+        end
         stroke.Color = palette[5]:Lerp(accent, alpha)
         tint = tint:Lerp(mini.Active and white or palette[3], k)
         icon:Color(tint)
         if label then label:Color(tint) end
         local target = mini.Target
-        if mini.Custom then window.MiniPositions[mini.Key] = {X = mini.Position.X, Y = mini.Position.Y} end
-        button.Position = UDim2.fromOffset(math.floor(target.X + 0.5), math.floor(target.Y + 0.5))
+        if mini.Custom and (savedX ~= mini.Position.X or savedY ~= mini.Position.Y) then
+            savedX, savedY = mini.Position.X, mini.Position.Y
+            window.MiniPositions[mini.Key] = {X = savedX, Y = savedY}
+        end
+        if window.Drag and window.Drag.Object == button then shownPosition = target
+        else shownPosition = shownPosition:Lerp(target, k) end
+        if (shownPosition - target).Magnitude < 0.5 then shownPosition = target end
+        button.Position = UDim2.fromOffset(roundPixel(shownPosition.X), roundPixel(shownPosition.Y))
     end
     mini.Update = overlayStep(updateMini)
     if Runtime.Owner then
@@ -3218,6 +3425,28 @@ end
 
 function Window:Tooltip(object, message)
     if not object or message == nil or message == "" then return end
+    local token, touch = 0, nil
+    local tooltipOwner = Runtime.Owner or Library.Maid
+    connect(object.InputBegan, function(input)
+        if input.UserInputType ~= Enum.UserInputType.Touch then return end
+        token = token + 1
+        touch = input
+        local thisToken, origin = token, input.Position
+        tooltipOwner:Delay(0.55, function()
+            if token == thisToken and object.Parent and self.Visible
+                and (input.Position - origin).Magnitude < DRAG_THRESHOLD then
+                self.TooltipText, self.TooltipObject = tostring(message), object
+                self:Wake()
+            end
+        end)
+    end)
+    connect(UIS.InputEnded, function(input)
+        if input == touch then
+            touch = nil
+            token = token + 1
+            if self.TooltipObject == object then self.TooltipText, self.TooltipObject = nil, nil end
+        end
+    end)
     local window = self
     connect(object.MouseEnter, function()
         window.TooltipText = tostring(message)
@@ -3343,6 +3572,125 @@ local function attachSettings(tab, parent, x, y, size, opts)
     return menu
 end
 
+-- Containers are regular Tabs internally, so every existing Add* API is available.
+function Tab:AddGroup(opts)
+    opts = type(opts) == "table" and opts or {Name = opts}
+    local parent, w = self, self:_width(opts.Width)
+    local card = self:_card(w, 36, opts.Name or "Group")
+    card.ClipsDescendants = true
+    local header = transparent(card, 0, 0, w, 36, "TextButton")
+    local title = text(header, opts.Name or "Group", 10, 0, w - 44, 36, 12, white, nil, {Bold = true})
+    local arrow = iconLabel(header, {"chevron-right"}, w - 26, 11, 14, palette[3], ">")
+    local body = transparent(card, 10, 36, w - 20, 1)
+    local group = setmetatable({Object = card, Page = body, Window = self.Window,
+        Name = opts.Name or "Group", Width = w - 20, Height = 0, Elements = {},
+        Cursor = {X = 0, Y = 0, RowHeight = 0}, Maid = Runtime.Owner,
+        IsGroup = true, Collapsed = opts.Collapsed == true, TargetHeight = 36}, Tab)
+    local shown = 36
+    local function sizeTarget()
+        group.TargetHeight = group.Collapsed and 36 or 36 + math.max(0, group.Height) + 4
+        if group.Collapsed then self.Window.Opened = nil end
+        body.Visible = not group.Collapsed
+        body.Interactable = not group.Collapsed
+        self.Window:Wake()
+    end
+    group.OnResize = sizeTarget
+    function group:SetCollapsed(value, instant)
+        self.Collapsed = value == true
+        sizeTarget()
+        if instant then
+            shown = self.TargetHeight
+            card.Size = UDim2.fromOffset(w, roundPixel(shown))
+            parent:_track(card)
+            parent:Reflow()
+        end
+        return self
+    end
+    function group:GetCollapsed() return self.Collapsed end
+    function group:Toggle() return self:SetCollapsed(not self.Collapsed) end
+    function group:SetName(value) title:SetText(value) end
+    function group:SetVisible(value) card.Visible = value == true end
+    function group:Destroy()
+        for i = #self.Elements, 1, -1 do
+            local element = self.Elements[i]
+            if element.Destroy then element:Destroy() end
+        end
+    end
+    connect(header.Activated, function() group:Toggle() end)
+    step(function(dt)
+        if group.Destroyed then return end
+        local nextHeight = approach(shown, group.TargetHeight, motionFactor(24, dt))
+        if math.abs(nextHeight - group.TargetHeight) < 0.5 then nextHeight = group.TargetHeight end
+        if math.abs(nextHeight - shown) > 0.001 then
+            shown = nextHeight
+            card.Size = UDim2.fromOffset(w, roundPixel(shown))
+        end
+        arrow.Object.Rotation = group.Collapsed and 0 or 90
+        if shown ~= group.TargetHeight then group.Window.Animating = true end
+    end, card)
+    self.Elements[#self.Elements + 1] = group
+    if Runtime.Owner then
+        Runtime.Owner:Add(function()
+            for index, element in ipairs(parent.Elements) do
+                if element == group then table.remove(parent.Elements, index) break end
+            end
+        end)
+    end
+    if type(opts.Build) == "function" then group:Batch(opts.Build) end
+    group:SetCollapsed(group.Collapsed, true)
+    return group
+end
+
+function Tab:AddSpacer(opts)
+    opts = type(opts) == "table" and opts or {Height = opts}
+    local w, height = self:_width(opts.Width), math.max(1, roundPixel(tonumber(opts.Height) or 8))
+    local x, y = self:_place(w, height)
+    local object = transparent(self.Page, x, y, w, height)
+    self:_grow()
+    return baseApi(self, object, nil)
+end
+
+function Tab:AddStat(opts)
+    opts = opts or {}
+    local w = self:_width(opts.Width)
+    local card = self:_card(w, 78, opts.Name or "Stat")
+    local title = muted(card, opts.Name or "Value", 10, 9, w - 20, 14, 11)
+    local value = text(card, tostring(opts.Value or "0"), 10, 27, w - 20, 24, 20, white, nil, {Bold = true})
+    local detail = muted(card, opts.Description or "", 10, 57, w - 20, 13, 10)
+    local api = baseApi(self, card, nil)
+    function api:Set(newValue, description)
+        value:SetText(newValue)
+        if description ~= nil then detail:SetText(description) end
+    end
+    function api:Get() return value:GetText() end
+    function api:SetName(name) title:SetText(name) end
+    function api:SetDescription(caption) detail:SetText(caption) end
+    return api
+end
+
+function Tab:AddNotice(opts)
+    opts = type(opts) == "table" and opts or {Text = opts}
+    local w = self:_width(opts.Width)
+    local body = tostring(opts.Text or "")
+    local measured = TextService:GetTextSize(body, 11, UI_FONT, Vector2.new(w - 46, 10000))
+    local h = math.max(42, (opts.Name and 28 or 10) + measured.Y + 10)
+    local card = self:_card(w, h, opts.Name or "Notice")
+    local icon = iconLabel(card, opts.Icon or {"info"}, 10, 12, 16, accent, "i")
+    if opts.Name then text(card, opts.Name, 36, 9, w - 46, 14, 12, white) end
+    local caption = muted(card, body, 36, opts.Name and 28 or 10, w - 46,
+        math.max(14, measured.Y), 11, nil, {Wrap = true})
+    local api = baseApi(self, card, nil)
+    function api:SetText(value)
+        body = tostring(value or "")
+        local bounds = TextService:GetTextSize(body, 11, UI_FONT, Vector2.new(w - 46, 10000))
+        caption:SetText(body)
+        caption.Object.Size = UDim2.fromOffset(w - 46, math.max(14, bounds.Y))
+        card.Size = UDim2.fromOffset(w, math.max(42, (opts.Name and 28 or 10) + bounds.Y + 10))
+    end
+    step(function() icon:Color(accent) end, card)
+    return api
+end
+
 function Tab:AddSection(nameOrOpts)
     local opts = type(nameOrOpts) == "table" and nameOrOpts or {Name = nameOrOpts}
     self:_newline()
@@ -3392,7 +3740,13 @@ function Tab:AddParagraph(opts)
     end
     local paragraph = muted(card, body, 10, hasTitle and 28 or 10, w - 20, math.max(14, bounds.Y), 11, nil, {Wrap = true})
     local api = baseApi(self, card, nil)
-    function api:SetText(value) paragraph:SetText(value) end
+    function api:SetText(value)
+        body = tostring(value or "")
+        local measured = TextService:GetTextSize(body, 11, UI_FONT, Vector2.new(w - 20, 10000))
+        paragraph:SetText(body)
+        paragraph.Object.Size = UDim2.fromOffset(w - 20, math.max(14, measured.Y))
+        card.Size = UDim2.fromOffset(w, (hasTitle and 28 or 10) + math.max(14, measured.Y) + 10)
+    end
     return api
 end
 
@@ -3851,10 +4205,14 @@ local function makeSlider(tab, parent, x, y, w, opts)
     local flag = opts.Flag or ((tab and tab.Name or "TAB") .. "." .. name)
     local min = tonumber(opts.Min) or 0
     local max = tonumber(opts.Max) or 100
+    if max < min then min, max = max, min end
     local decimals = math.max(0, math.floor(tonumber(opts.Decimals) or 0))
     local suffix = opts.Suffix or ""
 
-    local card = paint(rect(parent, x, y, w, 58, palette[2], 5), 2)
+    local card = paint(rect(parent, x, y, w, 58, palette[2], Library.Design.CardRadius), 2)
+    card.BackgroundTransparency = Library.Design.CardTransparency
+    new("UIStroke", card, {Color = palette[5], Thickness = 1,
+        Transparency = Library.Design.StrokeTransparency, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     card.Name = name
     local title = text(card, name, 10, 10, w - 70, 14, 12, white)
     if opts.Description then
@@ -4380,7 +4738,20 @@ function Tab:AddButton(opts)
 
     local flash, color, hover = 0, palette[4], false
     local api = baseApi(self, card, nil)
-    function api:SetText(value) caption:SetText(value) end
+    local loading = false
+    local buttonOwner = Runtime.Owner
+    function api:SetText(value)
+        captionText = tostring(value)
+        if not loading then caption:SetText(captionText) end
+    end
+    function api:SetLoading(value, message)
+        loading = value == true
+        caption:SetText(loading and tostring(message or opts.LoadingText or "Loading...") or captionText)
+        control.Interactable = enabled and not loading
+        if self.Tab and self.Tab.Window then self.Tab.Window:Wake() end
+        return self
+    end
+    function api:GetLoading() return loading end
     function api:SetIcon(value)
         if icon then icon:SetIcon(value) end
     end
@@ -4388,11 +4759,27 @@ function Tab:AddButton(opts)
     function api:SetEnabled(value)
         enabled = value ~= false
         control.Active = enabled
-        pcall(function() control.Interactable = enabled end)
+        pcall(function() control.Interactable = enabled and not loading end)
         if not enabled then hover = false end
         return enabled
     end
     function api:GetEnabled() return enabled end
+    function api:Press()
+        if self.Destroyed or not enabled or loading then return false end
+        flash = 1 / 9
+        if self.Tab and self.Tab.Window then self.Tab.Window.ButtonPressed:Fire(self.Tab.Name .. "." .. name) end
+        if opts.Callback then
+            if opts.AutoLoading then
+                self:SetLoading(true)
+                buttonOwner:Spawn(function()
+                    local ok, err = pcall(opts.Callback)
+                    if not self.Destroyed then self:SetLoading(false) end
+                    if not ok then warn("WolfUi button '" .. name .. "': " .. tostring(err)) end
+                end)
+            else task.spawn(opts.Callback) end
+        end
+        return true
+    end
 
     if opts.Tooltip then self.Window:Tooltip(control, opts.Tooltip) end
 
@@ -4403,20 +4790,15 @@ function Tab:AddButton(opts)
         config.Key = config.Key or (self.Name .. "." .. name)
         config.Icon = config.Icon or opts.Icon or {"play", "circle"}
         config.Mode = "Action"
-        config.OnPress = function()
-            if opts.Callback then task.spawn(opts.Callback) end
-        end
+        config.OnPress = function() api:Press() end
         mini = self.Window:AddMiniButton(config)
     end
     api.Mini = mini
 
-    connect(control.MouseEnter, function() hover = enabled end)
+    connect(control.MouseEnter, function() hover = enabled and not loading end)
     connect(control.MouseLeave, function() hover = false end)
     connect(control.Activated, function()
-        if not enabled then return end
-        flash = 1 / 9
-        if self.Window then self.Window.ButtonPressed:Fire(self.Name .. "." .. name) end
-        if opts.Callback then task.spawn(opts.Callback) end
+        api:Press()
     end)
 
     step(function(dt, k)
@@ -4429,8 +4811,8 @@ function Tab:AddButton(opts)
         end
         color = color:Lerp(target, math.min(1, 10 * dt))
         control.BackgroundColor3 = color
-        caption:Alpha(enabled and 1 or 0.38)
-        if icon then icon:Alpha(enabled and 1 or 0.38) end
+        caption:Alpha(enabled and not loading and 1 or 0.38)
+        if icon then icon:Alpha(enabled and not loading and 1 or 0.38) end
     end, control)
     api:SetEnabled(enabled)
     return api
@@ -4502,10 +4884,14 @@ function Tab:AddStepper(opts)
 
     local min = tonumber(opts.Min)
     local max = tonumber(opts.Max)
-    local stepSize = tonumber(opts.Step) or 1
+    if min and max and max < min then min, max = max, min end
+    local stepSize = math.abs(tonumber(opts.Step) or 1)
+    if stepSize == 0 then stepSize = 1 end
     local decimals = math.max(0, math.floor(tonumber(opts.Decimals) or 0))
     local suffix = opts.Suffix or ""
     local value = tonumber(opts.Default) or min or 0
+    if min then value = math.max(min, value) end
+    if max then value = math.min(max, value) end
 
     local title = text(card, name, 10, 10, math.max(30, w - 116), 14, 12, palette[3])
     if opts.Description then
@@ -5836,7 +6222,10 @@ function Tab:AddConfigManager(opts)
 end
 
 -- Persistent, image-based action notification, independent of main-menu visibility.
-Library.CardNotificationVersion="5.9.2"
+-- Protocol marker retained: Waraku's compatibility adapter checks this exact value.
+-- The library release is Library.Version; this marker describes the renderer API.
+Library.CardNotificationVersion="5.9.3"
+Library.CardNotificationRevision="6.0.0"
 function Library:NotifyCards(opts)
     opts=opts or {}
     local window=self.Window
@@ -5942,8 +6331,10 @@ function Library:NotifyCards(opts)
         maid:Connect(button.MouseLeave,function() hover(false) end)
         maid:Connect(button.Activated,function()
             if api.Destroyed or api.Closing or not cell.Def or cell.Def.Disabled then return end
-            api:SetSelected(cell.Def.Id)
-            if opts.Callback then opts.Callback(cell.Def.Id,cell.Def,api) end
+            local selected=true
+            if opts.ToggleSelection==true and api.Selected==tostring(cell.Def.Id) then selected=false end
+            if selected then api:SetSelected(cell.Def.Id) else api:SetSelected(nil) end
+            if opts.Callback then opts.Callback(cell.Def.Id,cell.Def,api,selected) end
             if opts.CloseOnSelect==true then api:Close("selected") end
         end)
     end
@@ -6014,78 +6405,151 @@ function Library:NotifyCards(opts)
     return result
 end
 
+function Library:SetNotificationOptions(opts)
+    opts = opts or {}
+    local config = self.NotificationOptions
+    if opts.Width ~= nil then config.Width = math.clamp(roundPixel(tonumber(opts.Width) or 250), 220, 360) end
+    if opts.MaxVisible ~= nil then config.MaxVisible = math.clamp(math.floor(tonumber(opts.MaxVisible) or 5), 1, 12) end
+    if opts.Gap ~= nil then config.Gap = math.clamp(roundPixel(tonumber(opts.Gap) or 8), 4, 24) end
+    if opts.Position ~= nil then config.Position = opts.Position == "Left" and "Left" or "Right" end
+    if opts.PauseOnHover ~= nil then config.PauseOnHover = opts.PauseOnHover ~= false end
+    local window = self.Window
+    if window and window.LayoutNotifications then window.LayoutNotifications() end
+    if window then
+        while #window.Notifications > config.MaxVisible do window.Notifications[1]:Destroy() end
+    end
+    return self
+end
+
+function Library:GetNotifications()
+    local list = {}
+    for _, notification in ipairs(self.Window and self.Window.Notifications or {}) do
+        if not notification.Destroyed then list[#list + 1] = notification end
+    end
+    return list
+end
+
+function Library:ClearNotifications(instant)
+    local notifications = self:GetNotifications()
+    for _, notification in ipairs(notifications) do
+        if instant then notification:Destroy() else notification:Close() end
+    end
+end
+
 function Library:Notify(opts)
     opts = type(opts) == "table" and opts or {Text = opts}
     local window = self.Window
-    if not window then return end
-
-    local body = tostring(opts.Text or "")
-    local title = opts.Title
-    local width = 250
-    local bounds = TextService:GetTextSize(body, 11, UI_FONT, Vector2.new(width - 46, 10000))
-    local height = (title and 26 or 10) + math.max(14, bounds.Y) + 10
-
-    local NOTIFY_TYPES = {
-        info = {Icon = {"info", "bell", "circle"}, Color = nil},
-        success = {Icon = {"check-circle", "circle-check", "check"}, Color = Color3.fromRGB(110, 220, 140)},
-        warning = {Icon = {"alert-triangle", "triangle-alert", "alert-circle"}, Color = Color3.fromRGB(240, 200, 90)},
-        error = {Icon = {"x-circle", "circle-x", "alert-octagon"}, Color = Color3.fromRGB(240, 100, 100)},
-    }
-    local kind = NOTIFY_TYPES[string.lower(tostring(opts.Type or "info"))] or NOTIFY_TYPES.info
-    local color = typeof(opts.Color) == "Color3" and opts.Color or kind.Color
-
-    local object = rect(window.NotifyHolder, 260, 0, width, height, palette[2], 5, "TextButton")
+    if not window or not window.Gui or not window.Gui.Parent then return end
+    local config, id = self.NotificationOptions, opts.Id and tostring(opts.Id) or nil
+    local existing = id and window.NotificationIds[id]
+    if existing and not existing.Destroyed then
+        existing:Update(opts)
+        return existing
+    end
+    while #window.Notifications >= config.MaxVisible do window.Notifications[1]:Destroy() end
+    local width, body = config.Width, tostring(opts.Text or "")
+    local title = opts.Title and tostring(opts.Title) or ""
+    local bounds = TextService:GetTextSize(body, 11, UI_FONT, Vector2.new(width - 58, 10000))
+    local maximumBody = math.max(14, math.min(160, window.Viewport.Y - 90))
+    local height = (title ~= "" and 26 or 10) + math.min(maximumBody, math.max(14, bounds.Y)) + 10
+    local object = rect(window.NotifyHolder, width + 10, 0, width, height, palette[2], 8, "TextButton")
     object.Name = "Notification"
+    object.BackgroundTransparency = 0.20
     object.ClipsDescendants = true
-    new("UIStroke", object, {Color = palette[5], Thickness = 1, Transparency = 0.5})
-
-    local bar = rect(object, 0, 0, 2, height, accent, nil)
-    local progress = rect(object, 0, height - 2, width, 2, accent, nil)
+    new("UIStroke", object, {Color = palette[5], Thickness = 1, Transparency = 0.65})
+    local bar = rect(object, 0, 0, 2, height, accent)
+    local progress = rect(object, 0, height - 2, width, 2, accent)
     progress.BackgroundTransparency = 0.35
-    local icon = iconLabel(object, opts.Icon or kind.Icon, 12, 10, 14, accent, "!")
-    if title then
-        text(object, title, 34, 8, width - 46, 14, 12, white)
-    end
-    muted(object, body, 34, title and 26 or 10, width - 46, math.max(14, bounds.Y), 11, nil, {Wrap = true})
-
+    local icon = iconLabel(object, {"info", "bell"}, 12, 10, 14, accent, "!")
+    local titleLabel = text(object, title, 34, 8, width - 58, 14, 12, white)
+    titleLabel.Object.Visible = title ~= ""
+    local bodyLabel = muted(object, body, 34, title ~= "" and 26 or 10, width - 58,
+        height - (title ~= "" and 26 or 10) - 10, 11, nil, {Wrap = true})
+    local close = transparent(object, width - 24, 4, 20, 22, "TextButton")
+    iconLabel(close, {"x"}, 4, 5, 12, palette[3], "x")
     local targetY = 0
-    for _, existing in ipairs(window.Notifications) do
-        targetY = targetY + existing.Height + 8
-    end
-
-    local duration = math.max(0.5, tonumber(opts.Duration) or 4)
-    local notif = {
-        Object = object,
-        Bar = bar,
-        Progress = progress,
-        Icon = icon,
-        Color = color,
-        Height = height,
-        Alpha = 0,
-        Y = targetY,
-        TargetY = targetY,
-        Life = duration,
-        Duration = duration,
-        Sticky = opts.Sticky == true,
-    }
-    function notif:Close() self.Life = 0; self.Sticky = false end
-    function notif:SetText(value)
-        for _, child in ipairs(object:GetChildren()) do
-            if child:IsA("TextLabel") and child.TextWrapped then child.Text = tostring(value) end
-        end
-    end
-    notif.Maid = Maid.new(Library.Maid)
-    notif.Maid:Add(object)
-    notif.Maid:Connect(object.Activated, function()
-        if opts.Callback then task.spawn(opts.Callback) end
-        if opts.CloseOnClick ~= false then notif:Close() end
+    for _, item in ipairs(window.Notifications) do targetY = targetY + item.Height + config.Gap end
+    local notif = {Object = object, Bar = bar, Progress = progress, Icon = icon,
+        Id = id, Width = width, Height = height, Alpha = 0, Y = targetY, TargetY = targetY,
+        Life = 4, Duration = 4, Sticky = false, Hover = false, Destroyed = false}
+    local maid = Maid.new(Library.Maid)
+    notif.Maid = maid
+    maid:Add(object)
+    maid:Add(function()
+        notif.Destroyed = true
+        if id and window.NotificationIds[id] == notif then window.NotificationIds[id] = nil end
     end)
-    function notif:Destroy()
-        self.Life = 0
-        self.Sticky = false
-        self.Maid:Destroy()
+    function notif:Close()
+        if self.Destroyed then return end
+        self.Life, self.Sticky, self.Hover = 0, false, false
     end
+    function notif:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        if self.Id and window.NotificationIds[self.Id] == self then window.NotificationIds[self.Id] = nil end
+        for index, item in ipairs(window.Notifications) do
+            if item == self then table.remove(window.Notifications, index) break end
+        end
+        maid:Destroy()
+    end
+    function notif:SetText(value)
+        if self.Destroyed then return end
+        body = tostring(value or "")
+        bodyLabel:SetText(body)
+        local measured = TextService:GetTextSize(body, 11, UI_FONT, Vector2.new(width - 58, 10000))
+        local hasTitle = title ~= ""
+        self.Height = (hasTitle and 26 or 10) + math.min(maximumBody, math.max(14, measured.Y)) + 10
+        object.Size = UDim2.fromOffset(width, self.Height)
+        bodyLabel.Object.Position = UDim2.fromOffset(34, hasTitle and 26 or 10)
+        bodyLabel.Object.Size = UDim2.fromOffset(width - 58, self.Height - (hasTitle and 26 or 10) - 10)
+        bar.Size = UDim2.fromOffset(2, self.Height)
+        progress.Position = UDim2.fromOffset(0, self.Height - 2)
+        if window.LayoutNotifications then window.LayoutNotifications() end
+    end
+    function notif:Update(changes)
+        if self.Destroyed then return self end
+        changes = changes or {}
+        if changes.Title ~= nil then
+            title = tostring(changes.Title)
+            titleLabel:SetText(title)
+            titleLabel.Object.Visible = title ~= ""
+        end
+        if changes.Text ~= nil or changes.Title ~= nil then self:SetText(changes.Text or body) end
+        if self.Destroyed then return self end
+        if changes.Type ~= nil or changes.Icon ~= nil then
+            local kind = string.lower(tostring(changes.Type or "info"))
+            local definitions = {
+                info = {"info", "bell"}, success = {"check-circle", "check"},
+                warning = {"alert-triangle", "alert-circle"}, error = {"x-circle", "alert-octagon"},
+            }
+            self.Icon:SetIcon(changes.Icon or definitions[kind] or definitions.info)
+            local colors = {success = Color3.fromRGB(110, 220, 140),
+                warning = Color3.fromRGB(240, 200, 90), error = Color3.fromRGB(240, 100, 100)}
+            self.Color = colors[kind]
+        end
+        if typeof(changes.Color) == "Color3" then self.Color = changes.Color end
+        if changes.Sticky ~= nil then self.Sticky = changes.Sticky == true end
+        self.Duration = math.max(0.5, tonumber(changes.Duration) or self.Duration)
+        self.Life = self.Duration
+        if changes.Callback ~= nil then self.Callback = changes.Callback end
+        if changes.CloseOnClick ~= nil then self.CloseOnClick = changes.CloseOnClick ~= false end
+        window:Wake()
+        return self
+    end
+    notif.CloseOnClick = opts.CloseOnClick ~= false
+    maid:Connect(object.MouseEnter, function() notif.Hover = true end)
+    maid:Connect(object.MouseLeave, function() notif.Hover = false end)
+    maid:Connect(close.Activated, function() notif:Close() end)
+    maid:Connect(object.Activated, function()
+        if notif.Destroyed then return end
+        if notif.Callback then task.spawn(notif.Callback, notif) end
+        if notif.CloseOnClick then notif:Close() end
+    end)
     window.Notifications[#window.Notifications + 1] = notif
+    if id then window.NotificationIds[id] = notif end
+    notif:Update({Type = opts.Type or "info", Icon = opts.Icon, Title = title, Text = body,
+        Color = opts.Color, Duration = opts.Duration, Sticky = opts.Sticky, Callback = opts.Callback})
+    if window.LayoutNotifications then window.LayoutNotifications() end
     return notif
 end
 
@@ -6334,57 +6798,94 @@ function Library:Dialog(opts)
     local window = self.Window
     if not window then return end
     opts = type(opts) == "table" and opts or {Text = opts}
-
-    local width = math.max(220, math.floor(tonumber(opts.Width) or 300))
+    if window.Dialog then window.Dialog:Destroy() end
+    local maid = Maid.new(Library.Maid)
+    local api = {Maid = maid, Destroyed = false, Closing = false}
+    local width = math.clamp(roundPixel(tonumber(opts.Width) or 300), 220, 520)
     local body = tostring(opts.Text or "")
-    local bounds = TextService:GetTextSize(body, 12, Enum.Font.Gotham, Vector2.new(width - 40, 10000))
-    local height = 44 + math.max(16, bounds.Y) + 12 + 31 + 20
-
+    local bounds = TextService:GetTextSize(body, 12, UI_FONT, Vector2.new(width - 40, 10000))
+    local bodyHeight = math.min(240, math.max(16, bounds.Y))
+    local height = 44 + bodyHeight + 63
     local shade = rect(window.Gui, 0, 0, 10, 10, black)
-    shade.Size = UDim2.fromScale(1, 1)
-    shade.BackgroundTransparency = 0.5
-    shade.ZIndex = 80
-    shade.Active = true
-
-    local card = rect(shade, 0, 0, width, height, palette[2], 5)
-    card.AnchorPoint = Vector2.new(0.5, 0.5)
-    card.Position = UDim2.fromScale(0.5, 0.5)
-    card.ZIndex = 81
-    new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = 0.4})
-
-    text(card, opts.Title or "Confirm action", 20, 16, width - 40, 16, 13, white)
-    muted(card, body, 20, 44, width - 40, math.max(16, bounds.Y), 12, nil, {Wrap = true})
-
-    local function close()
-        shade:Destroy()
+    shade.Size, shade.BackgroundTransparency, shade.ZIndex, shade.Active = UDim2.fromScale(1, 1), 1, 90, true
+    maid:Add(shade)
+    api.Object = shade
+    local card = rect(shade, 0, 0, width, height, palette[2], 10, "CanvasGroup")
+    card.AnchorPoint, card.Position, card.ZIndex = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), 91
+    card.GroupTransparency, card.BackgroundTransparency, card.ClipsDescendants = 1, 0.20, true
+    new("UIStroke", card, {Color = palette[5], Thickness = 1, Transparency = 0.55})
+    local scale = new("UIScale", card, {Scale = 1})
+    local function layout()
+        local view = window.Gui.AbsoluteSize
+        if view.X <= 0 or view.Y <= 0 then view = window.Viewport end
+        scale.Scale = math.min(1, math.max(0.2, (view.X - 24) / width), math.max(0.2, (view.Y - 24) / height))
     end
-
+    maid:Connect(window.Gui:GetPropertyChangedSignal("AbsoluteSize"), layout)
+    layout()
+    text(card, opts.Title or "Confirm action", 20, 16, width - 40, 16, 13, white, nil, {Bold = true})
+    local holder = new("ScrollingFrame", card, {BackgroundTransparency = 1, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 44), Size = UDim2.fromOffset(width - 40, bodyHeight),
+        CanvasSize = UDim2.fromOffset(0, bounds.Y), ScrollingDirection = Enum.ScrollingDirection.Y,
+        ElasticBehavior = Enum.ElasticBehavior.Never, Active = true})
+    muted(holder, body, 0, 0, width - 40, math.max(16, bounds.Y), 12, nil, {Wrap = true})
+    local tweenService = game:GetService("TweenService")
+    local function animate(target, duration)
+        local panelTween = tweenService:Create(card, TweenInfo.new(duration, Enum.EasingStyle.Quad,
+            Enum.EasingDirection.Out), {GroupTransparency = target})
+        local shadeTween = tweenService:Create(shade, TweenInfo.new(duration), {BackgroundTransparency = 0.5 + 0.5 * target})
+        maid:Add(panelTween, "panelTween"); maid:Add(shadeTween, "shadeTween")
+        panelTween:Play(); shadeTween:Play()
+        return panelTween
+    end
+    function api:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        if window.Dialog == self then window.Dialog = nil end
+        maid:Destroy()
+    end
+    function api:Close()
+        if self.Destroyed or self.Closing then return end
+        self.Closing = true
+        card.Interactable = false
+        local tween = animate(1, 0.16)
+        maid:Once(tween.Completed, function() self:Destroy() end)
+    end
     local labels = opts.Buttons or {opts.ConfirmText or "Confirm", opts.CancelText or "Cancel"}
-    local count = math.max(1, #labels)
-    local buttonW = math.floor((width - 40 - 10 * (count - 1)) / count)
-    for index, label in ipairs(labels) do
-        local button = paint(rect(card, 20 + (index - 1) * (buttonW + 10), height - 51,
-            buttonW, 31, palette[4], 3, "TextButton"), 4)
-        button.ZIndex = 82
-        local caption = text(button, tostring(label), 0, 0, buttonW, 31, 12, white, "center")
-        local hover = false
-        connect(button.MouseEnter, function() hover = true end)
-        connect(button.MouseLeave, function() hover = false end)
-        overlayStep(function()
-            button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 1 or 0)
-            caption:Color(white)
-            card.BackgroundColor3 = palette[2]
-        end, button)
-        connect(button.Activated, function()
-            close()
-            if index == 1 and opts.Confirm then task.spawn(opts.Confirm) end
-            if index == 2 and opts.Cancel then task.spawn(opts.Cancel) end
-            if opts.Callback then task.spawn(opts.Callback, index, tostring(label)) end
-        end)
+    if #labels == 0 then labels = {"Close"} end
+    local count = math.min(4, #labels)
+    local buttonW = math.floor((width - 40 - 8 * (count - 1)) / count)
+    local function choose(index)
+        if api.Destroyed or api.Closing then return end
+        api:Close()
+        if index == 1 and opts.Confirm then task.spawn(opts.Confirm) end
+        if index == 2 and opts.Cancel then task.spawn(opts.Cancel) end
+        if opts.Callback then task.spawn(opts.Callback, index, tostring(labels[index])) end
     end
-
-    return {Object = shade, Close = close}
+    for index = 1, count do
+        local button = paint(rect(card, 20 + (index - 1) * (buttonW + 8), height - 47,
+            buttonW, 31, palette[4], 4, "TextButton"), 4)
+        text(button, tostring(labels[index]), 0, 0, buttonW, 31, 11, white, "center")
+        maid:Connect(button.MouseEnter, function() button.BackgroundColor3 = palette[5] end)
+        maid:Connect(button.MouseLeave, function() button.BackgroundColor3 = palette[4] end)
+        maid:Connect(button.Activated, function() choose(index) end)
+    end
+    maid:Connect(UIS.InputBegan, function(input, processed)
+        if not processed and input.KeyCode == Enum.KeyCode.Escape and window.Dialog == api then
+            if count >= 2 then choose(2) else api:Close() end
+        end
+    end)
+    maid:Add(function()
+        api.Destroyed = true
+        if window.Dialog == api then window.Dialog = nil end
+    end)
+    window.Opened, window.Dialog = nil, api
+    animate(0, 0.20)
+    -- Close used to be a free function; retain both dialog.Close() and dialog:Close().
+    local close = api.Close
+    api.Close = function() close(api) end
+    return api
 end
+
 
 local function serialize(value, seen)
     if typeof(value) == "Color3" then
@@ -6986,7 +7487,20 @@ end
 local function ownElement(tab, api, maid)
     if type(api) ~= "table" then return api end -- section/divider: maid stays owned by the tab
     api.Maid = maid
-    if api.Object then maid:Add(api.Object) end
+    if api.Object then
+        if not maid.UiObjects or not maid.UiObjects[api.Object] then maid:Add(api.Object) end
+        local record = tab and tab:_track(api.Object)
+        if record then tab:_watchLayout(record, maid) end
+    end
+    maid:Add(function()
+        api.Destroyed = true
+        if api.Flag and Library.Elements[api.Flag] == api then Library.Elements[api.Flag] = nil end
+        if tab and tab.Elements then
+            for index, element in ipairs(tab.Elements) do
+                if element == api then table.remove(tab.Elements, index) break end
+            end
+        end
+    end)
     local original = api.Destroy
     function api:Destroy()
         if self.Destroyed then return end
@@ -7064,6 +7578,8 @@ function Library:GetMemoryStats()
         Instances = instances,
         FadeCaches = fadeCount,
         Sweeps = Runtime.Stats.Sweeps,
+        UpdateErrors = Runtime.Stats.UpdateErrors or 0,
+        LastUpdateError = Runtime.Stats.LastUpdateError,
     }
 end
 
