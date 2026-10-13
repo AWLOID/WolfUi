@@ -1,5 +1,5 @@
--- Release: 6.0.0 | 2026-10-13 | layout engine / groups / notification center
--- WolfUI 6.0.0 | Black Frost
+-- Release: 6.1.0 | 2026-10-13 | conditional color controls / validated config restore
+-- WolfUI 6.1.0 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -709,8 +709,8 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "6.0.0",
-    Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1}),
+    Version = "6.1.0",
+    Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1, ConditionalColors = 1, ConfigRestore = 2}),
     Design = table.freeze({CardRadius = 8, PopupRadius = 8, ControlRadius = 3,
         CardTransparency = 0.20, StrokeTransparency = 0.65, Gap = 10, Padding = 10}),
     NotificationOptions = {Width = 250, MaxVisible = 5, Position = "Right", Gap = 8, PauseOnHover = true},
@@ -762,6 +762,7 @@ local state = {
     AccentAlpha = 1,
 }
 
+local flagWatchers = {}
 local changeListeners = {}
 local unloadListeners = {}
 
@@ -773,6 +774,12 @@ end
 
 local function fireChange(flag, value)
     Library.Flags[flag] = value
+    for _, watcher in ipairs(flagWatchers[flag] or {}) do
+        if watcher.Connected then
+            local ok, err = pcall(watcher.Callback, value)
+            if not ok then warn("WolfUi dependency: " .. tostring(err)) end
+        end
+    end
     local window = Library.Window
     if window then
         if window.Wake then window:Wake() end
@@ -847,6 +854,40 @@ end
 
 function Library:SetScaleDuration(duration)
     return self:SetScaleAnimations(self.ScaleAnimations ~= false, duration)
+end
+
+function Library:WatchFlag(flag, callback)
+    assert(type(flag) == "string" and type(callback) == "function", "WatchFlag requires a flag and callback")
+    local watcher = {Connected = true, Callback = callback}
+    local list = flagWatchers[flag] or {}; flagWatchers[flag] = list
+    list[#list + 1] = watcher
+    function watcher:Disconnect()
+        if not self.Connected then return end
+        self.Connected = false
+        for index, item in ipairs(list) do if item == self then table.remove(list,index) break end end
+        if #list == 0 then flagWatchers[flag] = nil end
+    end
+    watcher.Destroy = watcher.Disconnect
+    local owner = Runtime.Owner or self.Maid
+    if owner then owner:Add(watcher) end
+    callback(self.Flags[flag])
+    return watcher
+end
+
+function Library:BindVisibility(element, flag, predicate)
+    return self:WatchFlag(flag, function(value)
+        local visible
+        if predicate then visible = predicate(value) else visible = value == true end
+        if element.SetVisible then element:SetVisible(visible)
+        else (element.Object or element).Visible = visible end
+    end)
+end
+
+function Library:SetConfigAliases(aliases)
+    self.ConfigAliases = {}
+    for old, current in pairs(aliases or {}) do
+        if type(old) == "string" and type(current) == "string" then self.ConfigAliases[old] = current end
+    end
 end
 
 function Library:OnChange(callback)
@@ -3872,7 +3913,14 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     })
     new("UICorner", hexBox, {CornerRadius = UDim.new(0, 3)})
 
-    local api = {Flag = flag, Anchor = anchor, Popup = pop}
+    local api = {Flag = flag, Anchor = anchor, Popup = pop, Object = anchor}
+    function api:SetVisible(visible)
+        anchor.Visible = visible == true
+        if not anchor.Visible then pop:Close() end
+    end
+    if Runtime.Owner then
+        Runtime.Owner:Add(function() if Library.Elements[flag] == api then Library.Elements[flag] = nil end end)
+    end
 
     local function push()
         local result = Color3.fromHSV(hue, saturation, value)
@@ -4021,7 +4069,7 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     button.ZIndex = 3
     local caption = text(button, keyName(key), 0, 0, w, h, 10, palette[3], "center")
 
-    local bind = {Key = key, Flag = flag}
+    local bind = {Key = key, Flag = flag, Object = button}
 
     function bind:Fire()
         if opts.Callback then task.spawn(opts.Callback, self.Key) end
@@ -4108,6 +4156,36 @@ function Tab:AddToggle(opts)
     end
 
     local colorPicker, keybind, settings, mini
+    local accessories, colorPickers = {}, {}
+    local title, description
+    local function layoutAccessories()
+        local right = w - 24
+        for _, item in ipairs(accessories) do
+            local object = item.Object
+            if object.Visible then
+                right = right - 10 - item.Width
+                object.Position = UDim2.fromOffset(right,14.5)
+            end
+        end
+        edge = right
+        if title then title.Object.Size = UDim2.fromOffset(math.max(20,right-20),14) end
+        if description then description.Object.Size = UDim2.fromOffset(math.max(20,right-20),14) end
+    end
+    local function accessory(object, width)
+        accessories[#accessories+1] = {Object=object,Width=width}
+        connect(object:GetPropertyChangedSignal("Visible"),layoutAccessories)
+        layoutAccessories()
+    end
+    local function addColor(config)
+        config = table.clone(config)
+        config.Flag = config.Flag or (flag .. ".Color" .. tostring(#colorPickers+1))
+        config.Name = config.Name or name
+        local picker = attachColorPicker(self,card,0,14.5,14,config)
+        colorPickers[#colorPickers+1] = picker
+        accessory(picker.Anchor,14)
+        if config.VisibleWhen then Library:BindVisibility(picker,config.VisibleWhen,config.Predicate) end
+        return picker
+    end
 
     local function push(fire)
         Library.Flags[flag] = value
@@ -4127,26 +4205,29 @@ function Tab:AddToggle(opts)
         local config = type(opts.ColorPicker) == "table" and opts.ColorPicker or {}
         config.Flag = config.Flag or (flag .. ".Color")
         config.Name = config.Name or name
-        colorPicker = attachColorPicker(self, card, claim(14), 14.5, 14, config)
+        colorPicker = addColor(config)
     end
+    for _, config in ipairs(opts.ColorPickers or {}) do addColor(config) end
 
     if opts.Keybind ~= nil then
         local config = type(opts.Keybind) == "table" and opts.Keybind or {Default = opts.Keybind}
         config.Flag = config.Flag or (flag .. ".Key")
         config.Name = config.Name or name
         config.Toggle = function() api:Toggle() end
-        keybind = attachKeybind(self, card, claim(46), 14.5, 46, 14, config)
+        keybind = attachKeybind(self, card, 0, 14.5, 46, 14, config)
+        accessory(keybind.Object or keybind.Button,46)
     end
 
     if opts.Settings ~= nil then
         local config = type(opts.Settings) == "table" and opts.Settings or {Build = opts.Settings}
         config.Name = config.Name or name
-        settings = attachSettings(self, card, claim(14), 14.5, 14, config)
+        settings = attachSettings(self, card, 0, 14.5, 14, config)
+        accessory(settings.AnchorObject,14)
     end
 
-    local title = text(card, name, 10, 10, math.max(40, edge - 20), 14, 12, palette[3])
+    title = text(card, name, 10, 10, math.max(40, edge - 20), 14, 12, palette[3])
     if opts.Description then
-        muted(card, opts.Description, 10, 22, math.max(40, edge - 20), 14, 11)
+        description = muted(card, opts.Description, 10, 22, math.max(40, edge - 20), 14, 11)
     end
     bindTitle(api, title, opts)
 
@@ -4192,6 +4273,9 @@ function Tab:AddToggle(opts)
     push(false)
     if opts.Callback and value then task.spawn(opts.Callback, value) end
     api.ColorPicker = colorPicker
+    api.ColorPickers = colorPickers
+    api.LayoutAccessories = layoutAccessories
+    layoutAccessories()
     api.Keybind = keybind
     api.Settings = settings
     api.Menu = settings
@@ -6155,6 +6239,7 @@ function Tab:AddConfigManager(opts)
 
     self:AddButton({
         Name = "Save config",
+        AutoLoading = true,
         Text = "Save",
         Compact = true,
         Width = 0.33,
@@ -6170,6 +6255,7 @@ function Tab:AddConfigManager(opts)
     })
     loadButton = self:AddButton({
         Name = "Load config",
+        AutoLoading = true,
         Text = "Load",
         Compact = true,
         Width = 0.33,
@@ -7010,6 +7096,37 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
+    if config.Flags ~= nil and type(config.Flags) ~= "table" then return false,"Flags is not a table" end
+    local staged, report = {}, {Applied=0, Unknown=0, Skipped=0, Errors={}}
+    for savedFlag, raw in pairs(config.Flags or {}) do
+        local flag = self.ConfigAliases and self.ConfigAliases[savedFlag] or savedFlag
+        if type(flag) ~= "string" or self.NoSaveFlags[flag] or INTERNAL_FLAGS[flag] then report.Skipped=report.Skipped+1
+        elseif flag == savedFlag or config.Flags[flag] == nil then
+            local ok, value = pcall(deserialize,raw)
+            if not ok then report.Errors[#report.Errors+1]=flag..": "..tostring(value)
+            else
+                local kind = typeof(value)
+                if kind == "number" and (value~=value or value==math.huge or value==-math.huge) then
+                    report.Errors[#report.Errors+1]=flag..": invalid number"
+                elseif string.sub(flag,-6)==".Alpha" and (kind~="number" or value<0 or value>1) then
+                    report.Errors[#report.Errors+1]=flag..": opacity must be between 0 and 1"
+                else
+                local element = self.Elements[flag]
+                if element and element.Get then
+                    local good, current = pcall(element.Get,element)
+                    local expected, kind = good and typeof(current), typeof(value)
+                    if good and (expected=="boolean" or expected=="number" or expected=="Color3" or expected=="table") and kind~=expected then
+                        report.Errors[#report.Errors+1]=flag..": expected "..expected
+                    elseif kind=="number" and (value~=value or value==math.huge or value==-math.huge) then
+                        report.Errors[#report.Errors+1]=flag..": invalid number"
+                    else staged[flag]=value end
+                else staged[flag]=value end
+                end
+            end
+        end
+    end
+    self.LastConfigReport=report
+    if #report.Errors>0 then return false,table.concat(report.Errors,"; ") end
     if config.FadeDuration ~= nil then self:SetFadeDuration(config.FadeDuration) end
     if config.ScaleDuration ~= nil then self:SetScaleDuration(config.ScaleDuration) end
     if config.ScrollBarThickness ~= nil then self:SetScrollBarThickness(config.ScrollBarThickness) end
@@ -7054,16 +7171,23 @@ function Library:LoadConfig(config)
         end
         self.Window.LayoutMini()
     end
-    for flag, raw in pairs(config.Flags or {}) do
-        local element = self.Elements[flag]
-        local value = deserialize(raw)
+    -- Make the full snapshot available before resolving dependent controls.
+    for flag,value in pairs(staged) do self.Flags[flag]=value end
+    local flags={};for flag in pairs(staged) do flags[#flags+1]=flag end;table.sort(flags)
+    for _,flag in ipairs(flags) do
+        local value,element=staged[flag],self.Elements[flag]
         if element and element.Set then
-            pcall(function() element:Set(value) end)
-        else
-            self.Flags[flag] = value
-        end
+            local ok,err=pcall(function()
+                if typeof(value)=="Color3" then element:Set(value,staged[flag..".Alpha"])
+                else element:Set(value) end
+            end)
+            if ok then report.Applied=report.Applied+1
+            else report.Errors[#report.Errors+1]=flag..": "..tostring(err) end
+        else report.Unknown=report.Unknown+1;fireChange(flag,value) end
     end
-    return true
+    if #report.Errors>0 then return false,table.concat(report.Errors,"; ") end
+    return true,report
+
 end
 
 local ROOT = "WolfUi"
@@ -7477,6 +7601,7 @@ function Library:Unload()
     end
     unloadListeners = {}
     changeListeners = {}
+    flagWatchers = {}
 end
 
 -- ============================================================================
