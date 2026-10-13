@@ -1,4 +1,4 @@
--- WolfUI 5.7.1 | Black Frost
+-- WolfUI 5.7.3 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -481,41 +481,26 @@ local function fadeTargets(root)
     return cache.Targets
 end
 
-local function visibleFadeTargets(root)
-    local targets = {}
-    local function collect(object, visible)
-        if object ~= root and object:IsA("GuiObject") then
-            visible = visible and object.Visible
-        end
-        if not visible then return end
-        local properties = fadeProperties(object)
-        if #properties > 0 then
-            targets[#targets + 1] = {Object = object, Properties = properties}
-        end
-        for _, child in ipairs(object:GetChildren()) do
-            collect(child, visible)
-        end
-    end
-    collect(root, true)
-    return targets
-end
-
-local function fadeTargetList(targets, alpha)
+local function fadeTargetList(targets, alpha, visibilityCache)
     if alpha >= 1 then return end
     for _, target in ipairs(targets) do
         local object = target.Object
-        if object.Parent then
-            local values = fadeValues[object] or {}
+        if object.Parent and (not visibilityCache or isRendered(object, visibilityCache)) then
+            local values = fadeValues[object]
             for _, property in ipairs(target.Properties) do
-                if values[property] == nil then values[property] = object[property] end
-                object[property] = 1 - (1 - object[property]) * alpha
+                local current = object[property]
+                if current < 1 then
+                    if not values then values = {} fadeValues[object] = values end
+                    if values[property] == nil then values[property] = current end
+                    object[property] = 1 - (1 - current) * alpha
+                end
             end
-            fadeValues[object] = values
         end
     end
 end
 
 local function fadeGroup(root, alpha)
+    if alpha >= 1 then return end
     fadeTargetList(fadeTargets(root), alpha)
 end
 
@@ -714,7 +699,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.7.1",
+    Version = "5.7.3",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -1002,7 +987,15 @@ local Window = {}
 Window.__index = Window
 
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
-    local object = rect(window.PopupLayer, 0, 0, w, h, palette[1], 5, "Frame")
+    local object = rect(window.PopupLayer, 0, 0, w, h, palette[2], 8, "Frame")
+    -- Mini settings use the same permanent matte finish as the main menu.
+    object.BackgroundTransparency = 0.24
+    new("UIGradient", object, {
+        Rotation = 110,
+        Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 190, 190)),
+    })
+    new("UIStroke", object, {Color = Color3.fromRGB(100, 100, 100), Thickness = 1, Transparency = 0.6,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     object.Name = "Popup"
     object.Visible = false
     object.Active = true
@@ -1356,12 +1349,17 @@ function Library:CreateWindow(opts)
     connect(UIS.WindowFocusReleased, cancelDrag)
 
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
-    sidebar.BackgroundTransparency = 0.24
-    new("UIGradient", sidebar, {
+    -- UICorner rounds a background, but does not mask square child backgrounds.
+    -- Keep the opaque sidebar surface safely inside the outer window corners.
+    sidebar.BackgroundTransparency = 1
+    local sidebarSurface = paint(rect(sidebar, 4, 4, SIDEBAR_W - 8, WINDOW_H - 8, palette[2], 8), 2)
+    sidebarSurface.Name = "Surface"
+    sidebarSurface.BackgroundTransparency = 0.24
+    new("UIGradient", sidebarSurface, {
         Rotation = 90,
         Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205)),
     })
-    new("UIStroke", sidebar, {Color = palette[5], Thickness = 1, Transparency = 0.55,
+    new("UIStroke", sidebarSurface, {Color = palette[5], Thickness = 1, Transparency = 0.55,
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     sidebar.Name = "Sidebar"
     window.Sidebar = sidebar
@@ -2457,6 +2455,8 @@ function Library:CreateWindow(opts)
             or math.clamp(tonumber(performance.HiddenUpdateRate) or 6, 2, 30)
         window.UpdateAccumulator = (window.UpdateAccumulator or 0) + dt
         local active = now <= (window.ActiveUntil or 0) or Runtime.ThemeDirty or window.Drag ~= nil
+            or window.Animating == true
+            or math.abs(window.Alpha - (window.Visible and 1 or 0)) > 0.001
         local runUi = active or window.UpdateAccumulator >= 1 / idleRate
         local uiDt = active and dt or math.min(window.UpdateAccumulator, 0.1)
         if runUi then window.UpdateAccumulator = 0 end
@@ -2579,6 +2579,7 @@ function Library:CreateWindow(opts)
         local mainTransitioning = window.Alpha < 0.999
 
         if runUi then
+            window.Animating = false
             local uiK = motionFactor(18, uiDt)
             runUpdates(Runtime.Updates, uiDt, uiK, renderCache)
 
@@ -2588,11 +2589,15 @@ function Library:CreateWindow(opts)
                     uiDt, Library.TabDuration)
                 tab.Slide = approach(tab.Slide or 0, tabActive and 0 or (tab.ExitSlide or 0),
                     motionFactor(4.25 / math.max(0.08, Library.TabDuration), uiDt))
+                if math.abs(tab.Alpha - (tabActive and 1 or 0)) > 0.001
+                    or math.abs(tab.Slide or 0) > 0.01 and tabActive then
+                    window.Animating = true
+                end
                 local page = tab.Page
                 page.Visible = tab.Alpha > 0.001
                 page.Interactable = tabActive and window.Visible
                 if page.Visible then
-                    page.Position = UDim2.fromOffset(PAD + roundPixel(tab.Slide), PAD)
+                    page.Position = UDim2.fromOffset(PAD + tab.Slide, PAD)
                     -- Tab fade always runs on its own alpha; the window-level fade below
                     -- (fadeTargetList over MainFadeTargets) additionally scales everything
                     -- inside `frame`, including this page, so the two combine smoothly
@@ -2619,16 +2624,16 @@ function Library:CreateWindow(opts)
                     else
                         pop.CurrentHeight = pop.Height
                     end
+                    if math.abs(pop.Alpha - (show and 1 or 0)) > 0.001
+                        or pop.AnimateHeight and math.abs(pop.CurrentHeight - (show and pop.Height or 1)) > 0.1 then
+                        window.Animating = true
+                    end
                     object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
                     object.Interactable = show and window.Visible
                     if object.Visible then
-                        -- Popups live under `frame` too, so the window-level fade pass
-                        -- already applies window.Alpha to them once it walks the tree;
-                        -- only blend the popup's own open/close alpha here to avoid
-                        -- double-applying window.Alpha (which used to make popups fade
-                        -- out faster than the rest of the menu, breaking sync).
-                        fadeGroup(object, pop.Alpha)
-                        object.BackgroundColor3 = palette[1]
+                        -- PopupLayer is a sibling of the main frame; apply window fade here.
+                        fadeGroup(object, pop.Alpha * window.Alpha)
+                        object.BackgroundColor3 = palette[2]
                         object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
                         local s = math.max(0.001, scale.Scale)
                         local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
@@ -2644,20 +2649,17 @@ function Library:CreateWindow(opts)
             end
         end
         local hiddenAmount = 1 - math.clamp(window.Alpha, 0, 1)
-        local revealOffset = roundPixel(hiddenAmount * hiddenAmount * 6 * window.ScaleCurrent)
+        local revealOffset = hiddenAmount * hiddenAmount * 6 * window.ScaleCurrent
         local animatedPosition = UDim2.fromOffset(window.Position.X, window.Position.Y + revealOffset)
         frame.Position = animatedPosition
         popupLayer.Position = animatedPosition
         if mainTransitioning then
-            -- Re-snapshot every frame while transitioning. The old "only rebuild when
-            -- dirty" cache could miss objects that become Visible mid-transition (a tab
-            -- switching in, a popup opening) or keep fading objects that just went
-            -- invisible, so different parts of the menu would visually desync during
-            -- open/close. One extra GetDescendants pass per transitioning frame is cheap
-            -- and guarantees the whole menu fades as a single, synchronized unit.
-            window.MainFadeTargets = visibleFadeTargets(frame)
-            window.MainFadeDirty = false
-            fadeTargetList(window.MainFadeTargets, window.Alpha)
+            -- Cache structure until descendants change. Visibility is checked per frame,
+            -- so newly revealed controls join the fade without rebuilding the whole tree.
+            local targets = fadeTargets(frame)
+            local visibilityCache = window.RenderCache
+            table.clear(visibilityCache)
+            fadeTargetList(targets, window.Alpha, visibilityCache)
         end
     end)
 
@@ -2804,12 +2806,12 @@ function Window:CreateTab(opts)
     self.TabList[index] = tab
 
     local top = (index - 1) * TAB_SLOT
-    local hit = rect(self.TabHolder, 0, top, SIDEBAR_W, TAB_SLOT, palette[4], nil, "TextButton")
+    local hit = rect(self.TabHolder, 6, top + 2, SIDEBAR_W - 12, TAB_SLOT - 4, palette[4], 6, "TextButton")
     hit.Name = name
     hit.BackgroundTransparency = 1
-    local icon = iconLabel(hit, opts.Icon or {"circle"}, (SIDEBAR_W - 16) / 2, 21.6, 16, palette[3],
+    local icon = iconLabel(hit, opts.Icon or {"circle"}, (SIDEBAR_W - 12 - 16) / 2, 19.6, 16, palette[3],
         opts.Fallback or string.sub(name, 1, 1))
-    local title = text(hit, opts.Title or name, 0, 41.3, SIDEBAR_W, 15, 11, palette[3], "center")
+    local title = text(hit, opts.Title or name, 0, 39.3, SIDEBAR_W - 12, 15, 11, palette[3], "center")
     self.TabHolder.CanvasSize = UDim2.fromOffset(0, index * TAB_SLOT)
 
     connect(hit.Activated, function() self:SelectTab(tab) end)
@@ -2854,7 +2856,7 @@ function Window:CreateTab(opts)
         window.Tabs[self.Name] = nil
         for i, other in ipairs(window.TabList) do
             other.Index = i
-            other.Button.Position = UDim2.fromOffset(0, (i - 1) * TAB_SLOT)
+            other.Button.Position = UDim2.fromOffset(6, (i - 1) * TAB_SLOT + 2)
         end
         window.TabHolder.CanvasSize = UDim2.fromOffset(0, #window.TabList * TAB_SLOT)
         if window.Current == self then
@@ -3043,7 +3045,8 @@ local function createMiniButton(window, config)
     button.Name = "Mini"
     button.Visible = false
     button.ZIndex = 2
-    local stroke = new("UIStroke", button, {Color = palette[5], Thickness = 1, Transparency = 0.4})
+    local stroke = new("UIStroke", button, {Color = palette[5], Thickness = 1, Transparency = 0.4,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
 
     local caption = config.Text or config.Short
     local iconSize = math.floor(caption and size * 0.42 or size * 0.5)
@@ -3177,6 +3180,8 @@ local function createMiniButton(window, config)
         icon:Alpha(1 - mini.Transparency)
         local width, height = mini.Width, mini.Height
         local size = math.min(width, height)
+        local corner = button:FindFirstChildOfClass("UICorner")
+        if corner then corner.CornerRadius = UDim.new(0, math.max(3, math.floor(size / 4))) end
         local iconSize = math.floor(caption and size * 0.42 or size * 0.5)
         icon.Object.Position = UDim2.fromOffset(math.floor((width - iconSize) / 2), caption and math.floor(height * 0.16) or math.floor((height - iconSize) / 2))
         icon.Object.Size = UDim2.fromOffset(iconSize, iconSize)
@@ -3229,12 +3234,13 @@ local function createSubMenu(window, anchor, opts)
     local width = math.clamp(math.floor(tonumber(opts.Width) or 210), 150, 300)
     local maxHeight = math.clamp(math.floor(tonumber(opts.MaxHeight) or SUB_MAX_HEIGHT), 120, 260)
     local pop = createPopup(window, anchor, width, 37, false, opts.ParentPopup)
+    local inset = 8
     local holder = new("ScrollingFrame", pop.Object, {
         Name = "Body",
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(0, 0),
-        Size = UDim2.fromOffset(width, 37),
+        Position = UDim2.fromOffset(0, inset),
+        Size = UDim2.fromOffset(width, 37 - inset * 2),
         CanvasSize = UDim2.fromOffset(0, 0),
         ScrollBarThickness = 0,
         ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -3242,8 +3248,7 @@ local function createSubMenu(window, anchor, opts)
         ScrollingEnabled = false,
         Active = true,
     })
-    local inset = 8
-    local page = transparent(holder, inset, inset, width - inset * 2 - 4, 1)
+    local page = transparent(holder, inset, 0, width - inset * 2 - 4, 1)
 
     local menu = setmetatable({
         Name = opts.Name or "Settings",
@@ -3260,13 +3265,17 @@ local function createSubMenu(window, anchor, opts)
         IsSubMenu = true,
     }, Tab)
 
+    connect(holder:GetPropertyChangedSignal("CanvasPosition"), function() window:Wake() end)
     menu.OnResize = function(height)
         local total = math.max(31, height + inset * 2)
         local shown = math.min(maxHeight, total)
         pop.Height = shown
-        holder.Size = UDim2.fromOffset(width, shown)
-        holder.CanvasSize = UDim2.fromOffset(0, total)
-        holder.ScrollingEnabled = total > shown
+        local viewHeight = math.max(1, shown - inset * 2)
+        holder.Size = UDim2.fromOffset(width, viewHeight)
+        holder.CanvasSize = UDim2.fromOffset(0, height)
+        holder.ScrollingEnabled = height > viewHeight
+        holder.CanvasPosition = Vector2.new(0,
+            math.clamp(holder.CanvasPosition.Y, 0, math.max(0, height - viewHeight)))
     end
 
     function menu:Open(anchorOverride) pop:Open(anchorOverride or anchor) end
@@ -4338,7 +4347,7 @@ function Tab:AddButton(opts)
 
     local control, title
     if compact then
-        control = paint(rect(card, 0, 0, w, 31, palette[4], 5, "TextButton"), 4)
+        control = paint(rect(card, 0, 0, w, 31, palette[4], 8, "TextButton"), 4)
     else
         title = text(card, name, 10, 10, w - 20, 14, 12, white)
         if opts.Description then
@@ -5091,6 +5100,7 @@ function Tab:AddCardGrid(opts)
         contentW + PAD_IN * 2, gridH + PAD_IN * 2, 11, "center")
     empty.Object.Visible = false
 
+    connect(grid:GetPropertyChangedSignal("CanvasPosition"), function() window:Wake() end)
     local entries, byId = {}, {}
     local selected, order = {}, {}
     local filterText = ""
@@ -5217,6 +5227,7 @@ function Tab:AddCardGrid(opts)
             local wasVisible = entry.Tile.Visible
             entry.Tile.Visible = visible
             if visible then
+                entry.OffscreenSettled = false
                 entry.TX = PAD_IN + gridInset + (index % columns) * (tileW + gap)
                 entry.TY = PAD_IN + math.floor(index / columns) * (tileH + gap)
                 if instant or not entry.Placed or not wasVisible then
@@ -5274,7 +5285,8 @@ function Tab:AddCardGrid(opts)
                     NumberSequenceKeypoint.new(1, 0.6),
                 }),
             })
-            local line = rect(holder, 0, imageH - 2, imgW, 2, rarity)
+            local line = rect(holder, math.max(0, radius - 1), imageH - 2,
+                math.max(0, imgW - math.max(0, radius - 1) * 2), 2, rarity, 1)
             line.ZIndex = 4
         end
 
@@ -5425,8 +5437,12 @@ function Tab:AddCardGrid(opts)
             counter:Color(palette[3]:Lerp(tintBase, full and 1 or 0):Lerp(Color3.fromRGB(240, 100, 100), counterFlash))
             if counterFlash > 0 then busy = true end
         end
+        local viewportTop = grid.CanvasPosition.Y - 8
+        local viewportBottom = grid.CanvasPosition.Y + grid.Size.Y.Offset + 8
         for _, e in ipairs(entries) do
-            if e.Tile.Visible then
+            if e.Tile.Visible and math.min(e.Y, e.TY) + tileH >= viewportTop
+                and math.max(e.Y, e.TY) <= viewportBottom then
+                e.OffscreenSettled = false
                 local isSel = selected[e.Id] == true
                 local locked = e.Def.Disabled or e.Def.Locked
                 e.Sel = approach(e.Sel, isSel and 1 or 0, k)
@@ -5482,6 +5498,15 @@ function Tab:AddCardGrid(opts)
                         e.Order:Alpha(a)
                     end
                     e.Check.Visible = checkStyle ~= "selected" or a > 0.01 or e.Hov > 0.01
+                end
+            elseif e.Tile.Visible then
+                e.X, e.Y = e.TX, e.TY
+                e.Scale, e.Hov, e.Shake = 1, 0, 0
+                e.Sel = selected[e.Id] and 1 or 0
+                if not e.OffscreenSettled then
+                    e.Tile.Position = UDim2.fromOffset(e.TX, e.TY)
+                    e.UIScale.Scale = 1
+                    e.OffscreenSettled = true
                 end
             end
         end
