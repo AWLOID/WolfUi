@@ -1,4 +1,4 @@
--- WolfUI 5.7.3 | Black Frost
+-- WolfUI 5.7.4 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -699,7 +699,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.7.3",
+    Version = "5.7.4",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -5008,14 +5008,16 @@ function Tab:AddCardGrid(opts)
     local radius = math.max(0, math.floor(tonumber(opts.CornerRadius) or 7))
     local titleSize = math.max(8, math.floor(tonumber(opts.TitleSize) or 11))
     local titleAlign = opts.TitleAlign or "center"
-    local showTitles = opts.ShowTitles ~= false
-    local showCheck = opts.ShowCheck ~= false
-    local showOrder = opts.ShowOrder == true
+    -- ImageOnly hides all captions and reserves the entire card for its image.
+    local imageOnly = opts.ImageOnly == true
+    local showTitles = not imageOnly and opts.ShowTitles ~= false
+    local showCheck = opts.ShowCheck ~= false and (not imageOnly or opts.ShowCheck == true)
+    local showOrder = not imageOnly and opts.ShowOrder == true
     local checkShape = string.lower(tostring(opts.CheckShape or "square"))
     local checkStyle = string.lower(tostring(opts.CheckStyle or "always"))
     local checkPosition = string.lower(tostring(opts.CheckPosition or "topright"))
-    local strokeThickness = math.max(1, tonumber(opts.StrokeThickness) or 1.5)
-    local imagePadding = math.max(0, math.floor(tonumber(opts.ImagePadding) or 4))
+    local strokeThickness = math.clamp(tonumber(opts.StrokeThickness) or 1.5, 1, 3)
+    local imagePadding = math.max(0, math.floor(tonumber(opts.ImagePadding) or (imageOnly and 0 or 4)))
     local imageBackground = opts.ImageBackground ~= false
     local useCardColor = opts.UseCardColor == true
     local single = string.lower(tostring(opts.Mode or "multi")) == "single"
@@ -5027,6 +5029,7 @@ function Tab:AddCardGrid(opts)
     if replaceOnLimit == nil then replaceOnLimit = single end
     local showHeader = opts.ShowHeader
     if showHeader == nil then showHeader = opts.Name ~= nil end
+    if imageOnly then showHeader = false end
     local showCounter = showHeader and opts.ShowCounter ~= false and w >= 130
 
     local defs = {}
@@ -5059,10 +5062,11 @@ function Tab:AddCardGrid(opts)
 
     local contentW = math.max(1, w - 20)
     -- Keep equal integer card sizes and gaps, with balanced margins.
-    gap = math.min(gap, math.max(0, contentW - 1))
+    gap = math.min(math.max(gap, math.ceil(strokeThickness) + 1), math.max(0, contentW - 1))
     local minTileW = math.min(56, contentW)
     columns = math.min(columns, math.max(1, math.floor((contentW + gap) / (minTileW + gap))))
     local tileW = math.floor((contentW - gap * (columns - 1)) / columns)
+    radius = math.min(radius, math.floor(math.min(tileW, tileH) / 2))
     local gridWidth = columns * tileW + (columns - 1) * gap
     local gridInset = math.floor((contentW - gridWidth) / 2)
     local gridY = 10
@@ -5260,23 +5264,27 @@ function Tab:AddCardGrid(opts)
         stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
         local uiScale = new("UIScale", tile, {Scale = 1})
 
+        local inset = imageOnly and 4 or 6
         local subtitle = def.Description or def.Subtitle
+        if tileH < 54 then subtitle = nil end
         local textH = showTitles and (subtitle and 32 or 20) or 0
-        local imgW = tileW - 12
-        local imageH = math.max(10, tileH - 12 - textH)
+        local imgW = math.max(1, tileW - inset * 2)
+        local imageH = math.max(1, tileH - inset * 2 - textH)
+        local innerRadius = math.min(math.max(0, radius - inset), math.floor(math.min(imgW, imageH) / 2))
         local rarity = resolveColor(def.Color or def.Rarity, nil)
 
         local holder
         if imageBackground then
-            holder = rect(tile, 6, 6, imgW, imageH, palette[1], math.max(0, radius - 1))
+            holder = rect(tile, inset, inset, imgW, imageH, palette[1], innerRadius)
             holder.BackgroundTransparency = 0.35
         else
-            holder = transparent(tile, 6, 6, imgW, imageH)
+            holder = rect(tile, inset, inset, imgW, imageH, palette[1], innerRadius)
+            holder.BackgroundTransparency = 1
         end
         holder.ZIndex = 3
         holder.ClipsDescendants = true
         if rarity and opts.RarityGlow ~= false then
-            local glow = rect(holder, 0, 0, imgW, imageH, rarity, math.max(0, radius - 1))
+            local glow = rect(holder, 0, 0, imgW, imageH, rarity, innerRadius)
             glow.ZIndex = 3
             new("UIGradient", glow, {
                 Rotation = 90,
@@ -5285,25 +5293,46 @@ function Tab:AddCardGrid(opts)
                     NumberSequenceKeypoint.new(1, 0.6),
                 }),
             })
-            local line = rect(holder, math.max(0, radius - 1), imageH - 2,
-                math.max(0, imgW - math.max(0, radius - 1) * 2), 2, rarity, 1)
+            local line = rect(holder, innerRadius, math.max(0, imageH - 2),
+                math.max(0, imgW - innerRadius * 2), math.min(2, imageH), rarity, 1)
             line.ZIndex = 4
         end
 
         local image, iconApi
         local imageId = directIcon(def.Image or def.Photo or def.Thumbnail)
         if imageId then
+            local pad = math.min(imagePadding, math.floor((math.min(imgW, imageH) - 1) / 2))
+            local imageW, imageHeight = imgW - pad * 2, imageH - pad * 2
+            local rotation = tonumber(def.ImageRotation) or 0
+            -- Fit rotated artwork inside the safe interior instead of relying on
+            -- rectangular ClipsDescendants to mask a rounded parent.
+            if rotation % 180 ~= 0 then
+                local guard = math.ceil(innerRadius * (1 - 1 / math.sqrt(2)))
+                pad = math.min(math.max(pad, guard), math.floor((math.min(imgW, imageH) - 1) / 2))
+                imageW, imageHeight = imgW - pad * 2, imageH - pad * 2
+                local radians = math.rad(rotation)
+                local c, sn = math.abs(math.cos(radians)), math.abs(math.sin(radians))
+                local factor = math.min(1, imageW / (imageW * c + imageHeight * sn),
+                    imageHeight / (imageW * sn + imageHeight * c))
+                imageW = math.max(1, math.floor(imageW * factor))
+                imageHeight = math.max(1, math.floor(imageHeight * factor))
+            end
             image = new("ImageLabel", holder, {
                 BackgroundTransparency = 1,
                 BorderSizePixel = 0,
-                Position = UDim2.fromOffset(imagePadding, imagePadding),
-                Size = UDim2.fromOffset(math.max(1, imgW - imagePadding * 2), math.max(1, imageH - imagePadding * 2)),
+                Position = UDim2.fromOffset((imgW - imageW) / 2, (imageH - imageHeight) / 2),
+                Size = UDim2.fromOffset(imageW, imageHeight),
                 Image = imageId,
                 ImageColor3 = resolveColor(def.ImageColor, pureWhite),
                 ScaleType = scaleTypeOf(def.ImageScale or opts.ImageScale),
-                Rotation = tonumber(def.ImageRotation) or 0,
+                Rotation = rotation,
                 ZIndex = 5,
             })
+            -- UICorner belongs to the image itself; parent corners do not clip children.
+            local imageRadius = math.min(math.max(0, innerRadius - pad), math.min(imageW, imageHeight) / 2)
+            if imageRadius > 0 then
+                new("UICorner", image, {CornerRadius = UDim.new(0, imageRadius)})
+            end
             if typeof(def.ImageRectOffset) == "Vector2" then image.ImageRectOffset = def.ImageRectOffset end
             if typeof(def.ImageRectSize) == "Vector2" then image.ImageRectSize = def.ImageRectSize end
         else
@@ -5316,18 +5345,18 @@ function Tab:AddCardGrid(opts)
 
         local titleLabel, subLabel
         if showTitles then
-            titleLabel = text(tile, def.Name, 6, 6 + imageH + 4, imgW, 14, titleSize, palette[3], titleAlign,
+            titleLabel = text(tile, def.Name, inset, inset + imageH + 4, imgW, 14, titleSize, palette[3], titleAlign,
                 {Bold = opts.BoldTitles == true})
             titleLabel.Object.ZIndex = 4
             if subtitle then
-                subLabel = text(tile, subtitle, 6, 6 + imageH + 17, imgW, 12, 10, palette[3], titleAlign)
+                subLabel = text(tile, subtitle, inset, inset + imageH + 17, imgW, 12, 10, palette[3], titleAlign)
                 subLabel.Object.ZIndex = 4
             end
         end
 
-        if def.Badge then
+        if def.Badge and not imageOnly then
             local caption = tostring(def.Badge)
-            local bw = math.min(imgW - 8, TextService:GetTextSize(caption, 9, UI_FONT_BOLD, Vector2.new(1000, 14)).X + 10)
+            local bw = math.max(1, math.min(imgW - 8, TextService:GetTextSize(caption, 9, UI_FONT_BOLD, Vector2.new(1000, 14)).X + 10))
             local badge = rect(tile, 10, 10, bw, 14, resolveColor(def.BadgeColor, rarity or accent), 3)
             badge.ZIndex = 6
             local badgeText = text(badge, caption, 0, 0, bw, 14, 9, pureWhite, "center", {Bold = true})
@@ -5339,13 +5368,14 @@ function Tab:AddCardGrid(opts)
         if showCheck then
             local size = 14
             local cx = string.find(checkPosition, "left", 1, true) and 10 or (tileW - 10 - size)
-            local cy = string.find(checkPosition, "bottom", 1, true) and (6 + imageH - 4 - size) or 10
+            local cy = string.find(checkPosition, "bottom", 1, true) and math.max(10, inset + imageH - 4 - size) or 10
             local round = checkShape == "circle" and 7 or 3
             check = rect(tile, cx, cy, size, size, palette[1], round)
             check.ZIndex = 6
             check.BackgroundTransparency = 0.15
             checkStroke = new("UIStroke", check, {Thickness = 1, Transparency = 0.3})
             checkStroke.Color = palette[5]
+            checkStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
             checkFill = rect(check, 7, 7, 0, 0, accent, round)
             checkFill.ZIndex = 7
             if showOrder then
@@ -5361,7 +5391,7 @@ function Tab:AddCardGrid(opts)
         local lock
         if def.Locked or def.Disabled then
             lock = iconLabel(tile, def.LockIcon or opts.LockIcon or {"lock", "lock-keyhole"},
-                (tileW - 16) / 2, 6 + (imageH - 16) / 2, 16, white, "x")
+                (tileW - 16) / 2, inset + (imageH - 16) / 2, 16, white, "x")
             lock.Object.ZIndex = 9
         end
 
