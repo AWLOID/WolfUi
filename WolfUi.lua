@@ -1,5 +1,5 @@
--- Release: popup-r4 | 2026-10-13 | compact cards / vote count / camera culling
--- WolfUI 5.9.0 | Black Frost
+-- Release: popup-r6 | 2026-10-13 | hit chance threshold / Force Shoot override
+-- WolfUI 5.9.1 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -701,7 +701,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "5.9.0",
+    Version = "5.9.1",
     Flags = {},
     Elements = {},
     NoSaveFlags = {},
@@ -4998,6 +4998,24 @@ end
 -- CardGrid: selectable picture cards (skin changer style).
 -- The developer decides everything: columns, sizes, limits, colors, callbacks.
 -- ============================================================================
+-- One vector check mark shared by menu cards and card notifications.
+function Library:CreateCheckMark(parent,x,y,size,color)
+    local object=rect(parent,x,y,size,size,nil,nil)
+    object.BackgroundTransparency=1
+    local first=rect(object,2,6,4,1.6,color,1)
+    first.AnchorPoint=Vector2.new(0,0.5);first.Rotation=45
+    local second=rect(object,4.8,8.8,8,1.6,color,1)
+    second.AnchorPoint=Vector2.new(0,0.5);second.Rotation=-45
+    local api={Object=object}
+    function api:Alpha(value)
+        local alpha=math.clamp(tonumber(value) or 0,0,1)
+        first.BackgroundTransparency=1-alpha;second.BackgroundTransparency=1-alpha
+        first.ZIndex=object.ZIndex+1;second.ZIndex=object.ZIndex+1
+    end
+    function api:Color(value) first.BackgroundColor3=value;second.BackgroundColor3=value end
+    return api
+end
+
 function Tab:AddCardGrid(opts)
     opts = opts or {}
     local window = self.Window
@@ -5397,7 +5415,7 @@ function Tab:AddCardGrid(opts)
                 orderLabel.Object.ZIndex = 8
                 orderLabel:Color(pureWhite)
             else
-                checkMark = iconLabel(check, {"check"}, 1, 1, 12, black, "v")
+                checkMark = Library:CreateCheckMark(check,1,1,12,black)
                 checkMark.Object.ZIndex = 8
             end
         end
@@ -5831,7 +5849,7 @@ function Tab:AddConfigManager(opts)
 end
 
 -- Persistent, image-based action notification, independent of main-menu visibility.
-Library.CardNotificationVersion="5.9.0"
+Library.CardNotificationVersion="5.9.1"
 function Library:NotifyCards(opts)
     opts=opts or {}
     local window=self.Window
@@ -5839,12 +5857,12 @@ function Library:NotifyCards(opts)
     local maid=Maid.new(Library.Maid)
     local ok,result=pcall(function()
     local api={Maid=maid,Destroyed=false,Closing=false,Selected=nil,Cards={}}
-    local width,height=338,164
+    local width,height=296,142
     local colors=Library.Palette or palette
     local tweenService=game:GetService("TweenService")
     local panel=rect(window.Gui,0,0,width,height,colors[2],10,"CanvasGroup")
     panel.Name="CardNotification"
-    panel.AnchorPoint=Vector2.new(1,0)
+    panel.AnchorPoint=Vector2.new(0,0)
     panel.ZIndex=80
     panel.GroupTransparency=1
     panel.BackgroundTransparency=0.20
@@ -5860,16 +5878,16 @@ function Library:NotifyCards(opts)
             Font=bold and UI_FONT_BOLD or UI_FONT,TextSize=size,TextColor3=color or white,
             TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=82})
     end
-    label(panel,opts.Title or "Map vote",10,8,152,17,12,colors[3],true)
-    local subtitle=label(panel,opts.Text or "Choose a map",10,27,width-20,15,9,colors[3])
+    label(panel,opts.Title or "Map vote",10,8,151,16,11,colors[3],true)
+    local subtitle=label(panel,opts.Text or "Choose a map",10,25,width-20,13,9,colors[3])
     subtitle.TextTransparency=0.36
-    local control=rect(panel,196,9,96,23,colors[4],6)
+    local control=rect(panel,171,8,82,22,colors[4],6)
     control.ZIndex=85;control.BackgroundTransparency=0.16
-    local value=label(control,"10",22,0,52,23,11,colors[3],true)
+    local value=label(control,"10",21,0,40,22,11,colors[3],true)
     value.TextXAlignment=Enum.TextXAlignment.Center;value.ZIndex=87
     local countValue=math.clamp(math.floor(tonumber(opts.Value) or 10),1,100)
-    local minus=rect(control,0,0,23,23,colors[4],6,"TextButton")
-    local plus=rect(control,73,0,23,23,colors[4],6,"TextButton")
+    local minus=rect(control,0,0,21,22,colors[4],6,"TextButton")
+    local plus=rect(control,61,0,21,22,colors[4],6,"TextButton")
     for _,button in ipairs({minus,plus}) do button.ZIndex=88;button.TextColor3=colors[3];button.TextSize=14;button.BackgroundTransparency=1 end
     minus.Text="−";plus.Text="+"
     api.ValueLabel=value
@@ -5882,7 +5900,7 @@ function Library:NotifyCards(opts)
     maid:Connect(minus.Activated,function() api:SetValue(countValue-1) end)
     maid:Connect(plus.Activated,function() api:SetValue(countValue+1) end)
     api:SetValue(countValue,true)
-    local close=rect(panel,width-35,8,25,25,colors[4],6,"TextButton")
+    local close=rect(panel,width-33,7,23,23,colors[4],6,"TextButton")
     close.ZIndex=89;close.BackgroundTransparency=1;close.Text="×";close.TextSize=17;close.TextColor3=colors[3]
     local cells={}
     local function applySelected()
@@ -5890,31 +5908,41 @@ function Library:NotifyCards(opts)
             local on=cell.Def and tostring(cell.Def.Id)==api.Selected
             cell.Edge.Transparency=on and 0.12 or 0.8
             cell.Edge.Color=on and colors[3] or colors[5]
-            cell.Check.Visible=on
+            local tint=Library.Accent or colors[3]
+            cell.Edge.Color=on and tint or colors[5]
+            cell.CheckFill.BackgroundColor3=tint
+            cell.CheckFill.Size=UDim2.fromOffset(on and 14 or 0,on and 14 or 0)
+            cell.CheckFill.Position=UDim2.fromOffset(on and 0 or 7,on and 0 or 7)
+            cell.CheckMark:Alpha(on and 1 or 0)
+            cell.CheckStroke.Color=on and tint or colors[5]
         end
     end
     for index=1,3 do
-        local x=10+(index-1)*108
-        local group=rect(panel,x,51,102,103,colors[4],7,"CanvasGroup")
+        local x=10+(index-1)*94
+        local group=rect(panel,x,44,88,88,colors[4],7,"CanvasGroup")
         group.ZIndex=82;group.ClipsDescendants=true;group.BackgroundTransparency=0.16
         new("UIGradient",group,{Rotation=105,Color=ColorSequence.new(Color3.fromRGB(255,255,255),Color3.fromRGB(220,220,220))})
         local cellScale=new("UIScale",group,{Scale=1})
         local edge=new("UIStroke",group,{Color=colors[5],Thickness=1,Transparency=0.55})
-        local image=new("ImageLabel",group,{Position=UDim2.fromOffset(6,6),Size=UDim2.fromOffset(90,73),
+        local image=new("ImageLabel",group,{Position=UDim2.fromOffset(6,6),Size=UDim2.fromOffset(76,60),
             BackgroundColor3=colors[1],BackgroundTransparency=0.35,BorderSizePixel=0,
             Image="",ScaleType=Enum.ScaleType.Crop,ZIndex=83})
         new("UICorner",image,{CornerRadius=UDim.new(0,3)})
-        local placeholder=label(group,"",6,26,90,30,18,colors[3],true)
+        local placeholder=label(group,"",6,21,76,30,18,colors[3],true)
         placeholder.TextXAlignment=Enum.TextXAlignment.Center
-        local title=label(group,"",6,83,90,14,10,colors[3],false)
+        local title=label(group,"",6,71,76,14,9,colors[3],false)
         title.TextXAlignment=Enum.TextXAlignment.Center;title.ZIndex=85
-        local pill=rect(group,71,10,21,17,colors[2],5);pill.BackgroundTransparency=0.1;pill.ZIndex=85
-        local count=label(pill,"0",0,0,21,17,9,colors[3],true);count.ZIndex=86;count.TextXAlignment=Enum.TextXAlignment.Center
-        local check=rect(group,10,10,16,16,colors[3],4,"TextLabel")
-        check.ZIndex=85;check.Font=UI_FONT_BOLD;check.Text="✓";check.TextSize=10;check.TextColor3=colors[1];check.Visible=false
+        local pill=rect(group,58,9,20,17,colors[2],5);pill.BackgroundTransparency=0.1;pill.ZIndex=85
+        local count=label(pill,"0",0,0,20,17,9,colors[3],true);count.ZIndex=86;count.TextXAlignment=Enum.TextXAlignment.Center
+        local check=rect(group,10,10,14,14,colors[1],3)
+        check.ZIndex=85;check.BackgroundTransparency=0.15
+        local checkStroke=new("UIStroke",check,{Color=colors[5],Thickness=1,Transparency=0.3})
+        local checkFill=rect(check,7,7,0,0,Library.Accent or colors[3],3);checkFill.ZIndex=86
+        local checkMark=Library:CreateCheckMark(check,1,1,12,Color3.new(0,0,0))
+        checkMark.Object.ZIndex=87;checkMark:Alpha(0)
         local button=new("TextButton",group,{Text="",BackgroundTransparency=1,AutoButtonColor=false,
             Size=UDim2.fromScale(1,1),ZIndex=90})
-        local cell={Group=group,Image=image,Placeholder=placeholder,Title=title,Count=count,Check=check,Edge=edge}
+        local cell={Group=group,Image=image,Placeholder=placeholder,Title=title,Count=count,Check=check,CheckFill=checkFill,CheckMark=checkMark,CheckStroke=checkStroke,Edge=edge}
         cells[index]=cell
         local function hover(on)
             if api.Destroyed or api.Closing then return end
@@ -5977,7 +6005,7 @@ function Library:NotifyCards(opts)
         if view.X<=0 or view.Y<=0 then view=window.Viewport end
         local factor=math.min(1,math.max(0.1,(view.X-24)/width),math.max(0.1,(view.Y-24)/height))
         scale.Scale=factor
-        targetPosition=UDim2.new(1,-12,0,math.max(12,math.min(66,view.Y-height*factor-12)))
+        targetPosition=UDim2.new(0,12,0,math.max(12,math.min(66,view.Y-height*factor-12)))
         panel.Position=targetPosition
     end
     maid:Connect(window.Gui:GetPropertyChangedSignal("AbsoluteSize"),layout)
