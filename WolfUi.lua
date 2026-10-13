@@ -1,5 +1,5 @@
--- Release: 6.1.0 | 2026-10-13 | conditional color controls / validated config restore
--- WolfUI 6.1.0 | Black Frost
+-- Release: 6.1.1 | 2026-10-13 | frosted surface restoration / interrupted fade recovery
+-- WolfUI 6.1.1 | Black Frost
 -- Single Black theme; permanent frosted finish; balanced card grids.
 -- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
@@ -439,6 +439,18 @@ local function restoreFades()
     end
 end
 
+-- Weak registry: base surface alpha is independent from transient fade values.
+local surfaceAlphas = setmetatable({}, {__mode = "k"})
+local function surface(object, alpha)
+    surfaceAlphas[object] = alpha
+    object.BackgroundTransparency = alpha
+end
+local function restoreSurfaces()
+    for object, alpha in pairs(surfaceAlphas) do
+        if object.Parent then object.BackgroundTransparency = alpha end
+    end
+end
+
 local function fadeProperties(object)
     local properties = {}
     if object:IsA("GuiObject") then properties[#properties + 1] = "BackgroundTransparency" end
@@ -709,7 +721,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "6.1.0",
+    Version = "6.1.1",
     Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1, ConditionalColors = 1, ConfigRestore = 2}),
     Design = table.freeze({CardRadius = 8, PopupRadius = 8, ControlRadius = 3,
         CardTransparency = 0.20, StrokeTransparency = 0.65, Gap = 10, Padding = 10}),
@@ -1044,7 +1056,7 @@ Window.__index = Window
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     local object = rect(window.PopupLayer, 0, 0, w, h, palette[2], 8, "Frame")
     -- Mini settings use the same permanent matte finish as the main menu.
-    object.BackgroundTransparency = 0.24
+    surface(object, 0.24)
     new("UIGradient", object, {
         Rotation = 110,
         Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 190, 190)),
@@ -1239,7 +1251,7 @@ function Library:CreateWindow(opts)
     frame.ClipsDescendants = true
     window.Frame = frame
     -- Permanent Black Frost styling: no theme or glass configuration switches.
-    frame.BackgroundTransparency = 0.22
+    surface(frame, 0.22)
     new("UIGradient", frame, {
         Rotation = 110,
         Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 190, 190)),
@@ -1421,7 +1433,7 @@ function Library:CreateWindow(opts)
     sidebar.BackgroundTransparency = 1
     local sidebarSurface = paint(rect(sidebar, 4, 4, SIDEBAR_W - 8, WINDOW_H - 8, palette[2], 8), 2)
     sidebarSurface.Name = "Surface"
-    sidebarSurface.BackgroundTransparency = 0.24
+    surface(sidebarSurface, 0.24)
     new("UIGradient", sidebarSurface, {
         Rotation = 90,
         Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205)),
@@ -2531,6 +2543,7 @@ function Library:CreateWindow(opts)
     connect(RunService.RenderStepped, function(dt)
         if not Runtime.Alive then return end
         restoreFades()
+        restoreSurfaces()
         sweepTimer = sweepTimer + dt
         if sweepTimer >= Runtime.SweepInterval then
             sweepTimer = 0
@@ -3056,7 +3069,7 @@ end
 function Tab:_card(w, h, name)
     local x, y = self:_place(w, h)
     local card = paint(rect(self.Page, x, y, w, h, palette[2], Library.Design.CardRadius), 2)
-    card.BackgroundTransparency = Library.Design.CardTransparency
+    surface(card, Library.Design.CardTransparency)
     new("UIGradient", card, {
         Rotation = 100,
         Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(218, 218, 218)),
@@ -4294,7 +4307,7 @@ local function makeSlider(tab, parent, x, y, w, opts)
     local suffix = opts.Suffix or ""
 
     local card = paint(rect(parent, x, y, w, 58, palette[2], Library.Design.CardRadius), 2)
-    card.BackgroundTransparency = Library.Design.CardTransparency
+    surface(card, Library.Design.CardTransparency)
     new("UIStroke", card, {Color = palette[5], Thickness = 1,
         Transparency = Library.Design.StrokeTransparency, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     card.Name = name
