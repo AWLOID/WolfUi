@@ -1,7 +1,3 @@
--- Release: 6.1.0 | 2026-10-13 | conditional color controls / validated config restore
--- WolfUI 6.1.0 | Black Frost
--- Single Black theme; permanent frosted finish; balanced card grids.
--- Legacy Glass options are intentionally ignored: this finish is built in.
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -46,10 +42,43 @@ end
 
 local Icons
 do
-    local ok, result = pcall(function()
-        return loadstring(game:HttpGet("https://raw.githubusercontent.com/AWLOID/Obscura/refs/heads/main/icons.lua"))()
-    end)
-    Icons = (ok and type(result) == "table") and result or {}
+    local ICON_URL = "https://raw.githubusercontent.com/AWLOID/Obscura/refs/heads/main/icons.lua"
+    local ICON_FOLDER = "WolfUi"
+    local ICON_CACHE = ICON_FOLDER .. "/icons.lua"
+    local canFile = type(isfile) == "function" and type(readfile) == "function" and type(writefile) == "function"
+
+    local function evaluate(code)
+        local ok, result = pcall(function() return loadstring(code)() end)
+        if ok and type(result) == "table" then return result end
+        return nil
+    end
+
+    if canFile then
+        local okRead, cached = pcall(function()
+            if isfile(ICON_CACHE) then return readfile(ICON_CACHE) end
+            return nil
+        end)
+        if okRead and type(cached) == "string" and #cached > 0 then
+            Icons = evaluate(cached)
+        end
+    end
+
+    if not Icons then
+        local okGet, fetched = pcall(function() return game:HttpGet(ICON_URL) end)
+        if okGet and type(fetched) == "string" then
+            Icons = evaluate(fetched)
+            if Icons and canFile then
+                pcall(function()
+                    if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(ICON_FOLDER) then
+                        makefolder(ICON_FOLDER)
+                    end
+                    writefile(ICON_CACHE, fetched)
+                end)
+            end
+        end
+    end
+
+    Icons = Icons or {}
 end
 
 local function looksLikeSheet(sheet)
@@ -182,12 +211,14 @@ local Runtime = {Connections = {}, Updates = {}, Overlay = {}, Alive = false, Ow
     Stats = {Connections = 0, Disconnected = 0, Maids = 0, MaidsDestroyed = 0, Sweeps = 0, LastSweep = 0},
     SweepInterval = 3, MaxDeadConnections = 64}
 
--- ============================================================================
--- Memory core: Maid (ownership container)
--- Every element, popup, notification and tab owns a Maid. Destroying the owner
--- disconnects its connections, destroys its instances, cancels its threads and
--- calls its cleanup callbacks. Maids nest: destroying a parent destroys children.
--- ============================================================================
+function Runtime.Env()
+    if type(getgenv) == "function" then
+        local ok, env = pcall(getgenv)
+        if ok and type(env) == "table" then return env end
+    end
+    return _G
+end
+
 local Maid = {}
 Maid.__index = Maid
 local liveMaids = setmetatable({}, {__mode = "k"})
@@ -280,7 +311,6 @@ function Maid:Clean()
         child:Destroy()
     end
     self._children = setmetatable({}, {__mode = "k"})
-    -- Disconnect signals first so callbacks cannot fire while instances are torn down.
     for _, item in pairs(tasks) do
         if typeof(item) == "RBXScriptConnection" then pcall(cleanTask, item) end
     end
@@ -298,8 +328,6 @@ function Maid:Destroy()
     Runtime.Stats.MaidsDestroyed = Runtime.Stats.MaidsDestroyed + 1
 end
 
--- Runs `fn` with `maid` as the ambient owner: every connect()/step()/popup made inside
--- is attached to that maid automatically. Nesting is safe.
 local function withOwner(maid, fn, ...)
     local previous = Runtime.Owner
     Runtime.Owner = maid
@@ -321,8 +349,6 @@ local function connect(signal, callback, owner)
     return connection
 end
 
--- Drops already-disconnected connections from the global list so it never grows
--- with recreated rows / notifications. Cheap: one pass over an array of handles.
 local function sweepConnections(force)
     local list = Runtime.Connections
     local count = #list
@@ -363,7 +389,6 @@ local function addUpdate(collection, callback, object)
     collection[#collection + 1] = update
     local owner = Runtime.Owner
     if owner then
-        -- Owner destruction kills the update even if it has no instance to watch.
         owner:Add(function() update.Alive = false end)
     end
     return update
@@ -390,7 +415,6 @@ local function runUpdates(collection, dt, k, renderCache)
             if not object or isRendered(object, renderCache) then
                 local ok, err = pcall(update.Callback, dt, k)
                 if not ok then
-                    -- One faulty extension must not stop every control's animation.
                     update.Alive = false
                     Runtime.Stats.UpdateErrors = (Runtime.Stats.UpdateErrors or 0) + 1
                     Runtime.Stats.LastUpdateError = tostring(err)
@@ -430,10 +454,8 @@ local palette = {}
 
 local function restoreFades()
     for object, values in pairs(fadeValues) do
-        if object.Parent then
-            for property, value in pairs(values) do
-                object[property] = value
-            end
+        for property, value in pairs(values) do
+            object[property] = value
         end
         fadeValues[object] = nil
     end
@@ -466,7 +488,6 @@ local function fadeTargets(root)
         fadeCaches[root] = cache
         local added = connect(root.DescendantAdded, function() cache.Dirty = true end)
         local removing = connect(root.DescendantRemoving, function() cache.Dirty = true end)
-        -- Short-lived roots (notifications) must not leak connections.
         local destroying
         destroying = root.Destroying:Connect(function()
             added:Disconnect()
@@ -660,7 +681,6 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
     return api
 end
 
--- Palette slots: 1 window, 2 cards/sidebar, 3 muted text, 4 controls, 5 hover/stroke, 6 flash, 7 text
 local themes = {
     {{9, 9, 9}, {17, 17, 17}, {158, 158, 158}, {23, 23, 23}, {43, 43, 43}, {66, 66, 66}, {242, 242, 242}},
 }
@@ -675,7 +695,7 @@ palette = {}
 for i, color in ipairs(themes[1]) do palette[i] = color end
 white = palette[7]
 
-local accent = Color3.fromRGB(126, 139, 209)
+local accent = Color3.fromRGB(255, 255, 255)
 
 local function paint(object, index)
     object.BackgroundColor3 = palette[index]
@@ -709,7 +729,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "6.1.0",
+    Version = "6.4.0",
     Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1, ConditionalColors = 1, ConfigRestore = 2}),
     Design = table.freeze({CardRadius = 8, PopupRadius = 8, ControlRadius = 3,
         CardTransparency = 0.20, StrokeTransparency = 0.65, Gap = 10, Padding = 10}),
@@ -736,6 +756,10 @@ local Library = {
     Configs = {
         Enabled = false,
         Encrypted = false,
+        RestoreAccent = false,
+        Backups = 3,
+        Verify = true,
+        PerGame = false,
     },
     Performance = {
         IdleUpdateRate = 12,
@@ -790,7 +814,6 @@ local function fireChange(flag, value)
                 pcall(function() window.Events:SetAttribute(key, value) end)
             end
         end
-        -- BindableEvent rejects some table shapes (mixed keys); never let that break the UI.
         pcall(function() window.Changed:Fire(flag, value) end)
     end
     for _, listener in ipairs(changeListeners) do
@@ -927,6 +950,10 @@ function Library:SetAccent(color, alpha)
     end
 end
 
+function Library:ResetAppearance()
+    self:SetAccent(Color3.fromRGB(255, 255, 255), 1)
+end
+
 function Library:SetPerformanceOptions(opts)
     if type(opts) ~= "table" then return self.Performance end
     if opts.IdleUpdateRate ~= nil then
@@ -951,8 +978,6 @@ function Library:SetLimits(opts)
     return self.Limits
 end
 
--- Thickness (in pixels) of the custom scroll indicator line on the main content
--- list. Pass 0 to hide it entirely. Live-updates immediately if a window exists.
 function Library:SetScrollBarThickness(thickness)
     self.ScrollBarThickness = math.clamp(math.floor(tonumber(thickness) or 3), 0, 12)
     if self.Window and self.Window.LayoutScrollBar then self.Window.LayoutScrollBar() end
@@ -1017,7 +1042,6 @@ local function keyFromName(name)
     if typeof(name) == "EnumItem" then return name end
     if type(name) ~= "string" or name == "" or string.upper(name) == "NONE" then return nil end
     local candidates = {name, KEY_LONG[string.upper(name)]}
-    -- Case-insensitive lookup so saved names like "LSHIFT" or "q" resolve.
     for _, item in ipairs(Enum.KeyCode:GetEnumItems()) do
         if string.lower(item.Name) == string.lower(name) then
             candidates[#candidates + 1] = item.Name
@@ -1043,7 +1067,6 @@ Window.__index = Window
 
 local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     local object = rect(window.PopupLayer, 0, 0, w, h, palette[2], 8, "Frame")
-    -- Mini settings use the same permanent matte finish as the main menu.
     object.BackgroundTransparency = 0.24
     new("UIGradient", object, {
         Rotation = 110,
@@ -1074,7 +1097,6 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     data.Maid = Maid.new(Runtime.Owner)
     function data:Destroy()
         if self.Destroyed then return end
-        -- Also covers the case where a nested child popup is the one currently opened.
         if self:IsActive() then window.Opened = self.Parent end
         self.Destroyed = true
         for index, popup in ipairs(window.Popups) do
@@ -1109,7 +1131,6 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
         end
         if window.Wake then window:Wake() end
     end
-    -- Destroying the owning element must also remove the popup frame and its list entry.
     data.Maid:Add(function() data:Destroy() end)
     return data
 end
@@ -1120,7 +1141,6 @@ function Library:CreateWindow(opts)
         Library:Unload()
     end
 
-    -- Dimensions are chosen before building controls; existing callers retain 590 x 350.
     local requested = opts.Size
     local sizeX, sizeY
     if typeof(requested) == "Vector2" then sizeX, sizeY = requested.X, requested.Y
@@ -1140,6 +1160,10 @@ function Library:CreateWindow(opts)
         Enabled = configOptions.Enabled ~= false and opts.Configs ~= nil,
         Encrypted = configOptions.Encrypted == true or configOptions.Encryption == true,
         Key = tostring(configOptions.Key or "1"),
+        RestoreAccent = configOptions.RestoreAccent == true,
+        Backups = math.clamp(math.floor(tonumber(configOptions.Backups) or 3), 0, 10),
+        Verify = configOptions.Verify ~= false,
+        PerGame = configOptions.PerGame == true,
     }
     Library:SetScriptName(opts.Folder or opts.ScriptName or opts.Name)
     self.FadeAnimations, self.ScaleAnimations = true, true
@@ -1147,12 +1171,23 @@ function Library:CreateWindow(opts)
     if opts.ScaleDuration ~= nil then self:SetScaleDuration(opts.ScaleDuration) end
     if type(opts.Performance) == "table" then self:SetPerformanceOptions(opts.Performance) end
 
+    do
+        local registry = Runtime.Env()
+        registry.__WolfUiWindows = registry.__WolfUiWindows or {}
+        local guiKey = opts.GuiName or "WolfUI"
+        local other = registry.__WolfUiWindows[guiKey]
+        if other and other ~= Library and type(other.Unload) == "function" then
+            pcall(other.Unload, other)
+        end
+        registry.__WolfUiWindows[guiKey] = Library
+    end
+
     local previous = playerGui:FindFirstChild(opts.GuiName or "WolfUI")
     if previous then previous:Destroy() end
 
     state.Theme = 1
     state.Scale = math.clamp(tonumber(opts.Scale) or 75, 20, 400)
-    state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or Color3.fromRGB(126, 139, 209)
+    state.Accent = typeof(opts.Accent) == "Color3" and opts.Accent or Color3.fromRGB(255, 255, 255)
     state.AccentAlpha = math.clamp(tonumber(opts.AccentAlpha) or 1, 0, 1)
     state.Tab = nil
     accent = state.Accent
@@ -1238,7 +1273,6 @@ function Library:CreateWindow(opts)
     frame.Active = true
     frame.ClipsDescendants = true
     window.Frame = frame
-    -- Permanent Black Frost styling: no theme or glass configuration switches.
     frame.BackgroundTransparency = 0.22
     new("UIGradient", frame, {
         Rotation = 110,
@@ -1256,8 +1290,6 @@ function Library:CreateWindow(opts)
             NumberSequenceKeypoint.new(1, 0.65),
         }),
     })
-    -- Roblox post-processing blurs the 3D scene, never UI text or controls.
-    -- Always create our own effect; closing/unloading restores the scene.
     local blurSize = 14
     do
         local effect = Instance.new("BlurEffect")
@@ -1416,8 +1448,6 @@ function Library:CreateWindow(opts)
     connect(UIS.WindowFocusReleased, cancelDrag)
 
     local sidebar = paint(rect(frame, 0, 0, SIDEBAR_W, WINDOW_H, palette[2]), 2)
-    -- UICorner rounds a background, but does not mask square child backgrounds.
-    -- Keep the opaque sidebar surface safely inside the outer window corners.
     sidebar.BackgroundTransparency = 1
     local sidebarSurface = paint(rect(sidebar, 4, 4, SIDEBAR_W - 8, WINDOW_H - 8, palette[2], 8), 2)
     sidebarSurface.Name = "Surface"
@@ -1489,19 +1519,12 @@ function Library:CreateWindow(opts)
     rail.Name = "Rail"
     window.Rail = rail
 
-    -- Custom scroll indicator for the main content list (the function list).
-    -- The ScrollingFrame's native bar is force-disabled everywhere in this library
-    -- (see `new`, ScrollBarThickness = 0), so this track+thumb pair is the only
-    -- visible scroll position indicator anywhere in the UI: sharp corners (no
-    -- UICorner / radius passed to `rect`), sized by Library.ScrollBarThickness so
-    -- a dev (or the built-in settings slider added below) can resize it live.
     local scrollTrack = rect(frame, WINDOW_W - RAIL_W, 0, Library.ScrollBarThickness, WINDOW_H, palette[2])
     scrollTrack.Name = "ScrollTrack"
     scrollTrack.ZIndex = 2
     local scrollThumb = rect(scrollTrack, 0, 0, Library.ScrollBarThickness, WINDOW_H, palette[5])
     scrollThumb.Name = "ScrollThumb"
     scrollThumb.ZIndex = 3
-    -- Scroll indicator is kept for layout/API compatibility but is fully transparent.
     scrollTrack.BackgroundTransparency = 1
     scrollThumb.BackgroundTransparency = 1
     window.ScrollTrack = scrollTrack
@@ -1671,10 +1694,6 @@ function Library:CreateWindow(opts)
     window.Reopen = reopen
     window.ReopenIcon = reopenIcon
 
-    -- Watermark ----------------------------------------------------------------
-    -- The watermark is a root frame holding one or more "capsules". Every capsule
-    -- carries a set of blocks (icon/text pairs). Layout "solid" packs all blocks
-    -- into one capsule, "split" gives each block (or each Group) its own capsule.
     local watermarkRoot = new("Frame", gui, {
         Name = "Watermark",
         BackgroundTransparency = 1,
@@ -1753,7 +1772,6 @@ function Library:CreateWindow(opts)
         return block
     end
 
-    -- Resolves a color option: Color3, "#RRGGBB", or keywords accent/text/muted/good/warn/bad/...
     local function watermarkColor(value, fallback)
         local wm = window.WatermarkConfig
         if typeof(value) == "Color3" then return value end
@@ -1826,7 +1844,6 @@ function Library:CreateWindow(opts)
             wm.Blocks[index] = block
             local kind = block.Type
             if kind == "spacer" and split then
-                -- In split layouts a spacer only widens the distance between capsules.
                 watermarkSequence[#watermarkSequence + 1] = {Gap = block}
                 lastKey = nil
             else
@@ -2009,8 +2026,6 @@ function Library:CreateWindow(opts)
         local name = string.lower((string.gsub(tostring(window.WatermarkConfig.Anchor or "TopLeft"), "[%s_%-]", "")))
         return ANCHORS[name] or ANCHORS.topleft
     end
-    -- Position is stored as an inward offset from the anchored corner, so the
-    -- watermark keeps its place when the viewport changes.
     local function watermarkFrame(size, viewport)
         local a = watermarkAnchor()
         local base = Vector2.new((viewport.X - size.X) * a.X, (viewport.Y - size.Y) * a.Y)
@@ -2085,7 +2100,6 @@ function Library:CreateWindow(opts)
         window:SetVisible(not window.Visible)
     end)
 
-    -- Drag the watermark anywhere; a plain click toggles the menu in watermark mode.
     local wmDragStart, wmDragOrigin
     draggable(watermarkRoot, function(point, initial)
         local wm = window.WatermarkConfig
@@ -2126,7 +2140,6 @@ function Library:CreateWindow(opts)
         local wm = window.WatermarkConfig
         local hidden = not window.Visible
 
-        -- Reopen button ----------------------------------------------------------
         local buttonMode = oc.Mode ~= "watermark"
         local showButton = buttonMode and (hidden or oc.AlwaysVisible == true)
         local buttonTarget = showButton and 1 or 0
@@ -2156,7 +2169,6 @@ function Library:CreateWindow(opts)
             reopenIcon:Alpha(reopenAlpha * state.AccentAlpha)
         end
 
-        -- Watermark --------------------------------------------------------------
         local showWatermark = wm.Enabled == true and (wm.AlwaysVisible ~= false or hidden)
         local wmTarget = showWatermark and 1 or 0
         watermarkAlpha = approach(watermarkAlpha, wmTarget,
@@ -2290,7 +2302,6 @@ function Library:CreateWindow(opts)
                 capsule.Object.Visible = capsule.Visible
             end
 
-            -- Arrange capsules in a row or a column.
             local cx, cy, totalW, totalH, extra, placed = 0, 0, 0, 0, 0, 0
             for _, entry in ipairs(watermarkSequence) do
                 if entry.Gap then
@@ -2398,7 +2409,6 @@ function Library:CreateWindow(opts)
             window.WatermarkSize = Vector2.new(totalW, totalH)
         end
 
-        -- Tooltip ----------------------------------------------------------------
         if window.Visible and window.TooltipText and window.TooltipObject
             and window.TooltipObject.Parent then
             local caption = window.TooltipText
@@ -2465,7 +2475,6 @@ function Library:CreateWindow(opts)
                 pending:Set(input.UserInputType)
             elseif input.UserInputType == Enum.UserInputType.MouseButton1
                 or input.UserInputType == Enum.UserInputType.Touch then
-                -- Clicking elsewhere cancels the capture and restores the caption.
                 pending:Set(pending.Key)
             else
                 return
@@ -2507,7 +2516,6 @@ function Library:CreateWindow(opts)
     else
         window.ToggleKey = keyFromName(opts.ToggleKey) or Enum.KeyCode.RightShift
     end
-    -- ScaleKeys = false disables F1/F2; ScaleKeys = {Up = "F1", Down = "F2"} remaps them.
     if opts.ScaleKeys == false then
         window.ScaleKeys = nil
     else
@@ -2699,11 +2707,6 @@ function Library:CreateWindow(opts)
                 page.Interactable = tabActive and window.Visible
                 if page.Visible then
                     page.Position = UDim2.fromOffset(PAD + tab.Slide, PAD)
-                    -- Tab fade always runs on its own alpha; the window-level fade below
-                    -- (fadeTargetList over MainFadeTargets) additionally scales everything
-                    -- inside `frame`, including this page, so the two combine smoothly
-                    -- instead of one being skipped mid-transition (that skip used to be
-                    -- the source of the menu appearing to close "unevenly").
                     fadeGroup(page, tab.Alpha)
                 elseif not tabActive then
                     tab.Slide = 0
@@ -2732,7 +2735,6 @@ function Library:CreateWindow(opts)
                     object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
                     object.Interactable = show and window.Visible
                     if object.Visible then
-                        -- PopupLayer is a sibling of the main frame; apply window fade here.
                         fadeGroup(object, pop.Alpha * window.Alpha)
                         object.BackgroundColor3 = palette[2]
                         object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
@@ -2755,8 +2757,6 @@ function Library:CreateWindow(opts)
         frame.Position = animatedPosition
         popupLayer.Position = animatedPosition
         if mainTransitioning then
-            -- Cache structure until descendants change. Visibility is checked per frame,
-            -- so newly revealed controls join the fade without rebuilding the whole tree.
             local targets = fadeTargets(frame)
             local visibilityCache = window.RenderCache
             table.clear(visibilityCache)
@@ -3076,9 +3076,6 @@ function Tab:_card(w, h, name)
     return card
 end
 
-
--- Layout records keep mixed columns, section breaks and changing heights in sync.
--- Reflow only writes positions; the width of a constructed control is immutable.
 function Tab:_track(object, maid)
     if not object or object.Parent ~= self.Page then return end
     local record
@@ -3451,7 +3448,6 @@ local function createMiniButton(window, config)
     end
     mini.Update = overlayStep(updateMini)
     if Runtime.Owner then
-        -- Mini buttons created by an element (toggle/button) die with that element.
         Runtime.Owner:Add(function() mini:Destroy() end)
     end
     window.LayoutMini()
@@ -3584,11 +3580,6 @@ local function attachSettings(tab, parent, x, y, size, opts)
         local controls = menu:AddElements(items)
         for key, control in pairs(controls) do menu.Controls[key] = control end
     end
-    -- Fully developer-customizable: `Items`/`Elements` and `Build` accept any mix
-    -- of Tab:Add* element specs (see Tab:AddElements), so a script author can put
-    -- whatever controls they want in this popup -- it is not limited to a fixed
-    -- built-in list. `IncludeScrollBarSlider` is only a convenience default; a
-    -- dev can omit it, override its options, or add their own slider instead.
     if opts.IncludeScrollBarSlider == true then
         addElements({
             {
@@ -3613,7 +3604,6 @@ local function attachSettings(tab, parent, x, y, size, opts)
     return menu
 end
 
--- Containers are regular Tabs internally, so every existing Add* API is available.
 function Tab:AddGroup(opts)
     opts = type(opts) == "table" and opts or {Name = opts}
     local parent, w = self, self:_width(opts.Width)
@@ -4029,7 +4019,6 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     if useAlpha then Library.Flags[flag .. ".Alpha"] = alphaValue end
     Library.Elements[flag] = api
     if useAlpha then
-        -- Lets LoadConfig restore the saved alpha instead of only writing the flag.
         Library.Elements[flag .. ".Alpha"] = {
             Flag = flag .. ".Alpha",
             Get = function() return alphaValue end,
@@ -4089,7 +4078,6 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
 
     window.Keybinds[#window.Keybinds + 1] = bind
     if Runtime.Owner then
-        -- Without this a destroyed element's keybind keeps firing its callback.
         Runtime.Owner:Add(function()
             local index = table.find(window.Keybinds, bind)
             if index then table.remove(window.Keybinds, index) end
@@ -4728,8 +4716,6 @@ function Tab:AddTextBox(opts)
                 return
             end
         end
-        -- Signals can be deferred, so a boolean flag is already reset when this runs.
-        -- Compare with the text written by a silent Set instead.
         if suppressText ~= nil and box.Text == suppressText then
             suppressText = nil
             return
@@ -4764,7 +4750,6 @@ function Tab:AddTextBox(opts)
         if silent then
             Library.Flags[flag] = box.Text
         elseif box.Text == previous then
-            -- Text did not change so the signal did not fire; still notify.
             push(true)
         end
     end
@@ -4805,7 +4790,6 @@ function Tab:AddButton(opts)
     local caption = text(control, captionText, 0, 0, controlW, 31, 11, white, "center")
     local icon
     if opts.Icon then
-        -- Icon sits just left of the centred caption and follows the caption width.
         icon = iconLabel(control, opts.Icon, 10, 10, 11, white, "*")
         local function placeIcon()
             local bounds = TextService:GetTextSize(caption.Object.Text, 11, caption.Object.Font, Vector2.new(4000, 31))
@@ -5346,7 +5330,6 @@ function Tab:AddPlayerDropdown(opts)
 
     function api:Refresh(excluded) self:SetOptions(names(excluded)) end
     connect(Players.PlayerAdded, function() api:Refresh() end)
-    -- The leaving player is still in GetPlayers() during PlayerRemoving.
     connect(Players.PlayerRemoving, function(leaving) api:Refresh(leaving) end)
 
     function api:GetPlayer()
@@ -5401,9 +5384,6 @@ local elementMethods = {
     skins = "AddCardGrid",
 }
 
--- ============================================================================
--- Shared helpers for CardGrid
--- ============================================================================
 local RARITY_COLORS = {
     common = Color3.fromRGB(176, 195, 217),
     uncommon = Color3.fromRGB(94, 152, 217),
@@ -5442,7 +5422,6 @@ local function normalizeKeywords(value)
     return nil
 end
 
--- Lower-case that also handles Cyrillic (byte length is preserved).
 local function foldText(value)
     value = string.lower(tostring(value or ""))
     local ok, result = pcall(function()
@@ -5464,11 +5443,6 @@ local function scaleTypeOf(value)
     return Enum.ScaleType.Fit
 end
 
--- ============================================================================
--- CardGrid: selectable picture cards (skin changer style).
--- The developer decides everything: columns, sizes, limits, colors, callbacks.
--- ============================================================================
--- Use the exact original menu icon, including atlas crop and text fallback.
 function Library:CreateCheckMark(parent,x,y,size,color)
     return iconLabel(parent,{"check"},x,y,size,color,"v")
 end
@@ -5485,7 +5459,6 @@ function Tab:AddCardGrid(opts)
     local radius = math.max(4, math.floor(tonumber(opts.CornerRadius) or 7))
     local titleSize = math.clamp(math.floor(tonumber(opts.TitleSize) or 11), 8, 16)
     local titleAlign = opts.TitleAlign or "center"
-    -- ImageOnly hides all captions and reserves the entire card for its image.
     local imageOnly = opts.ImageOnly == true
     local showTitles = not imageOnly and opts.ShowTitles ~= false
     local showCheck = opts.ShowCheck ~= false and (not imageOnly or opts.ShowCheck == true)
@@ -5538,7 +5511,6 @@ function Tab:AddCardGrid(opts)
     setDefs(opts.Cards or opts.Items or opts.Options)
 
     local contentW = math.max(1, w - 20)
-    -- Keep equal integer card sizes and gaps, with balanced margins.
     gap = math.min(math.max(gap, math.ceil(strokeThickness) + 1), math.max(0, contentW - 1))
     local minTileW = math.min(56, contentW)
     columns = math.min(columns, math.max(1, math.floor((contentW + gap) / (minTileW + gap))))
@@ -5732,8 +5704,6 @@ function Tab:AddCardGrid(opts)
         tile.Name = def.Id
         tile.ZIndex = 3
         tile.BackgroundTransparency = 1
-        -- CanvasGroup masks the complete card, including the caption footer.
-        -- Its logical size stays fixed; animation belongs to the outer button.
         local surface = rect(tile, 0, 0, tileW, tileH, palette[4], radius, "CanvasGroup")
         surface.Name = "RoundedContent"
         surface.BackgroundTransparency = 1
@@ -5793,8 +5763,6 @@ function Tab:AddCardGrid(opts)
             local pad = math.min(imagePadding, math.floor((math.min(imgW, imageH) - 1) / 2))
             local imageW, imageHeight = imgW - pad * 2, imageH - pad * 2
             local rotation = tonumber(def.ImageRotation) or 0
-            -- Fit rotated artwork inside the safe interior instead of relying on
-            -- rectangular ClipsDescendants to mask a rounded parent.
             if rotation % 180 ~= 0 then
                 local guard = math.ceil(innerRadius * (1 - 1 / math.sqrt(2)))
                 pad = math.min(math.max(pad, guard), math.floor((math.min(imgW, imageH) - 1) / 2))
@@ -5817,7 +5785,6 @@ function Tab:AddCardGrid(opts)
                 Rotation = rotation,
                 ZIndex = 5,
             })
-            -- UICorner belongs to the image itself; parent corners do not clip children.
             local imageRadius = math.min(math.max(0, innerRadius - pad), math.min(imageW, imageHeight) / 2)
             if imageRadius > 0 then
                 new("UICorner", image, {CornerRadius = UDim.new(0, imageRadius)})
@@ -5979,7 +5946,6 @@ function Tab:AddCardGrid(opts)
                 if math.abs(e.X - e.TX) > 0.5 or math.abs(e.Y - e.TY) > 0.5 or math.abs(e.Scale - 1) > 0.005 then
                     busy = true
                 end
-                -- UIScale grows from the origin; compensate to keep the tile centered.
                 e.Tile.Position = UDim2.fromOffset(
                     roundPixel(e.X + shakeX + tileW * (1 - e.Scale) / 2),
                     roundPixel(e.Y + tileH * (1 - e.Scale) / 2))
@@ -6155,7 +6121,6 @@ end
 function Tab:AddCards(opts) return self:AddCardGrid(opts) end
 function Tab:AddCardSelector(opts) return self:AddCardGrid(opts) end
 
--- Black is the sole palette. Legacy entry points remain harmless for older callers.
 function Window:AddSearch() return nil end
 function Library:AddSearch() return nil end
 function Library:GetSearch() return nil end
@@ -6202,8 +6167,33 @@ function Tab:AddConfigManager(opts)
     opts = opts or {}
     self:AddSection(opts.Name or "Configs")
 
+    if not Library:HasDefaults() then
+        task.defer(function()
+            if not Library:HasDefaults() then Library:CaptureDefaults() end
+        end)
+    end
+
     local nameFlag = self.Name .. ".ConfigName"
     local pickerFlag = self.Name .. ".ConfigPick"
+    local importFlag = self.Name .. ".ConfigImport"
+    local autoSaveFlag = self.Name .. ".ConfigAutoSave"
+
+    local function say(message)
+        Library:Notify({Title = "Configs", Text = tostring(message)})
+    end
+
+    local function guard(callback)
+        return function(...)
+            local ok, err = Library:Safe(callback, ...)
+            if not ok then say(string.match(tostring(err), "^[^\n]*") or "error") end
+        end
+    end
+
+    local function stamp(value)
+        if type(value) ~= "number" then return "unknown" end
+        return os.date("%Y-%m-%d %H:%M", value)
+    end
+
     local nameBox = self:AddTextBox({
         Name = opts.NameLabel or "Config name",
         Flag = nameFlag,
@@ -6221,12 +6211,12 @@ function Tab:AddConfigManager(opts)
     Library.NoSaveFlags[pickerFlag] = true
     Library.NoSaveFlags[pickerFlag .. ".Text"] = true
 
-    local loadButton, deleteButton
+    local selectionButtons = {}
+
     local function refresh()
         picker:SetOptions(Library:ListConfigs())
         local available = picker:HasOptions()
-        if loadButton then loadButton:SetEnabled(available) end
-        if deleteButton then deleteButton:SetEnabled(available) end
+        for _, button in ipairs(selectionButtons) do button:SetEnabled(available) end
         return available
     end
 
@@ -6237,65 +6227,281 @@ function Tab:AddConfigManager(opts)
         return value
     end
 
+    local function picked()
+        local value = picker:Get()
+        if value == nil or value == "" then return nil end
+        return value
+    end
+
+    local function needsSelection(button)
+        selectionButtons[#selectionButtons + 1] = button
+        return button
+    end
+
     self:AddButton({
         Name = "Save config",
         AutoLoading = true,
         Text = "Save",
         Compact = true,
         Width = 0.33,
-        Callback = function()
+        Callback = guard(function()
             local name = chosen()
             local ok, result = Library:SaveConfigFile(name)
             if ok then refresh() end
-            Library:Notify({
-                Title = "Configs",
-                Text = ok and ("Saved: " .. tostring(name)) or tostring(result),
-            })
-        end,
+            say(ok and ("Saved: " .. tostring(name)) or result)
+        end),
     })
-    loadButton = self:AddButton({
+
+    needsSelection(self:AddButton({
         Name = "Load config",
         AutoLoading = true,
         Text = "Load",
         Compact = true,
         Width = 0.33,
-        Callback = function()
+        Callback = guard(function()
             local name = chosen()
-            local ok, result = Library:LoadConfigFile(name)
-            Library:Notify({
-                Title = "Configs",
-                Text = ok and ("Loaded: " .. tostring(name)) or tostring(result),
-            })
-        end,
-    })
-    deleteButton = self:AddButton({
+            local ok, detail = Library:LoadConfigFile(name)
+            if not ok then say(detail) return end
+            local extra = ""
+            if type(detail) == "table" then
+                extra = string.format(" (%d applied", detail.Applied or 0)
+                if (detail.Unknown or 0) > 0 then extra = extra .. string.format(", %d unknown", detail.Unknown) end
+                extra = extra .. ")"
+                if detail.Recovered then extra = extra .. " restored from backup " .. tostring(detail.Recovered) end
+                if detail.Tampered then extra = extra .. ", file edited outside" end
+            end
+            say("Loaded: " .. tostring(name) .. extra)
+        end),
+    }))
+
+    needsSelection(self:AddButton({
         Name = "Delete config",
         Text = "Delete",
         Compact = true,
         Width = 0.33,
-        Callback = function()
+        Callback = guard(function()
             local name = chosen()
             Library:Dialog({
                 Title = "Delete config?",
-                Text = "This will permanently delete the " .. tostring(name) .. " config.",
+                Text = "This will permanently delete the " .. tostring(name) .. " config and its backups.",
                 ConfirmText = "Delete",
                 CancelText = "Cancel",
-                Confirm = function()
+                Confirm = guard(function()
                     local ok, result = Library:DeleteConfigFile(name)
                     if ok then refresh() end
-                    Library:Notify({
-                        Title = "Configs",
-                        Text = ok and ("Deleted: " .. tostring(name)) or tostring(result),
-                    })
-                end,
+                    say(ok and ("Deleted: " .. tostring(name)) or result)
+                end),
             })
-        end,
-    })
+        end),
+    }))
+
+    needsSelection(self:AddButton({
+        Name = "Duplicate config",
+        Text = "Duplicate",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local source, target = picked(), nameBox:Get()
+            if not source then say("Pick a saved config first") return end
+            if target == nil or target == "" then say("Type the new name in the name field") return end
+            local ok, result = Library:CopyConfigFile(source, target)
+            if ok then refresh() end
+            say(ok and ("Copied " .. source .. " to " .. tostring(target)) or result)
+        end),
+    }))
+
+    needsSelection(self:AddButton({
+        Name = "Rename config",
+        Text = "Rename",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local source, target = picked(), nameBox:Get()
+            if not source then say("Pick a saved config first") return end
+            if target == nil or target == "" then say("Type the new name in the name field") return end
+            local ok, result = Library:RenameConfigFile(source, target)
+            if ok then refresh() end
+            say(ok and ("Renamed " .. source .. " to " .. tostring(target)) or result)
+        end),
+    }))
+
     self:AddButton({
         Name = "Refresh configs",
         Text = "Refresh",
         Compact = true,
-        Callback = refresh,
+        Width = 0.33,
+        Callback = guard(function()
+            refresh()
+        end),
+    })
+
+    self:AddButton({
+        Name = "Undo last load",
+        Text = "Undo",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local ok, detail = Library:UndoConfigLoad()
+            say(ok == true and "Previous settings restored" or detail)
+        end),
+    })
+
+    self:AddButton({
+        Name = "Reset to defaults",
+        Text = "Reset",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            Library:Dialog({
+                Title = "Reset all settings?",
+                Text = "Every setting returns to the value it had when the menu opened. You can undo this.",
+                ConfirmText = "Reset",
+                CancelText = "Cancel",
+                Confirm = guard(function()
+                    local ok, detail = Library:ResetToDefaults()
+                    say(ok == true and "Settings reset" or detail)
+                end),
+            })
+        end),
+    })
+
+    needsSelection(self:AddButton({
+        Name = "Restore backup",
+        Text = "Backup",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local name = picked() or chosen()
+            local list = Library:ListBackups(name)
+            if #list == 0 then say("No backups for " .. tostring(name)) return end
+            local newest = list[1]
+            Library:Dialog({
+                Title = "Restore backup?",
+                Text = string.format("%s has %d backup(s). Restore the newest one from %s? The current file is kept as a backup.",
+                    tostring(name), #list, stamp(newest.Modified)),
+                ConfirmText = "Restore",
+                CancelText = "Cancel",
+                Confirm = guard(function()
+                    local ok, result = Library:RestoreBackup(name, newest.Index, true)
+                    say(ok == true and ("Restored backup of " .. tostring(name)) or result)
+                end),
+            })
+        end),
+    }))
+
+    needsSelection(self:AddButton({
+        Name = "Autoload config",
+        Text = "Autoload",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local name = picked() or chosen()
+            local current = Library:GetAutoLoad()
+            if current == name then
+                local ok, result = Library:SetAutoLoad(nil)
+                say(ok and "Autoload disabled" or result)
+            else
+                local ok, result = Library:SetAutoLoad(name)
+                say(ok and ("Autoload: " .. tostring(name)) or result)
+            end
+        end),
+    }))
+
+    needsSelection(self:AddButton({
+        Name = "Config info",
+        Text = "Info",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local name = picked() or chosen()
+            local info = Library:GetConfigInfo(name)
+            if not info.Exists then say("Config not found: " .. tostring(name)) return end
+            if not info.Valid then say(tostring(name) .. " is damaged: " .. tostring(info.Error)) return end
+            local lines = {
+                string.format("%s | %d settings | %d backup(s)", info.Name, info.Flags or 0, info.Backups or 0),
+                "Saved: " .. stamp(info.Modified),
+            }
+            if info.Note and info.Note ~= "" then lines[#lines + 1] = "Note: " .. info.Note end
+            if info.ChecksumOk == false then lines[#lines + 1] = "File was edited outside the library" end
+            if Library:GetAutoLoad() == info.Name then lines[#lines + 1] = "Autoloads on start" end
+            say(table.concat(lines, "\n"))
+        end),
+    }))
+
+    needsSelection(self:AddButton({
+        Name = "Compare with current",
+        Text = "Diff",
+        Compact = true,
+        Width = 0.33,
+        Callback = guard(function()
+            local name = picked() or chosen()
+            local diff, problem = Library:DiffConfigFile(name)
+            if not diff then say(problem) return end
+            if diff.Total == 0 then say("Current settings match " .. tostring(name)) return end
+            local lines = {string.format("%d changed, %d new, %d missing vs %s", #diff.Changed, #diff.Added, #diff.Removed, tostring(name))}
+            for index = 1, math.min(5, #diff.Changed) do
+                lines[#lines + 1] = diff.Changed[index].Flag
+            end
+            say(table.concat(lines, "\n"))
+        end),
+    }))
+
+    local importBox = self:AddTextBox({
+        Name = opts.ImportLabel or "Import string",
+        Flag = importFlag,
+        Placeholder = "WOLF1:...",
+        Width = 0.5,
+        NoSave = true,
+    })
+
+    needsSelection(self:AddButton({
+        Name = "Export config",
+        Text = "Export",
+        Compact = true,
+        Width = 0.25,
+        Callback = guard(function()
+            local name = picked() or chosen()
+            local text, problem = Library:ExportConfigFile(name)
+            if not text then say(problem) return end
+            local env = Runtime.Env()
+            local copy = env.setclipboard or _G.setclipboard
+            if type(copy) == "function" and pcall(copy, text) then
+                say("Copied " .. tostring(name) .. " to clipboard")
+            else
+                say("Clipboard is not available on this executor")
+            end
+        end),
+    }))
+
+    self:AddButton({
+        Name = "Import config",
+        Text = "Import",
+        Compact = true,
+        Width = 0.25,
+        Callback = guard(function()
+            local text = importBox:Get()
+            if text == nil or text == "" then say("Paste an exported config string first") return end
+            local target = nameBox:Get()
+            if target == nil or target == "" then target = "imported" end
+            local ok, result = Library:ImportConfigAs(target, text)
+            if ok then
+                refresh()
+                say("Imported as " .. tostring(target))
+            else
+                say(result)
+            end
+        end),
+    })
+
+    Library.NoSaveFlags[autoSaveFlag] = true
+    self:AddToggle({
+        Name = opts.AutoSaveLabel or "Auto-save changes",
+        Flag = autoSaveFlag,
+        Default = false,
+        Width = 0.5,
+        Callback = function(value)
+            Library:SetAutoSave(value == true, opts.AutoSaveInterval or 60, opts.AutoSaveName or "autosave")
+        end,
     })
 
     refresh()
@@ -6304,12 +6510,10 @@ function Tab:AddConfigManager(opts)
         Refresh = refresh,
         Name = nameBox,
         Picker = picker,
+        Import = importBox,
     }
 end
 
--- Persistent, image-based action notification, independent of main-menu visibility.
--- Protocol marker retained: Waraku's compatibility adapter checks this exact value.
--- The library release is Library.Version; this marker describes the renderer API.
 Library.CardNotificationVersion="5.9.3"
 Library.CardNotificationRevision="6.0.0"
 function Library:NotifyCards(opts)
@@ -6693,8 +6897,6 @@ function Library:RemoveWatermarkBlock(id)
     return true
 end
 
--- Every option SetWatermark understands, with the type it expects.
--- "color" accepts Color3, "#RRGGBB" or keywords (accent, text, muted, good, warn, bad, ...).
 local WATERMARK_SCHEMA = {
     Height = "number", Padding = "number", Gap = "number", MinimumWidth = "number",
     TextSize = "number", IconSize = "number", StrokeThickness = "number",
@@ -6966,12 +7168,10 @@ function Library:Dialog(opts)
     end)
     window.Opened, window.Dialog = nil, api
     animate(0, 0.20)
-    -- Close used to be a free function; retain both dialog.Close() and dialog:Close().
     local close = api.Close
     api.Close = function() close(api) end
     return api
 end
-
 
 local function serialize(value, seen)
     if typeof(value) == "Color3" then
@@ -7065,8 +7265,10 @@ function Library:GetConfig()
     config.FadeDuration = self.FadeDuration
     config.ScaleDuration = self.ScaleDuration
     config.ScrollBarThickness = self.ScrollBarThickness
-    config.Accent = serialize(state.Accent)
-    config.AccentAlpha = state.AccentAlpha
+    if self.Configs and self.Configs.RestoreAccent == true then
+        config.Accent = serialize(state.Accent)
+        config.AccentAlpha = state.AccentAlpha
+    end
     if self.Window then
         local wm = self.Window.WatermarkConfig
         config.Watermark = {}
@@ -7096,8 +7298,10 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
+    if self.MigrateConfig then config = self:MigrateConfig(config) end
     if config.Flags ~= nil and type(config.Flags) ~= "table" then return false,"Flags is not a table" end
     local staged, report = {}, {Applied=0, Unknown=0, Skipped=0, Errors={}}
+    report.Migrated = config.__migrated
     for savedFlag, raw in pairs(config.Flags or {}) do
         local flag = self.ConfigAliases and self.ConfigAliases[savedFlag] or savedFlag
         if type(flag) ~= "string" or self.NoSaveFlags[flag] or INTERNAL_FLAGS[flag] then report.Skipped=report.Skipped+1
@@ -7154,7 +7358,9 @@ function Library:LoadConfig(config)
             end
         end
     end
-    if config.Accent then self:SetAccent(deserialize(config.Accent), config.AccentAlpha) end
+    if config.Accent and self.Configs and self.Configs.RestoreAccent == true then
+        self:SetAccent(deserialize(config.Accent), config.AccentAlpha)
+    end
     if config.Scale and self.Window then self.Window:SetScale(config.Scale, true) end
     if type(config.Mini) == "table" and self.Window then
         for key, position in pairs(config.Mini) do
@@ -7171,7 +7377,6 @@ function Library:LoadConfig(config)
         end
         self.Window.LayoutMini()
     end
-    -- Make the full snapshot available before resolving dependent controls.
     for flag,value in pairs(staged) do self.Flags[flag]=value end
     local flags={};for flag in pairs(staged) do flags[#flags+1]=flag end;table.sort(flags)
     for _,flag in ipairs(flags) do
@@ -7406,7 +7611,11 @@ function Library:GetFolder()
 end
 
 function Library:GetConfigFolder()
-    return ROOT .. "/" .. scriptFolder .. "/configs"
+    local folder = ROOT .. "/" .. scriptFolder .. "/configs"
+    if self.Configs and self.Configs.PerGame == true then
+        folder = folder .. "/" .. safeName(tostring(game.PlaceId))
+    end
+    return folder
 end
 
 local function resolvePath(path)
@@ -7454,6 +7663,10 @@ function Library:SetConfigOptions(options)
         Enabled = options.Enabled ~= false,
         Encrypted = options.Encrypted == true or options.Encryption == true,
         Key = tostring(options.Key or CONFIG_KEY),
+        RestoreAccent = options.RestoreAccent == true,
+        Backups = math.clamp(math.floor(tonumber(options.Backups) or 3), 0, 10),
+        Verify = options.Verify ~= false,
+        PerGame = options.PerGame == true,
     }
     if self.Configs.Enabled then self:SetScriptName(self.ScriptName or scriptFolder) end
     return self.Configs
@@ -7463,109 +7676,763 @@ function Library:GetConfigOptions()
     return self.Configs
 end
 
-function Library:SaveConfigFile(name)
-    if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
-    if not fileSupport() then return false, "executor has no file API" end
-    local folder = self:GetConfigFolder()
-    local base = safeName(name or "default")
-    local ok, result = pcall(function()
-        if not ensureFolder(folder) then error("cannot create config folder", 0) end
-        local json = HttpService:JSONEncode(self:GetConfig())
-        local extension = configExtension()
-        local content = self.Configs.Encrypted and encodeConfig(json, self.Configs.Key) or json
-        writefile(folder .. "/" .. base .. extension, content)
-        return folder .. "/" .. base .. extension
-    end)
-    return ok, result
-end
+do
+    local listeners = {}
+    local Cfg = {Defaults = nil, Saved = {}, AutoSave = nil}
 
-function Library:LoadConfigFile(name)
-    if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
-    if not fileSupport() then return false, "executor has no file API" end
-    local folder = self:GetConfigFolder()
-    local base = safeName(name or "default")
-    local ok, decoded = pcall(function()
+    local function emit(kind, name, detail)
+        for _, listener in ipairs(listeners) do
+            task.spawn(function() pcall(listener, kind, name, detail) end)
+        end
+        if Library.Log then Library:Log(kind .. ": " .. tostring(name), "config") end
+    end
+
+    local function canonical(value)
+        local kind = type(value)
+        if kind == "table" then
+            local keys = {}
+            for key in pairs(value) do keys[#keys + 1] = key end
+            table.sort(keys, function(a, b)
+                local ta, tb = type(a), type(b)
+                if ta ~= tb then return ta < tb end
+                if ta == "number" or ta == "string" then return a < b end
+                return tostring(a) < tostring(b)
+            end)
+            local parts = {}
+            for _, key in ipairs(keys) do
+                parts[#parts + 1] = canonical(key) .. "=" .. canonical(value[key])
+            end
+            return "{" .. table.concat(parts, ",") .. "}"
+        elseif kind == "number" then
+            return string.format("%.14g", value)
+        elseif kind == "string" then
+            return string.format("%q", value)
+        end
+        return tostring(value)
+    end
+
+    local function versionParts(text)
+        local parts = {}
+        for number in string.gmatch(tostring(text or ""), "%d+") do parts[#parts + 1] = tonumber(number) end
+        return parts
+    end
+
+    local function compareVersions(a, b)
+        local x, y = versionParts(a), versionParts(b)
+        for index = 1, math.max(#x, #y) do
+            local left, right = x[index] or 0, y[index] or 0
+            if left ~= right then return left < right and -1 or 1 end
+        end
+        return 0
+    end
+
+    Library.CompareVersions = compareVersions
+
+    local function backupLimit(self)
+        local value = self.Configs and self.Configs.Backups
+        if value == nil then return 3 end
+        return math.clamp(math.floor(tonumber(value) or 3), 0, 10)
+    end
+
+    local function backupPath(path, index)
+        return path .. ".bak" .. tostring(index)
+    end
+
+    local function candidates(self, base)
+        local folder = self:GetConfigFolder()
         local preferred = configExtension()
         local alternate = preferred == SECURE_EXTENSION and JSON_EXTENSION or SECURE_EXTENSION
-        local paths = {
+        return {
             folder .. "/" .. base .. preferred,
             folder .. "/" .. base .. alternate,
             LEGACY_ROOT .. "/" .. base .. JSON_EXTENSION,
         }
-        local source
-        for _, path in ipairs(paths) do
-            if pathExists(path) then source = path; break end
+    end
+
+    local function findPath(self, base)
+        for _, path in ipairs(candidates(self, base)) do
+            if pathExists(path) then return path end
         end
-        if not source then error("config not found: " .. base, 0) end
-        local json = decodeConfig(readfile(source), self.Configs.Key)
-        return HttpService:JSONDecode(json)
-    end)
-    if not ok then return false, decoded end
-    local applied, loaded, loadError = pcall(self.LoadConfig, self, decoded)
-    if not applied then return false, loaded end
-    return loaded, loadError
-end
+        return nil
+    end
 
-function Library:ListConfigs()
-    local names = {}
-    local seen = {}
-    if not self.Configs or not self.Configs.Enabled then return names end
-    if type(listfiles) ~= "function" then return names end
+    local function readTable(self, path)
+        local raw = readfile(path)
+        local json = decodeConfig(raw, self.Configs.Key)
+        local decoded = HttpService:JSONDecode(json)
+        if type(decoded) ~= "table" then error("config is not a table", 0) end
+        return decoded, #raw
+    end
 
-    local function collect(folder)
-        pcall(function()
-            for _, path in ipairs(listfiles(folder)) do
-                local name = string.match(path, "([^/\\]+)%.json$")
-                    or string.match(path, "([^/\\]+)%.wcfg$")
-                if name and not seen[name] then
-                    seen[name] = true
-                    names[#names + 1] = name
+    local function removeFile(path)
+        if type(delfile) ~= "function" then return false end
+        if not pathExists(path) then return false end
+        return (pcall(delfile, path))
+    end
+
+    local function countKeys(map)
+        local count = 0
+        for _ in pairs(map or {}) do count = count + 1 end
+        return count
+    end
+
+    local function rotateBackups(self, path)
+        local limit = backupLimit(self)
+        if limit <= 0 or not pathExists(path) then return end
+        local okRead, current = pcall(readfile, path)
+        if not okRead then return end
+        for index = limit, 2, -1 do
+            local older = backupPath(path, index - 1)
+            if pathExists(older) then
+                local okOlder, content = pcall(readfile, older)
+                if okOlder then pcall(writefile, backupPath(path, index), content) end
+            end
+        end
+        pcall(writefile, backupPath(path, 1), current)
+    end
+
+    local function buildMeta(self, previous, config, options, base)
+        previous = type(previous) == "table" and previous or {}
+        local note = previous.Note
+        if options.Note ~= nil then note = tostring(options.Note) end
+        return {
+            Name = base,
+            Created = tonumber(previous.Created) or os.time(),
+            Modified = os.time(),
+            Game = tostring(game.PlaceId),
+            Library = self.Version,
+            Note = note,
+            Flags = countKeys(config.Flags),
+            Checksum = configHash(canonical(config.Flags or {})),
+        }
+    end
+
+    local function writeConfig(self, base, config, options)
+        options = options or {}
+        local folder = self:GetConfigFolder()
+        if not ensureFolder(folder) then return false, "cannot create config folder" end
+        local extension = configExtension()
+        local path = folder .. "/" .. base .. extension
+        local previous
+        if pathExists(path) then
+            local okPrevious, data = pcall(readTable, self, path)
+            if okPrevious and type(data.Meta) == "table" then previous = data.Meta end
+        end
+        config.Meta = buildMeta(self, previous, config, options, base)
+        local json = HttpService:JSONEncode(config)
+        local content = self.Configs.Encrypted and encodeConfig(json, self.Configs.Key) or json
+        if self.Configs.Verify ~= false then
+            local temp = path .. ".tmp"
+            local okTemp, tempError = pcall(writefile, temp, content)
+            if not okTemp then return false, tostring(tempError) end
+            local okBack, back = pcall(readfile, temp)
+            local good = okBack and back == content
+            if good then
+                good = pcall(function()
+                    local decoded = HttpService:JSONDecode(decodeConfig(back, self.Configs.Key))
+                    if type(decoded) ~= "table" then error("not a table", 0) end
+                end)
+            end
+            removeFile(temp)
+            if not good then return false, "verification failed, existing config left untouched" end
+        end
+        rotateBackups(self, path)
+        local okWrite, writeError = pcall(writefile, path, content)
+        if not okWrite then return false, tostring(writeError) end
+        local alternate = folder .. "/" .. base .. (extension == SECURE_EXTENSION and JSON_EXTENSION or SECURE_EXTENSION)
+        removeFile(alternate)
+        Cfg.Saved[base] = canonical(config.Flags or {})
+        return true, path
+    end
+
+    local function packConfig(config, key)
+        local json = HttpService:JSONEncode(config)
+        if key ~= nil and tostring(key) ~= "" then
+            return "WOLF1E:" .. encodeConfig(json, tostring(key))
+        end
+        return "WOLF1:" .. base64Encode(json)
+    end
+
+    local function unpackConfig(text, key)
+        if type(text) ~= "string" or text == "" then return nil, "empty config string" end
+        text = string.gsub(text, "^%s+", "")
+        text = string.gsub(text, "%s+$", "")
+        local json
+        if string.sub(text, 1, 7) == "WOLF1E:" then
+            local ok, result = pcall(decodeConfig, string.sub(text, 8), key)
+            if not ok then return nil, tostring(result) end
+            json = result
+        elseif string.sub(text, 1, 6) == "WOLF1:" then
+            json = base64Decode(string.sub(text, 7))
+        else
+            json = text
+        end
+        local ok, decoded = pcall(function() return HttpService:JSONDecode(json) end)
+        if not ok or type(decoded) ~= "table" then return nil, "config string is damaged" end
+        return decoded
+    end
+
+    local function enabled(self)
+        if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
+        if not fileSupport() then return false, "executor has no file API" end
+        return true
+    end
+
+    function Library:OnConfigEvent(callback)
+        assert(type(callback) == "function", "OnConfigEvent requires a callback")
+        listeners[#listeners + 1] = callback
+        return {
+            Disconnect = function()
+                for index, item in ipairs(listeners) do
+                    if item == callback then table.remove(listeners, index) break end
+                end
+            end,
+        }
+    end
+
+    function Library:AddConfigMigration(version, callback)
+        assert(type(callback) == "function", "AddConfigMigration requires a callback")
+        self.ConfigMigrations = self.ConfigMigrations or {}
+        local list = self.ConfigMigrations
+        list[#list + 1] = {Version = tostring(version), Callback = callback}
+        table.sort(list, function(a, b) return compareVersions(a.Version, b.Version) < 0 end)
+    end
+
+    function Library:MigrateConfig(config)
+        if type(config) ~= "table" then return config end
+        local saved = config.__version or "0"
+        local applied = {}
+        for _, step in ipairs(self.ConfigMigrations or {}) do
+            if compareVersions(saved, step.Version) < 0 then
+                local ok, result = pcall(step.Callback, config)
+                if ok then
+                    if type(result) == "table" then config = result end
+                    applied[#applied + 1] = step.Version
+                elseif self.Log then
+                    self:Log("migration " .. step.Version .. " failed: " .. tostring(result), "error")
+                end
+            end
+        end
+        if #applied > 0 then config.__migrated = applied end
+        return config
+    end
+
+    function Library:ConfigExists(name)
+        if not self.Configs or not self.Configs.Enabled then return false end
+        return findPath(self, safeName(name or "default")) ~= nil
+    end
+
+    function Library:GetConfigPath(name)
+        local base = safeName(name or "default")
+        return findPath(self, base) or (self:GetConfigFolder() .. "/" .. base .. configExtension())
+    end
+
+    function Library:SaveConfigFile(name, options)
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        if type(options) ~= "table" then options = {} end
+        local base = safeName(name or "default")
+        local ok, result, detail = pcall(function()
+            return writeConfig(self, base, self:GetConfig(), options)
+        end)
+        if not ok then return false, tostring(result) end
+        if result ~= true then return false, detail end
+        emit("save", base, detail)
+        return true, detail
+    end
+
+    function Library:LoadConfigFile(name, options)
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        options = type(options) == "table" and options or {}
+        local base = safeName(name or "default")
+        local path = findPath(self, base)
+        if not path then return false, "config not found: " .. base end
+        local okRead, decoded = pcall(readTable, self, path)
+        local recovered
+        if not okRead and options.Recover ~= false then
+            for index = 1, backupLimit(self) do
+                local candidate = backupPath(path, index)
+                if pathExists(candidate) then
+                    local okBackup, data = pcall(readTable, self, candidate)
+                    if okBackup then
+                        decoded = data
+                        okRead = true
+                        recovered = index
+                        break
+                    end
+                end
+            end
+        end
+        if not okRead then return false, tostring(decoded) end
+        local meta = type(decoded.Meta) == "table" and decoded.Meta or nil
+        local tampered = meta ~= nil and meta.Checksum ~= nil
+            and meta.Checksum ~= configHash(canonical(decoded.Flags or {}))
+        if options.NoUndo ~= true then pcall(self.Snapshot, self, "__undo") end
+        local applied, loaded, detail = pcall(self.LoadConfig, self, decoded)
+        if not applied then return false, tostring(loaded) end
+        if loaded == true and type(detail) == "table" then
+            detail.Recovered = recovered
+            detail.Tampered = tampered == true
+        end
+        if loaded == true then emit("load", base, detail) end
+        return loaded, detail
+    end
+
+    function Library:ListConfigs()
+        local names = {}
+        local seen = {}
+        if not self.Configs or not self.Configs.Enabled then return names end
+        if type(listfiles) ~= "function" then return names end
+
+        local function collect(folder)
+            pcall(function()
+                for _, path in ipairs(listfiles(folder)) do
+                    local name = string.match(path, "([^/\\]+)%.json$")
+                        or string.match(path, "([^/\\]+)%.wcfg$")
+                    if name and not seen[name] then
+                        seen[name] = true
+                        names[#names + 1] = name
+                    end
+                end
+            end)
+        end
+
+        collect(self:GetConfigFolder())
+        collect(LEGACY_ROOT)
+        table.sort(names)
+        return names
+    end
+
+    function Library:GetConfigInfo(name)
+        local base = safeName(name or "default")
+        local info = {Name = base, Exists = false}
+        if not self.Configs or not self.Configs.Enabled or not fileSupport() then return info end
+        local path = findPath(self, base)
+        if not path then return info end
+        info.Exists = true
+        info.Path = path
+        info.Encrypted = string.sub(path, -#SECURE_EXTENSION) == SECURE_EXTENSION
+        local ok, decoded, size = pcall(readTable, self, path)
+        if not ok then
+            info.Valid = false
+            info.Error = tostring(decoded)
+            return info
+        end
+        local meta = type(decoded.Meta) == "table" and decoded.Meta or {}
+        info.Valid = true
+        info.Size = size
+        info.Version = decoded.__version
+        info.Created = meta.Created
+        info.Modified = meta.Modified
+        info.Game = meta.Game
+        info.Note = meta.Note
+        info.Flags = meta.Flags or countKeys(decoded.Flags)
+        if meta.Checksum ~= nil then
+            info.ChecksumOk = meta.Checksum == configHash(canonical(decoded.Flags or {}))
+        end
+        local backups = 0
+        for index = 1, 10 do
+            if pathExists(backupPath(path, index)) then backups = backups + 1 end
+        end
+        info.Backups = backups
+        return info
+    end
+
+    function Library:ListConfigsDetailed()
+        local result = {}
+        for _, name in ipairs(self:ListConfigs()) do
+            result[#result + 1] = self:GetConfigInfo(name)
+        end
+        table.sort(result, function(a, b)
+            local left, right = a.Modified or 0, b.Modified or 0
+            if left ~= right then return left > right end
+            return a.Name < b.Name
+        end)
+        return result
+    end
+
+    function Library:DeleteConfigFile(name)
+        if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
+        if type(delfile) ~= "function" then return false, "executor has no delfile" end
+        local base = safeName(name or "default")
+        local deleted, lastError = false, nil
+        for _, path in ipairs(candidates(self, base)) do
+            if pathExists(path) then
+                local ok, err = pcall(delfile, path)
+                if ok then deleted = true else lastError = err end
+                for index = 1, 10 do removeFile(backupPath(path, index)) end
+                removeFile(path .. ".tmp")
+            end
+        end
+        if deleted then
+            Cfg.Saved[base] = nil
+            emit("delete", base)
+            return true
+        end
+        return false, lastError or ("config not found: " .. base)
+    end
+
+    function Library:CopyConfigFile(from, to, overwrite)
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        local fromBase, toBase = safeName(from), safeName(to)
+        if fromBase == toBase then return false, "source and target names are the same" end
+        local source = findPath(self, fromBase)
+        if not source then return false, "config not found: " .. fromBase end
+        if not overwrite and findPath(self, toBase) then return false, "config already exists: " .. toBase end
+        local okRead, decoded = pcall(readTable, self, source)
+        if not okRead then return false, tostring(decoded) end
+        local meta = type(decoded.Meta) == "table" and decoded.Meta or {}
+        local ok, result, detail = pcall(writeConfig, self, toBase, decoded, {Note = meta.Note})
+        if not ok then return false, tostring(result) end
+        if result ~= true then return false, detail end
+        emit("copy", toBase, fromBase)
+        return true, detail
+    end
+
+    function Library:RenameConfigFile(from, to, overwrite)
+        if type(delfile) ~= "function" then return false, "executor has no delfile" end
+        local fromBase, toBase = safeName(from), safeName(to)
+        local copied, detail = self:CopyConfigFile(fromBase, toBase, overwrite)
+        if not copied then return false, detail end
+        local wasAutoLoad = self:GetAutoLoad() == fromBase
+        local removed, removeError = self:DeleteConfigFile(fromBase)
+        if not removed then return false, removeError end
+        if Cfg.Saved[fromBase] ~= nil then
+            Cfg.Saved[toBase] = Cfg.Saved[fromBase]
+            Cfg.Saved[fromBase] = nil
+        end
+        if wasAutoLoad then self:SetAutoLoad(toBase) end
+        emit("rename", toBase, fromBase)
+        return true, detail
+    end
+
+    function Library:ConvertConfigs()
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        local converted, failed = 0, {}
+        for _, name in ipairs(self:ListConfigs()) do
+            local base = safeName(name)
+            local path = findPath(self, base)
+            if path then
+                local okRead, decoded = pcall(readTable, self, path)
+                if okRead then
+                    local meta = type(decoded.Meta) == "table" and decoded.Meta or {}
+                    local ok, result = pcall(writeConfig, self, base, decoded, {Note = meta.Note})
+                    if ok and result == true then converted = converted + 1 else failed[#failed + 1] = base end
+                else
+                    failed[#failed + 1] = base
+                end
+            end
+        end
+        emit("convert", converted, failed)
+        return true, {Converted = converted, Failed = failed}
+    end
+
+    function Library:ListBackups(name)
+        local base = safeName(name or "default")
+        local list = {}
+        if not self.Configs or not self.Configs.Enabled or not fileSupport() then return list end
+        local path = findPath(self, base)
+        if not path then return list end
+        for index = 1, 10 do
+            local candidate = backupPath(path, index)
+            if pathExists(candidate) then
+                local entry = {Index = index, Path = candidate}
+                local ok, data, size = pcall(readTable, self, candidate)
+                entry.Valid = ok
+                if ok then
+                    entry.Size = size
+                    if type(data.Meta) == "table" then entry.Modified = data.Meta.Modified end
+                end
+                list[#list + 1] = entry
+            end
+        end
+        return list
+    end
+
+    function Library:RestoreBackup(name, index, load)
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        local base = safeName(name or "default")
+        local path = findPath(self, base)
+        if not path then return false, "config not found: " .. base end
+        index = math.floor(tonumber(index) or 1)
+        local candidate = backupPath(path, index)
+        if not pathExists(candidate) then return false, "backup not found: " .. tostring(index) end
+        local okRead, data = pcall(readTable, self, candidate)
+        if not okRead then return false, tostring(data) end
+        local okRaw, raw = pcall(readfile, candidate)
+        if not okRaw then return false, tostring(raw) end
+        rotateBackups(self, path)
+        local okWrite, writeError = pcall(writefile, path, raw)
+        if not okWrite then return false, tostring(writeError) end
+        Cfg.Saved[base] = nil
+        emit("restore-backup", base, index)
+        if load then return self:LoadConfigFile(base) end
+        return true, path
+    end
+
+    function Library:ClearBackups(name)
+        local base = safeName(name or "default")
+        local path = findPath(self, base)
+        if not path then return 0 end
+        local removed = 0
+        for index = 1, 10 do
+            if removeFile(backupPath(path, index)) then removed = removed + 1 end
+        end
+        return removed
+    end
+
+    function Library:ExportConfig(key)
+        return packConfig(self:GetConfig(), key)
+    end
+
+    function Library:ImportConfig(text, key)
+        local decoded, problem = unpackConfig(text, key)
+        if not decoded then return false, problem end
+        pcall(self.Snapshot, self, "__undo")
+        emit("import", "string")
+        return self:LoadConfig(decoded)
+    end
+
+    function Library:ExportConfigFile(name, key)
+        local usable, reason = enabled(self)
+        if not usable then return nil, reason end
+        local base = safeName(name or "default")
+        local path = findPath(self, base)
+        if not path then return nil, "config not found: " .. base end
+        local ok, decoded = pcall(readTable, self, path)
+        if not ok then return nil, tostring(decoded) end
+        return packConfig(decoded, key)
+    end
+
+    function Library:ImportConfigAs(name, text, key, options)
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        options = type(options) == "table" and options or {}
+        local decoded, problem = unpackConfig(text, key)
+        if not decoded then return false, problem end
+        local base = safeName(name or "imported")
+        if not options.Overwrite and findPath(self, base) then return false, "config already exists: " .. base end
+        local meta = type(decoded.Meta) == "table" and decoded.Meta or {}
+        local ok, result, detail = pcall(writeConfig, self, base, decoded, {Note = options.Note or meta.Note})
+        if not ok then return false, tostring(result) end
+        if result ~= true then return false, detail end
+        emit("import", base, detail)
+        if options.Load then return self:LoadConfigFile(base) end
+        return true, detail
+    end
+
+    function Library:ValidateConfig(config)
+        local report = {Valid = true, Errors = {}, Warnings = {}, Unknown = {}, Known = 0}
+        if type(config) ~= "table" then
+            report.Valid = false
+            report.Errors[1] = "config is not a table"
+            return report
+        end
+        if config.Flags ~= nil and type(config.Flags) ~= "table" then
+            report.Valid = false
+            report.Errors[1] = "Flags is not a table"
+            return report
+        end
+        if config.__version ~= nil and compareVersions(config.__version, self.Version) > 0 then
+            report.Warnings[#report.Warnings + 1] = "saved by a newer library version " .. tostring(config.__version)
+        end
+        local meta = type(config.Meta) == "table" and config.Meta or nil
+        if meta and meta.Checksum ~= nil and meta.Checksum ~= configHash(canonical(config.Flags or {})) then
+            report.Warnings[#report.Warnings + 1] = "file was edited outside the library"
+        end
+        for savedFlag, raw in pairs(config.Flags or {}) do
+            local flag = self.ConfigAliases and self.ConfigAliases[savedFlag] or savedFlag
+            if type(flag) == "string" and not self.NoSaveFlags[flag] and not INTERNAL_FLAGS[flag] then
+                local element = self.Elements[flag]
+                if not element then
+                    report.Unknown[#report.Unknown + 1] = flag
+                else
+                    report.Known = report.Known + 1
+                    local okValue, value = pcall(deserialize, raw)
+                    if not okValue then
+                        report.Errors[#report.Errors + 1] = flag .. ": unreadable value"
+                    elseif element.Get then
+                        local good, current = pcall(element.Get, element)
+                        local expected = good and typeof(current)
+                        local kind = typeof(value)
+                        if good and (expected == "boolean" or expected == "number" or expected == "Color3" or expected == "table") and kind ~= expected then
+                            report.Errors[#report.Errors + 1] = flag .. ": expected " .. expected .. ", got " .. kind
+                        end
+                    end
+                end
+            end
+        end
+        table.sort(report.Unknown)
+        report.Valid = #report.Errors == 0
+        return report
+    end
+
+    function Library:DiffConfig(left, right)
+        local function flagsOf(source)
+            if type(source) == "string" then
+                local usable, reason = enabled(self)
+                if not usable then return nil, reason end
+                local path = findPath(self, safeName(source))
+                if not path then return nil, "config not found: " .. source end
+                local ok, decoded = pcall(readTable, self, path)
+                if not ok then return nil, tostring(decoded) end
+                return decoded.Flags or {}
+            elseif type(source) == "table" then
+                if type(source.Flags) == "table" then return source.Flags end
+                return source
+            end
+            return self:GetConfig().Flags
+        end
+        local a, errorLeft = flagsOf(left)
+        if not a then return nil, errorLeft end
+        local b, errorRight = flagsOf(right)
+        if not b then return nil, errorRight end
+        local result = {Added = {}, Removed = {}, Changed = {}, Same = 0}
+        for flag, value in pairs(b) do
+            if a[flag] == nil then
+                result.Added[#result.Added + 1] = flag
+            elseif canonical(a[flag]) ~= canonical(value) then
+                result.Changed[#result.Changed + 1] = {Flag = flag, From = a[flag], To = value}
+            else
+                result.Same = result.Same + 1
+            end
+        end
+        for flag in pairs(a) do
+            if b[flag] == nil then result.Removed[#result.Removed + 1] = flag end
+        end
+        table.sort(result.Added)
+        table.sort(result.Removed)
+        table.sort(result.Changed, function(x, y) return x.Flag < y.Flag end)
+        result.Total = #result.Added + #result.Removed + #result.Changed
+        return result
+    end
+
+    function Library:DiffConfigFile(name)
+        return self:DiffConfig(name, nil)
+    end
+
+    function Library:HasUnsavedChanges(name)
+        local base = safeName(name or "default")
+        local current = canonical(self:GetConfig().Flags or {})
+        if Cfg.Saved[base] ~= nil then return Cfg.Saved[base] ~= current end
+        local diff = self:DiffConfig(base, nil)
+        if not diff then return true end
+        return diff.Total > 0
+    end
+
+    local function autoloadFile(self)
+        return self:GetConfigFolder() .. "/autoload.txt"
+    end
+
+    function Library:SetAutoLoad(name)
+        local usable, reason = enabled(self)
+        if not usable then return false, reason end
+        if not ensureFolder(self:GetConfigFolder()) then return false, "cannot create config folder" end
+        local value = (name == nil or name == "") and "" or safeName(name)
+        local ok, err = pcall(writefile, autoloadFile(self), value)
+        if not ok then return false, tostring(err) end
+        emit("autoload-set", value == "" and "(none)" or value)
+        return true, value ~= "" and value or nil
+    end
+
+    function Library:GetAutoLoad()
+        if not self.Configs or not self.Configs.Enabled or not fileSupport() then return nil end
+        local path = autoloadFile(self)
+        if not pathExists(path) then return nil end
+        local ok, content = pcall(readfile, path)
+        if not ok then return nil end
+        content = string.gsub(content, "^%s+", "")
+        content = string.gsub(content, "%s+$", "")
+        if content == "" then return nil end
+        return content
+    end
+
+    function Library:RunAutoLoad(options)
+        options = type(options) == "table" and options or {}
+        local name = options.Name or self:GetAutoLoad()
+        if not name then return false, "no autoload config set" end
+        if not Cfg.Defaults then self:CaptureDefaults() end
+        local ok, detail = self:LoadConfigFile(name, options)
+        if ok == true then
+            emit("autoload", name)
+            if options.Notify ~= false and self.Window then
+                pcall(function() self:Notify({Title = "Configs", Text = "Autoloaded: " .. tostring(name)}) end)
+            end
+        end
+        return ok, detail
+    end
+
+    function Library:CaptureDefaults()
+        Cfg.Defaults = self:GetConfig().Flags
+        return true
+    end
+
+    function Library:HasDefaults()
+        return Cfg.Defaults ~= nil
+    end
+
+    function Library:ResetToDefaults()
+        if not Cfg.Defaults then return false, "defaults were not captured" end
+        pcall(self.Snapshot, self, "__undo")
+        local ok, detail = self:LoadConfig({Flags = Cfg.Defaults, __version = self.Version})
+        if ok == true then emit("reset", "defaults") end
+        return ok, detail
+    end
+
+    function Library:UndoConfigLoad()
+        local ok, detail = self:RestoreSnapshot("__undo")
+        if ok == true then emit("undo", "__undo") end
+        return ok, detail
+    end
+
+    function Library:SetAutoSave(enabledState, interval, name)
+        local previous = Cfg.AutoSave
+        if previous then previous.Active = false; Cfg.AutoSave = nil end
+        if not enabledState then return false end
+        local job = {Active = true}
+        Cfg.AutoSave = job
+        local period = math.max(5, tonumber(interval) or 60)
+        local slot = safeName(name or "autosave")
+        task.spawn(function()
+            while job.Active and Runtime.Alive == true do
+                task.wait(period)
+                if job.Active and Runtime.Alive == true then
+                    local okConfig, config = pcall(Library.GetConfig, Library)
+                    if okConfig then
+                        local current = canonical(config.Flags or {})
+                        if Cfg.Saved[slot] ~= current then
+                            local ok, result = Library:SaveConfigFile(slot, {Note = "autosave"})
+                            if Library.Log then Library:Log("autosave " .. tostring(ok) .. ": " .. tostring(result), "config") end
+                        end
+                    end
                 end
             end
         end)
+        return true
     end
-
-    collect(self:GetConfigFolder())
-    collect(LEGACY_ROOT)
-    table.sort(names)
-    return names
-end
-
-function Library:DeleteConfigFile(name)
-    if not self.Configs or not self.Configs.Enabled then return false, "configs are disabled" end
-    if type(delfile) ~= "function" then return false, "executor has no delfile" end
-    local base = safeName(name or "default")
-    local paths = {
-        self:GetConfigFolder() .. "/" .. base .. JSON_EXTENSION,
-        self:GetConfigFolder() .. "/" .. base .. SECURE_EXTENSION,
-        LEGACY_ROOT .. "/" .. base .. JSON_EXTENSION,
-    }
-    local deleted
-    local lastError
-    for _, path in ipairs(paths) do
-        if pathExists(path) then
-            local ok, err = pcall(delfile, path)
-            if ok then
-                deleted = true
-            else
-                lastError = err
-            end
-        end
-    end
-    if deleted then return true end
-    return false, lastError or ("config not found: " .. base)
 end
 
 function Library:Unload()
     Runtime.Alive = false
     restoreFades()
+    do
+        local registry = Runtime.Env().__WolfUiWindows
+        if registry then
+            for key, owner in pairs(registry) do
+                if owner == self then registry[key] = nil end
+            end
+        end
+    end
     if self.Window then
         for _, tab in ipairs(self.Window.TabList or {}) do
             for _, element in ipairs(tab.Elements or {}) do
                 if element.Maid then pcall(element.Maid.Destroy, element.Maid) end
             end
         end
-        -- Popup destruction removes entries from this list, so walk it backwards.
         local popups = self.Window.Popups or {}
         for index = #popups, 1, -1 do
             local popup = popups[index]
@@ -7604,13 +8471,8 @@ function Library:Unload()
     flagWatchers = {}
 end
 
--- ============================================================================
--- Element ownership: every Tab:Add* call runs inside its own Maid, so all
--- connections, update steps and popups created for the element are released
--- by element:Destroy(). Also unregisters the element from Library.Elements.
--- ============================================================================
 local function ownElement(tab, api, maid)
-    if type(api) ~= "table" then return api end -- section/divider: maid stays owned by the tab
+    if type(api) ~= "table" then return api end
     api.Maid = maid
     if api.Object then
         if not maid.UiObjects or not maid.UiObjects[api.Object] then maid:Add(api.Object) end
@@ -7662,6 +8524,8 @@ end
 
 Library.Maid = nil
 Library.MaidClass = Maid
+Library.TabClass = Tab
+Library.WindowClass = Window
 Library.NewMaid = Maid.new
 
 function Library:SetMemoryOptions(opts)
@@ -7669,7 +8533,6 @@ function Library:SetMemoryOptions(opts)
     if opts.SweepInterval ~= nil then Runtime.SweepInterval = math.max(0.25, tonumber(opts.SweepInterval) or 3) end
 end
 
--- Force a sweep + Lua GC step. Returns a stats snapshot.
 function Library:Collect(full)
     local dropped = sweepConnections(true)
     if full then collectgarbage("collect") else collectgarbage("step") end
@@ -7716,9 +8579,162 @@ function Library:MemoryReport()
         s.Updates + s.OverlayUpdates, s.Maids, s.MaidsDestroyed, s.Popups, s.Notifications)
 end
 
+do
+    local Extra = {Snapshots = {}, Journal = {}, AutoSave = nil}
+
+    local function record(kind, message)
+        local journal = Extra.Journal
+        journal[#journal + 1] = {Time = os.clock(), Kind = kind, Message = tostring(message)}
+        while #journal > 200 do table.remove(journal, 1) end
+    end
+
+    function Library:Log(message, kind)
+        record(kind or "info", message)
+    end
+
+    function Library:GetLog()
+        local copy = {}
+        for index, entry in ipairs(Extra.Journal) do copy[index] = entry end
+        return copy
+    end
+
+    function Library:ClearLog()
+        Extra.Journal = {}
+    end
+
+    function Library:Safe(callback, ...)
+        if type(callback) ~= "function" then return false, "callback is not a function" end
+        local packed = table.pack(xpcall(callback, function(err)
+            return debug.traceback(tostring(err), 2)
+        end, ...))
+        if packed[1] then return true, table.unpack(packed, 2, packed.n) end
+        record("error", packed[2])
+        warn("WolfUi: " .. tostring(packed[2]))
+        return false, packed[2]
+    end
+
+    function Library:Debounce(callback, delay)
+        delay = math.max(0, tonumber(delay) or 0.25)
+        local token = 0
+        return function(...)
+            token = token + 1
+            local mine = token
+            local args = table.pack(...)
+            task.delay(delay, function()
+                if mine == token then
+                    Library:Safe(callback, table.unpack(args, 1, args.n))
+                end
+            end)
+        end
+    end
+
+    function Library:Throttle(callback, interval)
+        interval = math.max(0, tonumber(interval) or 0.1)
+        local last = -math.huge
+        return function(...)
+            local now = os.clock()
+            if now - last < interval then return false end
+            last = now
+            return Library:Safe(callback, ...)
+        end
+    end
+
+    function Library:Snapshot(name)
+        name = tostring(name or "default")
+        Extra.Snapshots[name] = {Time = os.time(), Config = self:GetConfig()}
+        record("snapshot", name)
+        return name
+    end
+
+    function Library:RestoreSnapshot(name)
+        name = tostring(name or "default")
+        local item = Extra.Snapshots[name]
+        if not item then return false, "snapshot not found: " .. name end
+        record("restore", name)
+        return self:LoadConfig(item.Config)
+    end
+
+    function Library:ListSnapshots()
+        local names = {}
+        for name in pairs(Extra.Snapshots) do names[#names + 1] = name end
+        table.sort(names)
+        return names
+    end
+
+    function Library:DeleteSnapshot(name)
+        name = tostring(name or "default")
+        local existed = Extra.Snapshots[name] ~= nil
+        Extra.Snapshots[name] = nil
+        return existed
+    end
+
+    function Library:Diagnostics()
+        local env = Runtime.Env()
+        local names = {
+            "gethui", "get_hidden_gui", "cloneref", "loadstring", "getgenv", "identifyexecutor",
+            "isfile", "readfile", "writefile", "delfile", "makefolder", "isfolder", "listfiles",
+            "setclipboard", "queue_on_teleport", "request", "http_request",
+        }
+        local capabilities, missing = {}, {}
+        for _, name in ipairs(names) do
+            local value = env[name]
+            if value == nil then value = _G[name] end
+            capabilities[name] = value ~= nil
+            if value == nil then missing[#missing + 1] = name end
+        end
+        local executor = "unknown"
+        local identify = env.identifyexecutor or _G.identifyexecutor
+        if type(identify) == "function" then
+            local ok, first, second = pcall(identify)
+            if ok and first then executor = tostring(first) .. (second and (" " .. tostring(second)) or "") end
+        end
+        local window = self.Window
+        local host = "none"
+        if window and window.Gui and window.Gui.Parent then host = tostring(window.Gui.Parent.Name) end
+        local flagCount, elementCount = 0, 0
+        for _ in pairs(self.Flags or {}) do flagCount = flagCount + 1 end
+        for _ in pairs(self.Elements or {}) do elementCount = elementCount + 1 end
+        return {
+            Version = self.Version,
+            Executor = executor,
+            Host = host,
+            Window = window ~= nil,
+            Flags = flagCount,
+            Elements = elementCount,
+            Snapshots = #self:ListSnapshots(),
+            LogEntries = #Extra.Journal,
+            Capabilities = capabilities,
+            Missing = missing,
+            Memory = self:GetMemoryStats(),
+        }
+    end
+
+    function Library:DiagnosticsReport()
+        local info = self:Diagnostics()
+        local lines = {
+            string.format("WolfUi %s | executor: %s | host: %s", tostring(info.Version), info.Executor, info.Host),
+            string.format("window: %s | flags: %d | elements: %d | snapshots: %d | log: %d",
+                tostring(info.Window), info.Flags, info.Elements, info.Snapshots, info.LogEntries),
+            "missing: " .. (#info.Missing > 0 and table.concat(info.Missing, ", ") or "nothing"),
+            self:MemoryReport(),
+        }
+        return table.concat(lines, "\n")
+    end
+
+    function Library:CopyDiagnostics()
+        local text = self:DiagnosticsReport()
+        local env = Runtime.Env()
+        local copy = env.setclipboard or _G.setclipboard
+        if type(copy) == "function" then
+            local ok = pcall(copy, text)
+            return ok, text
+        end
+        return false, text
+    end
+end
+
 Library.Runtime = Runtime
 Library.Palette = palette
 Library.Icons = IconSheet
 
 return Library
-
