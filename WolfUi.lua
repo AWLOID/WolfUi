@@ -9058,8 +9058,7 @@ do
         local w, h = width * amount, height * amount
         local x, y = position.X + size.X + gap, position.Y + (size.Y - h) * 0.5
         if side == "Left" then x = position.X - gap - w end
-        return math.clamp(x, margin, math.max(margin, screen.X - margin - w)),
-            math.clamp(y, margin, math.max(margin, screen.Y - margin - h)), amount, side
+        return math.clamp(x, margin, math.max(margin, screen.X - margin - w)), y, amount, side
     end
 
     function Preview:GetMaid() return self.Maid end
@@ -9291,9 +9290,16 @@ do
     function Preview:Step(dt)
         if self.Destroyed or self.Rendering then return end
         local window = self.Window
-        local screen = window.Gui.AbsoluteSize
-        local x, y, scale, side = Library.ComputeESPPreviewLayout(window.Frame.AbsolutePosition,
-            window.Frame.AbsoluteSize, screen, self.Width, self.Height, self.Gap, window.ScaleCurrent or 1)
+        local screen = window.Viewport
+        local menuScale = Runtime.Number(window.UIScale.Scale, window.ScaleCurrent or 1)
+        local layout = window.Frame.Position
+        local size = window.Frame.Size
+        local origin = Vector2.new(layout.X.Scale * screen.X + layout.X.Offset, layout.Y.Scale * screen.Y + layout.Y.Offset)
+        local menuSize = Vector2.new(size.X.Scale * screen.X + size.X.Offset, size.Y.Scale * screen.Y + size.Y.Offset) * menuScale
+        local anchor = window.Frame.AnchorPoint or Vector2.zero
+        origin = origin - Vector2.new(menuSize.X * anchor.X, menuSize.Y * anchor.Y)
+        local x, y, scale, side = Library.ComputeESPPreviewLayout(origin,
+            menuSize, screen, self.Width, self.Height, self.Gap, menuScale)
         self.Side = side
         local visible = self.Visible and window.Visible and not window.Destroyed and scale > 0
         set(self.Object, "Visible", visible)
@@ -9454,7 +9460,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "center-glass-health-4"
+    Library.ESPPreviewRevision = "gui-local-center-6"
 end
 
 
