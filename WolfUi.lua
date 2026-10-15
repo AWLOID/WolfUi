@@ -9065,7 +9065,7 @@ do
         end
         if amount < 0.25 then return 0, 0, 0, "Hidden" end
         local w, h = width * amount, height * amount
-        local x, y = position.X + size.X + gap, position.Y
+        local x, y = position.X + size.X + gap, position.Y + (size.Y - h) * 0.5
         if side == "Left" then x = position.X - gap - w end
         if side == "Top" or side == "Bottom" then
             x = position.X + (size.X - w) * 0.5
@@ -9315,6 +9315,7 @@ do
         set(self.Scale, "Scale", scale)
         set(self.Object, "GroupTransparency", 1 - math.clamp(window.Alpha or 1, 0, 1))
         set(self.Object, "BackgroundColor3", palette[1])
+        set(self.Object, "BackgroundTransparency", 0.22)
         set(self.Border, "Color", palette[3])
         local now = os.clock()
         if self.RebuildAt and now >= self.RebuildAt then self.RebuildAt = nil; self:Rebuild() end
@@ -9340,8 +9341,16 @@ do
 
     function Preview:BindInput()
         self.Maid:Connect(self.InputSurface.InputBegan, function(input)
-            if self.Drag or not self.Enabled or not self.Object.Visible or self.Window.Dialog then return end
+            if not self.Enabled or not self.Object.Visible or self.Window.Dialog or self.Window.Opened then return end
             local kind = input.UserInputType
+            if self.Drag then
+                if kind == Enum.UserInputType.Touch and self.Drag.Kind == kind and input ~= self.Drag.Input then
+                    self.Drag.Secondary = input
+                    self.Drag.SecondaryPosition = Vector2.new(input.Position.X, input.Position.Y)
+                    self.Drag.Move = true
+                end
+                return
+            end
             if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.MouseButton2 and kind ~= Enum.UserInputType.Touch then return end
             self.Drag = {Input = input, Kind = kind, Last = Vector2.new(input.Position.X, input.Position.Y),
                 Move = kind == Enum.UserInputType.MouseButton2 or self.MoveMode}
@@ -9349,26 +9358,35 @@ do
         self.Maid:Connect(UIS.InputChanged, function(input)
             local drag = self.Drag
             if not drag then return end
-            if not self.Enabled or not self.Object.Visible or self.Window.Dialog then self.Drag = nil; return end
+            if not self.Enabled or not self.Object.Visible or self.Window.Dialog or self.Window.Opened then self.Drag = nil; return end
+            local secondary = input == drag.Secondary
             if drag.Kind == Enum.UserInputType.Touch then
-                if input ~= drag.Input then return end
+                if input ~= drag.Input and not secondary then return end
             elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
             local position = Vector2.new(input.Position.X, input.Position.Y)
-            local delta = (position - drag.Last) / math.max(0.01, self.Scale.Scale)
-            drag.Last = position
+            local delta = (position - (secondary and drag.SecondaryPosition or drag.Last)) / math.max(0.01, self.Scale.Scale)
+            if secondary then drag.SecondaryPosition = position else drag.Last = position end
             if drag.Move then
-                self:SetPosition(self.Pan + Vector2.new(delta.X / self.Width, delta.Y / (self.Height - 64)) * 2)
+                self:SetPosition(self.Pan + Vector2.new(delta.X / self.Size2D.X, delta.Y / self.Size2D.Y) * 2)
             else
                 self:SetRotation(self.Yaw - delta.X * 0.6, self.Pitch + delta.Y * 0.4)
             end
         end)
         self.Maid:Connect(UIS.InputEnded, function(input)
             local drag = self.Drag
+            if drag and drag.Secondary and (input == drag.Input or input == drag.Secondary) then
+                if input == drag.Input then
+                    drag.Input = drag.Secondary
+                    drag.Last = drag.SecondaryPosition
+                end
+                drag.Secondary, drag.SecondaryPosition, drag.Move = nil, nil, false
+                return
+            end
             if drag and (input == drag.Input or drag.Kind ~= Enum.UserInputType.Touch and input.UserInputType == drag.Kind) then self.Drag = nil end
         end)
         self.Maid:Connect(UIS.WindowFocusReleased, function() self.Drag = nil end)
         self.Maid:Connect(self.InputSurface.InputChanged, function(input)
-            if self.Enabled and self.Object.Visible and not self.Window.Dialog and input.UserInputType == Enum.UserInputType.MouseWheel then
+            if self.Enabled and self.Object.Visible and not self.Window.Dialog and not self.Window.Opened and input.UserInputType == Enum.UserInputType.MouseWheel then
                 self:SetZoom(self.Zoom * 1.1 ^ input.Position.Z)
             end
         end)
@@ -9378,22 +9396,23 @@ do
         options = type(options) == "table" and options or {}
         assert(not self.Destroyed and self.Gui and self.Gui.Parent, "CreateESPPreview requires a live window")
         local maid = Maid.new(Library.Maid)
-        local preview = setmetatable({Window = self, Maid = maid, Width = math.clamp(Runtime.Number(options.Width, 240), 160, 420),
-            Height = math.clamp(Runtime.Number(options.Height, 340), 240, 600), Gap = math.clamp(Runtime.Number(options.Gap, 12), 4, 60),
+        local preview = setmetatable({Window = self, Maid = maid, Width = math.clamp(Runtime.Number(options.Width, 180), 120, 420),
+            Height = math.clamp(Runtime.Number(options.Height, 250), 160, 600), Gap = math.clamp(Runtime.Number(options.Gap, 16), 4, 60),
             Visible = options.Visible ~= false, Enabled = options.Enabled ~= false, State = {}, Parts = {}, Corners = {},
             Yaw = 0, Pitch = 0, Zoom = 1, Pan = Vector2.zero, Elapsed = 0, FocalLength = 1,
             Interval = 1 / math.clamp(Runtime.Number(options.UpdateRate, 30), 1, 60)}, Preview)
-        preview.Size2D = Vector2.new(preview.Width, preview.Height - 64)
+        preview.Size2D = Vector2.new(preview.Width, preview.Height - 32)
         local ok, problem = pcall(function()
             local panel = rect(self.Gui, 0, 0, preview.Width, preview.Height, palette[1], 8, "CanvasGroup")
             preview.Object = panel
-            panel.Name, panel.ZIndex, panel.Visible = "WolfUiESPPreview", 10, false
+            panel.Name, panel.ZIndex, panel.Visible = "WolfUiESPPreview", 1, false
+            panel.BackgroundTransparency = 0.22
             maid:Add(panel)
             preview.Scale = new("UIScale", panel, {Scale = 1})
             preview.Border = new("UIStroke", panel, {Color = palette[3], Thickness = 1})
             text(panel, options.Title or "ESP preview", 12, 0, preview.Width - 24, 32, 12)
             local viewport = new("ViewportFrame", panel, {Name = "Character", BackgroundTransparency = 1,
-                Position = UDim2.fromOffset(0, 32), Size = UDim2.fromOffset(preview.Width, preview.Height - 64),
+                Position = UDim2.fromOffset(0, 32), Size = UDim2.fromOffset(preview.Width, preview.Size2D.Y),
                 BorderSizePixel = 0, Active = true, Ambient = Color3.fromRGB(180, 180, 180),
                 LightColor = Color3.fromRGB(220, 220, 220), LightDirection = Vector3.new(-1, -1, -1), ZIndex = 1})
             preview.Viewport = viewport
@@ -9402,17 +9421,9 @@ do
             preview.World = new("WorldModel", viewport, {Name = "PreviewWorld"})
             preview.Overlay = new("Frame", viewport, {Name = "ESP", BackgroundTransparency = 1, BorderSizePixel = 0,
                 Size = UDim2.fromScale(1, 1), ClipsDescendants = true, Active = false, ZIndex = 2})
-            preview.InputSurface = transparent(viewport, 0, 0, preview.Width, preview.Height - 64, "TextButton")
+            preview.InputSurface = transparent(viewport, 0, 0, preview.Width, preview.Size2D.Y, "TextButton")
             preview.InputSurface.Name, preview.InputSurface.ZIndex = "ModelInput", 20
-            preview.Status = text(panel, "Waiting for character", 12, 100, preview.Width - 24, 32, 11, white, "center").Object
-            local mode = rect(panel, 8, preview.Height - 28, (preview.Width - 24) * 0.5, 20, palette[2], 4, "TextButton")
-            mode.Text, mode.TextColor3 = "Rotate / Move", white
-            local reset = rect(panel, preview.Width * 0.5 + 4, preview.Height - 28, (preview.Width - 24) * 0.5, 20, palette[2], 4, "TextButton")
-            reset.Text, reset.TextColor3 = "Reset view", white
-            maid:Connect(mode.Activated, function()
-                if preview.Enabled then preview.MoveMode = not preview.MoveMode; mode.Text = preview.MoveMode and "Mode: Move" or "Mode: Rotate" end
-            end)
-            maid:Connect(reset.Activated, function() if preview.Enabled then preview:ResetView() end end)
+            preview.Status = text(panel, "Waiting for character", 12, preview.Height * 0.5 - 16, preview.Width - 24, 32, 11, white, "center").Object
             preview:BindInput()
             preview:SetRenderer(options.Render or options.Renderer):SetStateProvider(options.StateProvider):SetValue(options.State or {})
             preview:SetCharacter(options.Character or player.Character)
@@ -9441,4 +9452,3 @@ Library.Palette = palette
 Library.Icons = IconSheet
 
 return Library
-
