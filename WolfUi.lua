@@ -9144,6 +9144,63 @@ do
         self.Status.Visible = true
     end
 
+    function Preview:FreezePose(model, root)
+        local graph = {}
+        for _, object in ipairs(model:GetDescendants()) do
+            if object:IsA("Animator") or object:IsA("AnimationController") or object:IsA("Animation") then
+                object:Destroy()
+            elseif object:IsA("Humanoid") then
+                object.AutoRotate = false
+            elseif object:IsA("Bone") then
+                object.Transform = CFrame.new()
+            elseif object:IsA("JointInstance") or object:IsA("WeldConstraint") then
+                local first, second = object.Part0, object.Part1
+                if first and second and first:IsDescendantOf(model) and second:IsDescendantOf(model) then
+                    local left, right
+                    if object:IsA("WeldConstraint") then
+                        left, right = first.CFrame:Inverse() * second.CFrame, CFrame.new()
+                    else
+                        left, right = object.C0, object.C1
+                        if object:IsA("Motor6D") then object.Transform = CFrame.new() end
+                    end
+                    local edge = {first, second, left, right}
+                    if not graph[first] then graph[first] = {} end
+                    if not graph[second] then graph[second] = {} end
+                    graph[first][#graph[first] + 1] = edge
+                    graph[second][#graph[second] + 1] = edge
+                end
+            end
+        end
+        local queue, visited, index = {root}, {[root] = true}, 1
+        while index <= #queue do
+            local part = queue[index]
+            index = index + 1
+            for _, edge in ipairs(graph[part] or {}) do
+                local first, second = edge[1], edge[2]
+                if part == first and not visited[second] then
+                    second.CFrame = first.CFrame * edge[3] * edge[4]:Inverse()
+                    visited[second] = true
+                    queue[#queue + 1] = second
+                elseif part == second and not visited[first] then
+                    first.CFrame = second.CFrame * edge[4] * edge[3]:Inverse()
+                    visited[first] = true
+                    queue[#queue + 1] = first
+                end
+            end
+        end
+    end
+
+    function Preview:IsAppearanceChange(object)
+        local current = object
+        while current and current ~= self.Character do
+            if current:IsA("Tool") then return false end
+            current = current.Parent
+        end
+        return object:IsA("BasePart") or object:IsA("Accessory") or object:IsA("Clothing")
+            or object:IsA("ShirtGraphic") or object:IsA("CharacterMesh") or object:IsA("DataModelMesh")
+            or object:IsA("Decal") or object:IsA("SurfaceAppearance") or object:IsA("JointInstance")
+    end
+
     function Preview:Rebuild()
         if self.Destroyed then return false end
         local character = self.Character
@@ -9175,6 +9232,7 @@ do
             local root = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChild("Torso") or clone:FindFirstChild("UpperTorso")
             if not root then error("Character has no root part") end
             clone:PivotTo(root.CFrame:Inverse() * clone:GetPivot())
+            self:FreezePose(clone, root)
             local bounds, size = clone:GetBoundingBox()
             clone:PivotTo(CFrame.new(-bounds.Position) * clone:GetPivot())
             self:ClearModel()
@@ -9225,8 +9283,12 @@ do
         self.Character = character
         self:ClearModel()
         if character then
-            self.CharacterMaid:Connect(character.DescendantAdded, function() self:Refresh() end)
-            self.CharacterMaid:Connect(character.DescendantRemoving, function() self:Refresh() end)
+            self.CharacterMaid:Connect(character.DescendantAdded, function(object)
+                if self:IsAppearanceChange(object) then self:Refresh() end
+            end)
+            self.CharacterMaid:Connect(character.DescendantRemoving, function(object)
+                if self:IsAppearanceChange(object) then self:Refresh() end
+            end)
             self.CharacterMaid:Connect(character.AncestryChanged, function(_, parent)
                 if not parent then self:ClearModel() else self:Refresh() end
             end)
@@ -9460,7 +9522,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "gui-local-center-6"
+    Library.ESPPreviewRevision = "static-neutral-pose-7"
 end
 
 
