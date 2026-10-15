@@ -845,7 +845,7 @@ local INTERNAL_FLAGS = {
 
 local Library = {
     Version = "7.0.0",
-    Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1, ConditionalColors = 1, ConfigRestore = 2}),
+    Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1, ConditionalColors = 1, ConfigRestore = 2, ESPPreview = 1}),
     Design = table.freeze({CardRadius = 8, PopupRadius = 8, ControlRadius = 3,
         CardTransparency = 0.20, StrokeTransparency = 0.65, Gap = 10, Padding = 10}),
     NotificationOptions = {Width = 250, MaxVisible = 5, Position = "Right", Gap = 8, PauseOnHover = true},
@@ -9038,6 +9038,403 @@ do
         end
     end
 end
+
+do
+    local Preview = {}
+    Preview.__index = Preview
+    local set = Runtime.SetProperty
+
+    function Library.ComputeESPPreviewLayout(position, size, screen, width, height, gap, scale)
+        local margin = 8
+        width, height = math.max(1, width), math.max(1, height)
+        scale = math.max(0.01, scale)
+        local right = math.max(0, screen.X - position.X - size.X - gap - margin)
+        local left = math.max(0, position.X - gap - margin)
+        local fit = math.min(scale, math.max(0, screen.Y - margin * 2) / height)
+        local side = right >= width * fit and "Right" or (left > right and "Left" or "Right")
+        local room = side == "Right" and right or left
+        local amount = math.min(fit, room / width)
+        if amount < math.min(scale, 0.5) then
+            local above = math.max(0, position.Y - gap - margin)
+            local below = math.max(0, screen.Y - position.Y - size.Y - gap - margin)
+            local vertical = math.min(scale, math.max(0, screen.X - margin * 2) / width, math.max(above, below) / height)
+            if vertical > amount then
+                amount = vertical
+                side = below >= above and "Bottom" or "Top"
+            end
+        end
+        if amount < 0.25 then return 0, 0, 0, "Hidden" end
+        local w, h = width * amount, height * amount
+        local x, y = position.X + size.X + gap, position.Y
+        if side == "Left" then x = position.X - gap - w end
+        if side == "Top" or side == "Bottom" then
+            x = position.X + (size.X - w) * 0.5
+            y = side == "Top" and position.Y - gap - h or position.Y + size.Y + gap
+        end
+        return math.clamp(x, margin, math.max(margin, screen.X - margin - w)),
+            math.clamp(y, margin, math.max(margin, screen.Y - margin - h)), amount, side
+    end
+
+    function Preview:GetMaid() return self.Maid end
+    function Preview:GetValue() return self.State end
+    function Preview:GetVisible() return self.Visible end
+    function Preview:GetEnabled() return self.Enabled end
+    function Preview:GetModel() return self.Model end
+    function Preview:GetPart(name) return self.Parts[name] end
+    function Preview:GetSize() return self.Size2D end
+
+    function Preview:SetValue(value)
+        if not self.Destroyed and type(value) == "table" then self.State = value; self.Dirty = true end
+        return self
+    end
+    Preview.SetState = Preview.SetValue
+
+    function Preview:SetVisible(value)
+        if not self.Destroyed then
+            self.Visible = value == true
+            if not self.Visible then self.Object.Visible = false; self.Drag = nil end
+        end
+        return self
+    end
+
+    function Preview:SetEnabled(value)
+        if not self.Destroyed then self.Enabled = value == true; self.Drag = nil end
+        return self
+    end
+
+    function Preview:SetRenderer(callback)
+        if not self.Destroyed then self.Renderer = type(callback) == "function" and callback or nil end
+        return self
+    end
+
+    function Preview:SetStateProvider(callback)
+        if not self.Destroyed then self.StateProvider = type(callback) == "function" and callback or nil end
+        return self
+    end
+
+    function Preview:SetRotation(yaw, pitch)
+        if self.Destroyed then return self end
+        self.Yaw = Runtime.Number(yaw, self.Yaw) % 360
+        self.Pitch = math.clamp(Runtime.Number(pitch, self.Pitch), -70, 70)
+        self.CameraDirty = true
+        return self
+    end
+
+    function Preview:SetPosition(value)
+        if not self.Destroyed and typeof(value) == "Vector2" then
+            self.Pan = Vector2.new(math.clamp(Runtime.Number(value.X, 0), -1, 1), math.clamp(Runtime.Number(value.Y, 0), -1, 1))
+            self.CameraDirty = true
+        end
+        return self
+    end
+
+    function Preview:SetZoom(value)
+        if not self.Destroyed then self.Zoom = math.clamp(Runtime.Number(value, 1), 0.5, 2); self.CameraDirty = true end
+        return self
+    end
+
+    function Preview:ResetView()
+        return self:SetRotation(0, 0):SetPosition(Vector2.zero):SetZoom(1)
+    end
+
+    function Preview:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        self.Drag, self.Renderer, self.StateProvider, self.Character = nil, nil, nil, nil
+        self.Maid:Destroy()
+        self.Model, self.World, self.Camera, self.Window = nil, nil, nil, nil
+        table.clear(self.Parts)
+        table.clear(self.Corners)
+        self.State = {}
+    end
+
+    function Preview:ClearModel()
+        if self.Model then self.Model:Destroy(); self.Model = nil end
+        table.clear(self.Parts)
+        table.clear(self.Corners)
+        self.BodyBounds, self.FullBounds = nil, nil
+        self.Overlay.Visible = false
+        self.Status.Text = "Waiting for character"
+        self.Status.Visible = true
+    end
+
+    function Preview:Rebuild()
+        if self.Destroyed then return false end
+        local character = self.Character
+        if not character or not character.Parent then self:ClearModel(); return false end
+        local archived = character.Archivable
+        local ok, clone = pcall(function()
+            character.Archivable = true
+            return character:Clone()
+        end)
+        pcall(function() character.Archivable = archived end)
+        if not ok or not clone then
+            self:ClearModel()
+            self.Status.Text = "Character unavailable"
+            self.LastError = tostring(clone)
+            return false
+        end
+        local ready, problem = pcall(function()
+            for _, object in ipairs(clone:GetDescendants()) do
+                if object:IsA("LuaSourceContainer") or object:IsA("Tool") or object:IsA("Sound")
+                    or object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam")
+                    or object:IsA("Highlight") or object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
+                    object:Destroy()
+                elseif object:IsA("BasePart") then
+                    object.Anchored = true
+                    object.CanCollide, object.CanTouch, object.CanQuery = false, false, false
+                    object.LocalTransparencyModifier = 0
+                end
+            end
+            local root = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChild("Torso") or clone:FindFirstChild("UpperTorso")
+            if not root then error("Character has no root part") end
+            clone:PivotTo(root.CFrame:Inverse() * clone:GetPivot())
+            local bounds, size = clone:GetBoundingBox()
+            clone:PivotTo(CFrame.new(-bounds.Position) * clone:GetPivot())
+            self:ClearModel()
+            self.Model = clone
+            clone.Name = "ESPPreviewCharacter"
+            clone.Parent = self.World
+            self.ModelSize = size
+            for _, object in ipairs(clone:GetDescendants()) do
+                if object:IsA("BasePart") then
+                    if object.Parent == clone then self.Parts[object.Name] = object end
+                    if object.Name ~= "HumanoidRootPart" and object.Transparency < 1 then
+                        local entry = {Body = object.Parent == clone, Points = {}}
+                        for x = -1, 1, 2 do
+                            for y = -1, 1, 2 do
+                                for z = -1, 1, 2 do
+                                    entry.Points[#entry.Points + 1] = object.CFrame:PointToWorldSpace(object.Size * Vector3.new(x, y, z) * 0.5)
+                                end
+                            end
+                        end
+                        self.Corners[#self.Corners + 1] = entry
+                    end
+                end
+            end
+            self.Status.Visible = false
+            self.Overlay.Visible = true
+            self.CameraDirty = true
+        end)
+        if not ready then
+            clone:Destroy()
+            self:ClearModel()
+            self.Status.Text = "Character unavailable"
+            self.LastError = tostring(problem)
+        end
+        return ready
+    end
+
+    function Preview:Refresh()
+        if self.Destroyed then return self end
+        self.RebuildAt = os.clock() + 0.15
+        return self
+    end
+
+    function Preview:SetCharacter(character)
+        if self.Destroyed then return self end
+        if character ~= nil and (typeof(character) ~= "Instance" or not character:IsA("Model")) then return self end
+        if self.CharacterMaid then self.CharacterMaid:Destroy() end
+        self.CharacterMaid = Maid.new(self.Maid)
+        self.Character = character
+        self:ClearModel()
+        if character then
+            self.CharacterMaid:Connect(character.DescendantAdded, function() self:Refresh() end)
+            self.CharacterMaid:Connect(character.DescendantRemoving, function() self:Refresh() end)
+            self.CharacterMaid:Connect(character.AncestryChanged, function(_, parent)
+                if not parent then self:ClearModel() else self:Refresh() end
+            end)
+        end
+        return self:Refresh()
+    end
+
+    function Preview:UpdateCamera()
+        if not self.Model then return end
+        local size = self:GetSize()
+        local radius = self.ModelSize.Magnitude * 0.5
+        local vertical = math.rad(self.Camera.FieldOfView) * 0.5
+        local horizontal = math.atan(math.tan(vertical) * size.X / size.Y)
+        local distance = radius / math.sin(math.min(vertical, horizontal)) * 1.18 / self.Zoom
+        local orbit = CFrame.Angles(0, math.rad(self.Yaw), 0) * CFrame.Angles(math.rad(self.Pitch), 0, 0)
+        local offset = orbit:VectorToWorldSpace(Vector3.new(0, 0, -distance))
+        local target = orbit:VectorToWorldSpace(Vector3.new(self.Pan.X * radius, self.Pan.Y * radius, 0))
+        self.Camera.CFrame = CFrame.lookAt(target + offset, target)
+        self.FocalLength = size.Y * 0.5 / math.tan(vertical)
+        self.CameraDirty = false
+        self.BodyBounds, self.FullBounds = nil, nil
+    end
+
+    function Preview:Project(position)
+        if self.Destroyed or not self.Camera then return nil end
+        local point = self.Camera.CFrame:PointToObjectSpace(position)
+        if point.Z >= -0.01 then return nil end
+        local size = self:GetSize()
+        return Vector2.new(size.X * 0.5 - point.X * self.FocalLength / point.Z,
+            size.Y * 0.5 + point.Y * self.FocalLength / point.Z)
+    end
+
+    function Preview:GetBounds(accessories, padding)
+        if not self.Model then return nil end
+        if self.CameraDirty then self:UpdateCamera() end
+        local cached
+        if accessories then cached = self.FullBounds else cached = self.BodyBounds end
+        if not cached then
+            local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
+            for _, entry in ipairs(self.Corners) do
+                if accessories or entry.Body then
+                    for _, corner in ipairs(entry.Points) do
+                        local point = self:Project(corner)
+                        if point then
+                            x1, y1 = math.min(x1, point.X), math.min(y1, point.Y)
+                            x2, y2 = math.max(x2, point.X), math.max(y2, point.Y)
+                        end
+                    end
+                end
+            end
+            if x1 == math.huge then return nil end
+            cached = {Vector2.new(x1, y1), Vector2.new(x2, y2), Vector2.new((x1 + x2) * 0.5, (y1 + y2) * 0.5)}
+            if accessories then self.FullBounds = cached else self.BodyBounds = cached end
+        end
+        padding = math.clamp(Runtime.Number(padding, 0), 0, 32)
+        if padding == 0 then return cached[1], cached[2], cached[3] end
+        local offset = Vector2.new(padding, padding)
+        return cached[1] - offset, cached[2] + offset, cached[3]
+    end
+
+    function Preview:Step(dt)
+        if self.Destroyed or self.Rendering then return end
+        local window = self.Window
+        local screen = window.Gui.AbsoluteSize
+        local x, y, scale, side = Library.ComputeESPPreviewLayout(window.Frame.AbsolutePosition,
+            window.Frame.AbsoluteSize, screen, self.Width, self.Height, self.Gap, window.ScaleCurrent or 1)
+        self.Side = side
+        local visible = self.Visible and window.Visible and not window.Destroyed and scale > 0
+        set(self.Object, "Visible", visible)
+        if not visible then self.Drag = nil; return end
+        set(self.Object, "Position", UDim2.fromOffset(x, y))
+        set(self.Scale, "Scale", scale)
+        set(self.Object, "GroupTransparency", 1 - math.clamp(window.Alpha or 1, 0, 1))
+        set(self.Object, "BackgroundColor3", palette[1])
+        set(self.Border, "Color", palette[3])
+        local now = os.clock()
+        if self.RebuildAt and now >= self.RebuildAt then self.RebuildAt = nil; self:Rebuild() end
+        if self.CameraDirty then self:UpdateCamera() end
+        self.Elapsed = self.Elapsed + dt
+        if not self.Drag and self.Elapsed < self.Interval then return end
+        local elapsed = self.Elapsed
+        self.Elapsed = 0
+        self.Rendering = true
+        if self.StateProvider then
+            local ok, state = pcall(self.StateProvider, self)
+            if self.Destroyed then return end
+            if ok and type(state) == "table" then self.State = state elseif not ok then self.LastError = tostring(state) end
+        end
+        if self.Model and self.Renderer then
+            local ok, problem = pcall(self.Renderer, self, elapsed, self.State)
+            if self.Destroyed then return end
+            self.Overlay.Visible = ok
+            if not ok then self.LastError = tostring(problem) end
+        end
+        self.Rendering = false
+    end
+
+    function Preview:BindInput()
+        self.Maid:Connect(self.InputSurface.InputBegan, function(input)
+            if self.Drag or not self.Enabled or not self.Object.Visible or self.Window.Dialog then return end
+            local kind = input.UserInputType
+            if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.MouseButton2 and kind ~= Enum.UserInputType.Touch then return end
+            self.Drag = {Input = input, Kind = kind, Last = Vector2.new(input.Position.X, input.Position.Y),
+                Move = kind == Enum.UserInputType.MouseButton2 or self.MoveMode}
+        end)
+        self.Maid:Connect(UIS.InputChanged, function(input)
+            local drag = self.Drag
+            if not drag then return end
+            if not self.Enabled or not self.Object.Visible or self.Window.Dialog then self.Drag = nil; return end
+            if drag.Kind == Enum.UserInputType.Touch then
+                if input ~= drag.Input then return end
+            elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            local position = Vector2.new(input.Position.X, input.Position.Y)
+            local delta = (position - drag.Last) / math.max(0.01, self.Scale.Scale)
+            drag.Last = position
+            if drag.Move then
+                self:SetPosition(self.Pan + Vector2.new(delta.X / self.Width, delta.Y / (self.Height - 64)) * 2)
+            else
+                self:SetRotation(self.Yaw - delta.X * 0.6, self.Pitch + delta.Y * 0.4)
+            end
+        end)
+        self.Maid:Connect(UIS.InputEnded, function(input)
+            local drag = self.Drag
+            if drag and (input == drag.Input or drag.Kind ~= Enum.UserInputType.Touch and input.UserInputType == drag.Kind) then self.Drag = nil end
+        end)
+        self.Maid:Connect(UIS.WindowFocusReleased, function() self.Drag = nil end)
+        self.Maid:Connect(self.InputSurface.InputChanged, function(input)
+            if self.Enabled and self.Object.Visible and not self.Window.Dialog and input.UserInputType == Enum.UserInputType.MouseWheel then
+                self:SetZoom(self.Zoom * 1.1 ^ input.Position.Z)
+            end
+        end)
+    end
+
+    function Window:CreateESPPreview(options)
+        options = type(options) == "table" and options or {}
+        assert(not self.Destroyed and self.Gui and self.Gui.Parent, "CreateESPPreview requires a live window")
+        local maid = Maid.new(Library.Maid)
+        local preview = setmetatable({Window = self, Maid = maid, Width = math.clamp(Runtime.Number(options.Width, 240), 160, 420),
+            Height = math.clamp(Runtime.Number(options.Height, 340), 240, 600), Gap = math.clamp(Runtime.Number(options.Gap, 12), 4, 60),
+            Visible = options.Visible ~= false, Enabled = options.Enabled ~= false, State = {}, Parts = {}, Corners = {},
+            Yaw = 0, Pitch = 0, Zoom = 1, Pan = Vector2.zero, Elapsed = 0, FocalLength = 1,
+            Interval = 1 / math.clamp(Runtime.Number(options.UpdateRate, 30), 1, 60)}, Preview)
+        preview.Size2D = Vector2.new(preview.Width, preview.Height - 64)
+        local ok, problem = pcall(function()
+            local panel = rect(self.Gui, 0, 0, preview.Width, preview.Height, palette[1], 8, "CanvasGroup")
+            preview.Object = panel
+            panel.Name, panel.ZIndex, panel.Visible = "WolfUiESPPreview", 10, false
+            maid:Add(panel)
+            preview.Scale = new("UIScale", panel, {Scale = 1})
+            preview.Border = new("UIStroke", panel, {Color = palette[3], Thickness = 1})
+            text(panel, options.Title or "ESP preview", 12, 0, preview.Width - 24, 32, 12)
+            local viewport = new("ViewportFrame", panel, {Name = "Character", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(0, 32), Size = UDim2.fromOffset(preview.Width, preview.Height - 64),
+                BorderSizePixel = 0, Active = true, Ambient = Color3.fromRGB(180, 180, 180),
+                LightColor = Color3.fromRGB(220, 220, 220), LightDirection = Vector3.new(-1, -1, -1), ZIndex = 1})
+            preview.Viewport = viewport
+            preview.Camera = new("Camera", viewport, {FieldOfView = 35})
+            viewport.CurrentCamera = preview.Camera
+            preview.World = new("WorldModel", viewport, {Name = "PreviewWorld"})
+            preview.Overlay = new("Frame", viewport, {Name = "ESP", BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.fromScale(1, 1), ClipsDescendants = true, Active = false, ZIndex = 2})
+            preview.InputSurface = transparent(viewport, 0, 0, preview.Width, preview.Height - 64, "TextButton")
+            preview.InputSurface.Name, preview.InputSurface.ZIndex = "ModelInput", 20
+            preview.Status = text(panel, "Waiting for character", 12, 100, preview.Width - 24, 32, 11, white, "center").Object
+            local mode = rect(panel, 8, preview.Height - 28, (preview.Width - 24) * 0.5, 20, palette[2], 4, "TextButton")
+            mode.Text, mode.TextColor3 = "Rotate / Move", white
+            local reset = rect(panel, preview.Width * 0.5 + 4, preview.Height - 28, (preview.Width - 24) * 0.5, 20, palette[2], 4, "TextButton")
+            reset.Text, reset.TextColor3 = "Reset view", white
+            maid:Connect(mode.Activated, function()
+                if preview.Enabled then preview.MoveMode = not preview.MoveMode; mode.Text = preview.MoveMode and "Mode: Move" or "Mode: Rotate" end
+            end)
+            maid:Connect(reset.Activated, function() if preview.Enabled then preview:ResetView() end end)
+            preview:BindInput()
+            preview:SetRenderer(options.Render or options.Renderer):SetStateProvider(options.StateProvider):SetValue(options.State or {})
+            preview:SetCharacter(options.Character or player.Character)
+            if options.Character == nil then
+                maid:Connect(player.CharacterAdded, function(character) preview:SetCharacter(character) end)
+                maid:Connect(player.CharacterRemoving, function(character) if preview.Character == character then preview:SetCharacter(nil) end end)
+                maid:Connect(player.CharacterAppearanceLoaded, function(character) if preview.Character == character then preview:Refresh() end end)
+            end
+            maid:Connect(panel.Destroying, function() preview:Destroy() end)
+            maid:Add(function() preview:Destroy() end)
+            maid:Connect(RunService.RenderStepped, function(dt) preview:Step(dt) end)
+        end)
+        if not ok then preview:Destroy(); error(problem, 0) end
+        return preview
+    end
+
+    function Library:CreateESPPreview(options)
+        assert(self.Window, "CreateESPPreview requires a window")
+        return self.Window:CreateESPPreview(options)
+    end
+end
+
 
 Library.Runtime = Runtime
 Library.Palette = palette
