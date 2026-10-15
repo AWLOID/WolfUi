@@ -9054,23 +9054,10 @@ do
         local side = right >= width * fit and "Right" or (left > right and "Left" or "Right")
         local room = side == "Right" and right or left
         local amount = math.min(fit, room / width)
-        if amount < math.min(scale, 0.5) then
-            local above = math.max(0, position.Y - gap - margin)
-            local below = math.max(0, screen.Y - position.Y - size.Y - gap - margin)
-            local vertical = math.min(scale, math.max(0, screen.X - margin * 2) / width, math.max(above, below) / height)
-            if vertical > amount then
-                amount = vertical
-                side = below >= above and "Bottom" or "Top"
-            end
-        end
         if amount < 0.25 then return 0, 0, 0, "Hidden" end
         local w, h = width * amount, height * amount
         local x, y = position.X + size.X + gap, position.Y + (size.Y - h) * 0.5
         if side == "Left" then x = position.X - gap - w end
-        if side == "Top" or side == "Bottom" then
-            x = position.X + (size.X - w) * 0.5
-            y = side == "Top" and position.Y - gap - h or position.Y + size.Y + gap
-        end
         return math.clamp(x, margin, math.max(margin, screen.X - margin - w)),
             math.clamp(y, margin, math.max(margin, screen.Y - margin - h)), amount, side
     end
@@ -9310,18 +9297,25 @@ do
         self.Side = side
         local visible = self.Visible and window.Visible and not window.Destroyed and scale > 0
         set(self.Object, "Visible", visible)
+        set(self.Holder, "Visible", visible)
         if not visible then self.Drag = nil; return end
-        set(self.Object, "Position", UDim2.fromOffset(x, y))
+        set(self.Holder, "Size", UDim2.fromOffset(self.Width * scale, self.Height * scale))
+        set(self.Holder, "Position", UDim2.fromOffset(x + self.Width * scale * 0.5, y + self.Height * scale * 0.5))
         set(self.Scale, "Scale", scale)
-        set(self.Object, "GroupTransparency", 1 - math.clamp(window.Alpha or 1, 0, 1))
-        set(self.Object, "BackgroundColor3", palette[1])
-        set(self.Object, "BackgroundTransparency", 0.22)
-        set(self.Border, "Color", palette[3])
+        local alpha = math.clamp(window.Alpha or 1, 0, 1)
+        set(self.Object, "BackgroundColor3", window.Frame.BackgroundColor3)
+        set(self.Object, "BackgroundTransparency", window.Frame.BackgroundTransparency)
+        set(self.Header, "TextTransparency", 1 - alpha)
+        if self.MenuBorder then
+            set(self.Border, "Color", self.MenuBorder.Color)
+            set(self.Border, "Transparency", self.MenuBorder.Transparency)
+            set(self.Border, "Thickness", self.MenuBorder.Thickness)
+        end
         local now = os.clock()
         if self.RebuildAt and now >= self.RebuildAt then self.RebuildAt = nil; self:Rebuild() end
         if self.CameraDirty then self:UpdateCamera() end
         self.Elapsed = self.Elapsed + dt
-        if not self.Drag and self.Elapsed < self.Interval then return end
+        if not self.Drag and self.Elapsed < self.Interval then fadeGroup(self.Canvas, alpha); return end
         local elapsed = self.Elapsed
         self.Elapsed = 0
         self.Rendering = true
@@ -9337,6 +9331,7 @@ do
             if not ok then self.LastError = tostring(problem) end
         end
         self.Rendering = false
+        fadeGroup(self.Canvas, alpha)
     end
 
     function Preview:BindInput()
@@ -9403,27 +9398,41 @@ do
             Interval = 1 / math.clamp(Runtime.Number(options.UpdateRate, 30), 1, 60)}, Preview)
         preview.Size2D = Vector2.new(preview.Width, preview.Height - 32)
         local ok, problem = pcall(function()
-            local panel = rect(self.Gui, 0, 0, preview.Width, preview.Height, palette[1], 8, "CanvasGroup")
+            local holder = transparent(self.Gui, 0, 0, preview.Width, preview.Height)
+            holder.Name, holder.AnchorPoint, holder.ZIndex = "WolfUiESPPreviewAnchor", Vector2.new(0.5, 0.5), 1
+            preview.Holder = holder
+            maid:Add(holder)
+            local panel = rect(holder, 0, 0, preview.Width, preview.Height, self.Frame.BackgroundColor3, 12)
             preview.Object = panel
             panel.Name, panel.ZIndex, panel.Visible = "WolfUiESPPreview", 1, false
-            panel.BackgroundTransparency = 0.22
+            panel.BackgroundTransparency = self.Frame.BackgroundTransparency
             maid:Add(panel)
             preview.Scale = new("UIScale", panel, {Scale = 1})
-            preview.Border = new("UIStroke", panel, {Color = palette[3], Thickness = 1})
-            text(panel, options.Title or "ESP preview", 12, 0, preview.Width - 24, 32, 12)
-            local viewport = new("ViewportFrame", panel, {Name = "Character", BackgroundTransparency = 1,
-                Position = UDim2.fromOffset(0, 32), Size = UDim2.fromOffset(preview.Width, preview.Size2D.Y),
+            preview.MenuBorder = self.Frame:FindFirstChildOfClass("UIStroke")
+            if preview.MenuBorder then
+                preview.Border = preview.MenuBorder:Clone()
+                preview.Border.Parent = panel
+            else
+                preview.Border = new("UIStroke", panel, {Color = Color3.fromRGB(128, 128, 128), Thickness = 1, Transparency = 0.58})
+            end
+            local gradient = self.Frame:FindFirstChildOfClass("UIGradient")
+            if gradient then local copy = gradient:Clone(); copy.Parent = panel end
+            preview.Header = text(panel, options.Title or "ESP preview", 12, 0, preview.Width - 24, 32, 12).Object
+            preview.Canvas = transparent(panel, 0, 32, preview.Width, preview.Size2D.Y)
+            preview.Canvas.ClipsDescendants = true
+            local viewport = new("ViewportFrame", preview.Canvas, {Name = "Character", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(0, 0), Size = UDim2.fromScale(1, 1),
                 BorderSizePixel = 0, Active = true, Ambient = Color3.fromRGB(180, 180, 180),
                 LightColor = Color3.fromRGB(220, 220, 220), LightDirection = Vector3.new(-1, -1, -1), ZIndex = 1})
             preview.Viewport = viewport
             preview.Camera = new("Camera", viewport, {FieldOfView = 35})
             viewport.CurrentCamera = preview.Camera
             preview.World = new("WorldModel", viewport, {Name = "PreviewWorld"})
-            preview.Overlay = new("Frame", viewport, {Name = "ESP", BackgroundTransparency = 1, BorderSizePixel = 0,
+            preview.Overlay = new("Frame", preview.Canvas, {Name = "ESP", BackgroundTransparency = 1, BorderSizePixel = 0,
                 Size = UDim2.fromScale(1, 1), ClipsDescendants = true, Active = false, ZIndex = 2})
-            preview.InputSurface = transparent(viewport, 0, 0, preview.Width, preview.Size2D.Y, "TextButton")
+            preview.InputSurface = transparent(preview.Canvas, 0, 0, preview.Width, preview.Size2D.Y, "TextButton")
             preview.InputSurface.Name, preview.InputSurface.ZIndex = "ModelInput", 20
-            preview.Status = text(panel, "Waiting for character", 12, preview.Height * 0.5 - 16, preview.Width - 24, 32, 11, white, "center").Object
+            preview.Status = text(preview.Canvas, "Waiting for character", 12, preview.Size2D.Y * 0.5 - 16, preview.Width - 24, 32, 11, white, "center").Object
             preview:BindInput()
             preview:SetRenderer(options.Render or options.Renderer):SetStateProvider(options.StateProvider):SetValue(options.State or {})
             preview:SetCharacter(options.Character or player.Character)
@@ -9433,6 +9442,7 @@ do
                 maid:Connect(player.CharacterAppearanceLoaded, function(character) if preview.Character == character then preview:Refresh() end end)
             end
             maid:Connect(panel.Destroying, function() preview:Destroy() end)
+            maid:Connect(holder.Destroying, function() preview:Destroy() end)
             maid:Add(function() preview:Destroy() end)
             maid:Connect(RunService.RenderStepped, function(dt) preview:Step(dt) end)
         end)
@@ -9444,6 +9454,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
+    Library.ESPPreviewRevision = "center-glass-health-4"
 end
 
 
