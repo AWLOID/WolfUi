@@ -219,15 +219,46 @@ function Runtime.Env()
     return _G
 end
 
+Runtime.Owners = setmetatable({}, {__mode = "k"})
+Runtime.FadePool = {}
+Runtime.Disabled = setmetatable({}, {__mode = "k"})
+
+function Runtime.GetOwner()
+    return Runtime.Owners[coroutine.running()] or Runtime.Owner
+end
+
+function Runtime.Number(value, fallback)
+    local number = tonumber(value)
+    if number == nil or number ~= number or number == math.huge or number == -math.huge then
+        return fallback
+    end
+    return number
+end
+
+function Runtime.IsEnabled(object)
+    if not object or not object.Parent then return false end
+    while object and object ~= game do
+        if Runtime.Disabled[object] then return false end
+        object = object.Parent
+    end
+    return true
+end
+
+function Runtime.SetProperty(object, property, value)
+    if object[property] ~= value then object[property] = value end
+end
+
 local Maid = {}
 Maid.__index = Maid
 local liveMaids = setmetatable({}, {__mode = "k"})
 
 function Maid.new(parent)
-    local self = setmetatable({_tasks = {}, _children = setmetatable({}, {__mode = "k"}), Destroyed = false}, Maid)
+    local self = setmetatable({_tasks = {}, _children = {}, _nextId = 0, Destroyed = false, Parent = parent}, Maid)
     liveMaids[self] = true
     Runtime.Stats.Maids = Runtime.Stats.Maids + 1
-    if parent and parent.Add then parent._children[self] = true end
+    if parent and parent._children then
+        if parent.Destroyed then self:Destroy() else parent._children[self] = true end
+    end
     return self
 end
 
@@ -236,11 +267,12 @@ local function cleanTask(item)
     if kind == "RBXScriptConnection" then
         if item.Connected then item:Disconnect() end
     elseif kind == "Instance" then
+        if item:IsA("Tween") then item:Cancel() end
         item:Destroy()
     elseif kind == "function" then
         item()
     elseif kind == "thread" then
-        if coroutine.status(item) ~= "dead" then pcall(task.cancel, item) end
+        if item ~= coroutine.running() and coroutine.status(item) ~= "dead" then pcall(task.cancel, item) end
     elseif kind == "table" then
         if item.Destroy then item:Destroy()
         elseif item.Disconnect then item:Disconnect()
@@ -249,13 +281,14 @@ local function cleanTask(item)
 end
 
 function Maid:Add(item, key)
-    if self.Destroyed then cleanTask(item) return item end
+    if self.Destroyed or self._cleaning then pcall(cleanTask, item) return item end
     if key ~= nil then
         local previous = self._tasks[key]
         if previous ~= nil and previous ~= item then pcall(cleanTask, previous) end
         self._tasks[key] = item
     else
-        self._tasks[#self._tasks + 1] = item
+        repeat self._nextId = self._nextId + 1 until self._tasks[self._nextId] == nil
+        self._tasks[self._nextId] = item
     end
     return item
 end
@@ -270,27 +303,49 @@ function Maid:Remove(key)
 end
 
 function Maid:Connect(signal, callback)
-    local connection = signal:Connect(callback)
+    assert(type(callback) == "function", "Connect requires a callback")
+    local connection = signal:Connect(function(...)
+        if not self.Destroyed then Runtime.InvokeOwned(self, callback, ...) end
+    end)
     self:Add(connection)
+    Runtime.Stats.Connections = Runtime.Stats.Connections + 1
     return connection
 end
 
 function Maid:Once(signal, callback)
     local connection
+    local fired = false
     connection = signal:Connect(function(...)
-        if connection.Connected then connection:Disconnect() end
-        callback(...)
+        if fired or self.Destroyed then return end
+        fired = true
+        connection:Disconnect()
+        self._tasks[connection] = nil
+        Runtime.InvokeOwned(self, callback, ...)
     end)
-    self:Add(connection)
+    self:Add(connection, connection)
+    Runtime.Stats.Connections = Runtime.Stats.Connections + 1
     return connection
 end
 
+function Maid:_schedule(delay, fn, ...)
+    if self.Destroyed or self._cleaning or type(fn) ~= "function" then return nil end
+    local thread
+    thread = coroutine.create(function(...)
+        if not self.Destroyed then Runtime.InvokeOwned(self, fn, ...) end
+        self._tasks[thread] = nil
+    end)
+    self:Add(thread, thread)
+    if delay == nil then task.spawn(thread, ...)
+    else task.delay(math.max(0, Runtime.Number(delay, 0)), thread, ...) end
+    return thread
+end
+
 function Maid:Spawn(fn, ...)
-    return self:Add(task.spawn(fn, ...))
+    return self:_schedule(nil, fn, ...)
 end
 
 function Maid:Delay(seconds, fn, ...)
-    return self:Add(task.delay(seconds, fn, ...))
+    return self:_schedule(seconds, fn, ...)
 end
 
 function Maid:Extend()
@@ -304,47 +359,77 @@ function Maid:Count()
 end
 
 function Maid:Clean()
+    if self._cleaning then return end
+    self._cleaning = true
     local tasks = self._tasks
     self._tasks = {}
     self.UiObjects = nil
-    for child in pairs(self._children) do
-        child:Destroy()
-    end
-    self._children = setmetatable({}, {__mode = "k"})
+    local children = self._children
+    self._children = {}
+    for child in pairs(children) do pcall(child.Destroy, child) end
     for _, item in pairs(tasks) do
         if typeof(item) == "RBXScriptConnection" then pcall(cleanTask, item) end
     end
     for _, item in pairs(tasks) do
         if typeof(item) ~= "RBXScriptConnection" then pcall(cleanTask, item) end
     end
+    self._nextId = 0
+    self._cleaning = false
 end
 Maid.DoCleaning = Maid.Clean
 
 function Maid:Destroy()
     if self.Destroyed then return end
     self.Destroyed = true
+    if self.Parent and self.Parent._children then self.Parent._children[self] = nil end
+    self.Parent = nil
     self:Clean()
     liveMaids[self] = nil
     Runtime.Stats.MaidsDestroyed = Runtime.Stats.MaidsDestroyed + 1
 end
 
+function Runtime.RestoreOwner(thread, previous, ok, ...)
+    Runtime.Owners[thread] = previous
+    if not ok then error((...), 0) end
+    return ...
+end
+
 local function withOwner(maid, fn, ...)
-    local previous = Runtime.Owner
-    Runtime.Owner = maid
-    local results = table.pack(pcall(fn, ...))
-    Runtime.Owner = previous
-    if not results[1] then error(results[2], 0) end
-    return table.unpack(results, 2, results.n)
+    local thread = coroutine.running()
+    local previous = Runtime.Owners[thread]
+    Runtime.Owners[thread] = maid
+    return Runtime.RestoreOwner(thread, previous, pcall(fn, ...))
+end
+
+function Runtime.CallbackResult(ok, ...)
+    if not ok then
+        local problem = tostring((...))
+        Runtime.Stats.CallbackErrors = (Runtime.Stats.CallbackErrors or 0) + 1
+        Runtime.Stats.LastCallbackError = problem
+        warn("WolfUi callback: " .. problem)
+    end
+    return ok, ...
+end
+
+function Runtime.InvokeOwned(owner, callback, ...)
+    if owner and owner.Destroyed then return false, "owner destroyed" end
+    return Runtime.CallbackResult(pcall(withOwner, owner, callback, ...))
+end
+
+function Runtime.Spawn(callback, ...)
+    if type(callback) ~= "function" or Runtime.Unloading then return nil end
+    local owner = Runtime.GetOwner() or Runtime.Root
+    if owner then return owner:Spawn(callback, ...) end
+    return task.spawn(function(...) Runtime.InvokeOwned(nil, callback, ...) end, ...)
 end
 
 local function connect(signal, callback, owner)
-    local connection = signal:Connect(callback)
-    owner = owner or Runtime.Owner
-    if owner then
-        owner:Add(connection)
-    else
-        Runtime.Connections[#Runtime.Connections + 1] = connection
-    end
+    owner = owner or Runtime.GetOwner() or Runtime.Root
+    if owner then return owner:Connect(signal, callback) end
+    local connection = signal:Connect(function(...)
+        Runtime.InvokeOwned(nil, callback, ...)
+    end)
+    Runtime.Connections[#Runtime.Connections + 1] = connection
     Runtime.Stats.Connections = Runtime.Stats.Connections + 1
     return connection
 end
@@ -363,6 +448,14 @@ local function sweepConnections(force)
         end
     end
     for index = count, writeIndex, -1 do list[index] = nil end
+    for maid in pairs(liveMaids) do
+        for key, item in pairs(maid._tasks) do
+            if typeof(item) == "RBXScriptConnection" and not item.Connected then
+                maid._tasks[key] = nil
+                Runtime.Stats.Disconnected = Runtime.Stats.Disconnected + 1
+            end
+        end
+    end
     Runtime.Stats.Sweeps = Runtime.Stats.Sweeps + 1
     Runtime.Stats.LastSweep = os.clock()
     return count - (writeIndex - 1)
@@ -387,9 +480,11 @@ end
 local function addUpdate(collection, callback, object)
     local update = {Callback = callback, Object = object, Alive = true}
     collection[#collection + 1] = update
-    local owner = Runtime.Owner
+    local owner = Runtime.GetOwner() or Runtime.Root
     if owner then
-        owner:Add(function() update.Alive = false end)
+        owner:Add(function()
+            update.Alive, update.Callback, update.Object = false, nil, nil
+        end)
     end
     return update
 end
@@ -404,28 +499,36 @@ end
 
 local function runUpdates(collection, dt, k, renderCache)
     local count = #collection
-    local writeIndex = 1
-    renderCache = renderCache or {}
-    for readIndex = 1, count do
-        local update = collection[readIndex]
-        local object = update.Object
-        if update.Alive and (not object or object.Parent) then
-            collection[writeIndex] = update
-            writeIndex = writeIndex + 1
-            if not object or isRendered(object, renderCache) then
-                local ok, err = pcall(update.Callback, dt, k)
-                if not ok then
-                    update.Alive = false
-                    Runtime.Stats.UpdateErrors = (Runtime.Stats.UpdateErrors or 0) + 1
-                    Runtime.Stats.LastUpdateError = tostring(err)
-                    warn("WolfUi: disabled failed UI update: " .. tostring(err))
+    for index = 1, count do
+        local update = collection[index]
+        if update then
+            local object = update.Object
+            if update.Alive and update.Callback and (not object or object.Parent) then
+                if not object or isRendered(object, renderCache) then
+                    local ok, err = pcall(update.Callback, dt, k)
+                    if not ok then
+                        update.Alive = false
+                        Runtime.Stats.UpdateErrors = (Runtime.Stats.UpdateErrors or 0) + 1
+                        Runtime.Stats.LastUpdateError = tostring(err)
+                        warn("WolfUi: disabled failed UI update: " .. tostring(err))
+                    end
                 end
+            else
+                update.Alive = false
             end
         end
+        if not Runtime.Alive then return end
     end
-    for index = count, writeIndex, -1 do
-        collection[index] = nil
+    local writeIndex = 1
+    local total = #collection
+    for index = 1, total do
+        local update = collection[index]
+        if update and update.Alive then
+            collection[writeIndex] = update
+            writeIndex = writeIndex + 1
+        end
     end
+    for index = writeIndex, total do collection[index] = nil end
 end
 
 local function approach(a, b, k)
@@ -458,6 +561,8 @@ local function restoreFades()
             object[property] = value
         end
         fadeValues[object] = nil
+        table.clear(values)
+        if #Runtime.FadePool < 512 then Runtime.FadePool[#Runtime.FadePool + 1] = values end
     end
 end
 
@@ -489,7 +594,7 @@ local function fadeTargets(root)
         local added = connect(root.DescendantAdded, function() cache.Dirty = true end)
         local removing = connect(root.DescendantRemoving, function() cache.Dirty = true end)
         local destroying
-        destroying = root.Destroying:Connect(function()
+        destroying = connect(root.Destroying, function()
             added:Disconnect()
             removing:Disconnect()
             if destroying then destroying:Disconnect() end
@@ -520,7 +625,10 @@ local function fadeTargetList(targets, alpha, visibilityCache)
             for _, property in ipairs(target.Properties) do
                 local current = object[property]
                 if current < 1 then
-                    if not values then values = {} fadeValues[object] = values end
+                    if not values then
+                        values = table.remove(Runtime.FadePool) or {}
+                        fadeValues[object] = values
+                    end
                     if values[property] == nil then values[property] = current end
                     object[property] = 1 - (1 - current) * alpha
                 end
@@ -616,7 +724,9 @@ local function text(parent, value, x, y, w, h, size, color, align, opts)
         foregroundLabels[label] = nil
         label.TextColor3 = v
     end
-    function api:Alpha(v) label.TextTransparency = 1 - math.clamp(v, 0, 1) end
+    function api:Alpha(v)
+        Runtime.SetProperty(label, "TextTransparency", 1 - math.clamp(Runtime.Number(v, 1), 0, 1))
+    end
     function api:Width(v) label.Size = UDim2.fromOffset(math.max(0, roundPixel(v)), label.Size.Y.Offset) end
     function api:SetFont(font)
         if typeof(font) == "EnumItem" then label.Font = font end
@@ -672,8 +782,13 @@ local function iconLabel(parent, names, x, y, size, color, fallback)
         if isImage then object.ImageTransparency = 1 - v else object.TextTransparency = 1 - v end
     end
     function api:SetIcon(value)
+        if not object.Parent then return end
         local replacement = iconLabel(object.Parent, value, 0, 0, size, color, fallback)
         replacement.Object.Position, replacement.Object.Size = object.Position, object.Size
+        replacement.Object.ZIndex, replacement.Object.Visible = object.ZIndex, object.Visible
+        replacement.Object.Rotation = object.Rotation
+        local alpha = 1 - (isImage and object.ImageTransparency or object.TextTransparency)
+        replacement:Alpha(alpha)
         object:Destroy()
         object, isImage = replacement.Object, replacement.IsImage
         self.Object, self.IsImage, self.Tinted = object, isImage, replacement.Tinted
@@ -729,7 +844,7 @@ local INTERNAL_FLAGS = {
 }
 
 local Library = {
-    Version = "6.4.0",
+    Version = "7.0.0",
     Capabilities = table.freeze({Layout = 2, Groups = 1, NotificationCenter = 1, CardNotifications = 1, ConditionalColors = 1, ConfigRestore = 2}),
     Design = table.freeze({CardRadius = 8, PopupRadius = 8, ControlRadius = 3,
         CardTransparency = 0.20, StrokeTransparency = 0.65, Gap = 10, Padding = 10}),
@@ -798,7 +913,8 @@ end
 
 local function fireChange(flag, value)
     Library.Flags[flag] = value
-    for _, watcher in ipairs(flagWatchers[flag] or {}) do
+    local watchers = flagWatchers[flag]
+    for _, watcher in ipairs(watchers and table.clone(watchers) or {}) do
         if watcher.Connected then
             local ok, err = pcall(watcher.Callback, value)
             if not ok then warn("WolfUi dependency: " .. tostring(err)) end
@@ -817,7 +933,7 @@ local function fireChange(flag, value)
         pcall(function() window.Changed:Fire(flag, value) end)
     end
     for _, listener in ipairs(changeListeners) do
-        task.spawn(listener, flag, value)
+        Runtime.Spawn(listener, flag, value)
     end
 end
 
@@ -891,9 +1007,9 @@ function Library:WatchFlag(flag, callback)
         if #list == 0 then flagWatchers[flag] = nil end
     end
     watcher.Destroy = watcher.Disconnect
-    local owner = Runtime.Owner or self.Maid
+    local owner = Runtime.GetOwner() or self.Maid
     if owner then owner:Add(watcher) end
-    callback(self.Flags[flag])
+    Runtime.InvokeOwned(owner, callback, self.Flags[flag])
     return watcher
 end
 
@@ -942,7 +1058,7 @@ function Library:SetAccent(color, alpha)
         fireChange("Accent", color)
     end
     if alpha then
-        alpha = math.clamp(alpha, 0, 1)
+        alpha = math.clamp(Runtime.Number(alpha, state.AccentAlpha), 0, 1)
         state.AccentAlpha = alpha
         self.AccentAlpha = alpha
         Runtime.ThemeDirty = true
@@ -972,7 +1088,14 @@ end
 function Library:SetLimits(opts)
     if type(opts) ~= "table" then return self.Limits end
     for key, value in pairs(opts) do
-        self.Limits[key] = value
+        if key == "MinScale" or key == "MaxScale" then
+            self.Limits[key] = math.max(0.01, Runtime.Number(value, self.Limits[key]))
+        elseif key == "Margin" then
+            self.Limits[key] = math.max(0, Runtime.Number(value, self.Limits[key]))
+        else self.Limits[key] = value end
+    end
+    if self.Limits.MinScale > self.Limits.MaxScale then
+        self.Limits.MinScale, self.Limits.MaxScale = self.Limits.MaxScale, self.Limits.MinScale
     end
     if self.Window then self.Window.Layout() end
     return self.Limits
@@ -992,7 +1115,7 @@ end
 function Library:SetScaleOptions(list)
     local options = {}
     for _, value in ipairs(list or {}) do
-        local number = tonumber(value)
+        local number = Runtime.Number(value)
         if number and number > 0 then options[#options + 1] = math.floor(number) end
     end
     if #options == 0 then return self.ScaleOptions end
@@ -1004,7 +1127,7 @@ function Library:SetScaleOptions(list)
 end
 
 local function snapScale(value)
-    value = tonumber(value) or 100
+    value = Runtime.Number(value, 100)
     if Library.Limits and Library.Limits.SnapScale == false then
         return math.clamp(value, 5, 400)
     end
@@ -1039,24 +1162,21 @@ local function keyName(key)
 end
 
 local function keyFromName(name)
-    if typeof(name) == "EnumItem" then return name end
-    if type(name) ~= "string" or name == "" or string.upper(name) == "NONE" then return nil end
-    local candidates = {name, KEY_LONG[string.upper(name)]}
-    for _, item in ipairs(Enum.KeyCode:GetEnumItems()) do
-        if string.lower(item.Name) == string.lower(name) then
-            candidates[#candidates + 1] = item.Name
-            break
-        end
+    if typeof(name) == "EnumItem" then
+        if name.EnumType == Enum.KeyCode or name.EnumType == Enum.UserInputType then return name end
+        return nil
     end
-    for _, candidate in ipairs(candidates) do
-        if candidate then
-            local ok, key = pcall(function() return Enum.KeyCode[candidate] end)
-            if ok and key then return key end
-            ok, key = pcall(function() return Enum.UserInputType[candidate] end)
-            if ok and key then return key end
-        end
+    if type(name) ~= "string" or name == "" then return nil end
+    local normalized = string.upper(name)
+    if normalized == "NONE" then return nil end
+    if not Runtime.KeyNames then
+        local names = {}
+        for _, item in ipairs(Enum.UserInputType:GetEnumItems()) do names[string.upper(item.Name)] = item end
+        for _, item in ipairs(Enum.KeyCode:GetEnumItems()) do names[string.upper(item.Name)] = item end
+        for short, long in pairs(KEY_LONG) do names[short] = names[string.upper(long)] end
+        Runtime.KeyNames = names
     end
-    return nil
+    return Runtime.KeyNames[normalized]
 end
 
 local Tab = {}
@@ -1094,7 +1214,7 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
         AnimateHeight = animateHeight and true or false,
     }
     window.Popups[#window.Popups + 1] = data
-    data.Maid = Maid.new(Runtime.Owner)
+    data.Maid = Maid.new(Runtime.GetOwner() or Library.Maid)
     function data:Destroy()
         if self.Destroyed then return end
         if self:IsActive() then window.Opened = self.Parent end
@@ -1107,6 +1227,7 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     end
 
     function data:IsActive()
+        if self.Destroyed or not isRendered(self.Anchor) or not Runtime.IsEnabled(self.Anchor) then return false end
         local current = window.Opened
         while current do
             if current == self then return true end
@@ -1116,6 +1237,7 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     end
     function data:Open(anchorOverride)
         if anchorOverride then self.Anchor = anchorOverride end
+        if self.Destroyed or not isRendered(self.Anchor) or not Runtime.IsEnabled(self.Anchor) then return end
         window.Opened = self
         if window.Wake then window:Wake() end
     end
@@ -1134,6 +1256,258 @@ local function createPopup(window, anchor, w, h, animateHeight, parentPopup)
     data.Maid:Add(function() data:Destroy() end)
     return data
 end
+function Runtime.StepNotifications(window, elapsed, dt)
+        for index = #window.Notifications, 1, -1 do
+            local notif = window.Notifications[index]
+            if notif.Destroyed then
+                table.remove(window.Notifications, index)
+            else
+            if not notif.Sticky and not (notif.Hover and Library.NotificationOptions.PauseOnHover) then
+                notif.Life = math.max(0, notif.Life - elapsed)
+            end
+            local target = (notif.Life > 0) and 1 or 0
+            notif.Alpha = fadeAlpha(notif.Alpha, target, dt)
+            notif.Y = approach(notif.Y, notif.TargetY, motionFactor(20, dt))
+            fadeGroup(notif.Object, notif.Alpha)
+            local tint = notif.Color or accent
+            notif.Object.BackgroundColor3 = palette[2]
+            notif.Bar.BackgroundColor3 = tint
+            notif.Icon:Color(tint)
+            if notif.Progress then
+                notif.Progress.BackgroundColor3 = tint
+                notif.Progress.Visible = not notif.Sticky
+                notif.Progress.Size = UDim2.fromOffset(
+                    roundPixel(notif.Width * math.clamp(notif.Life / math.max(0.01, notif.Duration or 4), 0, 1)), 2)
+            end
+            notif.Object.Position = UDim2.fromOffset(roundPixel((notif.Width + 10) * (1 - notif.Alpha) * (Library.NotificationOptions.Position == "Left" and -1 or 1)), roundPixel(notif.Y))
+            if notif.Life <= 0 and notif.Alpha <= 0.01 then
+                if notif.Maid then notif.Maid:Destroy() else notif.Object:Destroy() end
+                if notif.Id and window.NotificationIds[notif.Id] == notif then window.NotificationIds[notif.Id] = nil end
+                notif.Destroyed = true
+                table.remove(window.Notifications, index)
+            end
+            end
+        end
+        local offset = 0
+        for _, notif in ipairs(window.Notifications) do
+            notif.TargetY = offset
+            offset = offset + notif.Height + Library.NotificationOptions.Gap
+        end
+
+end
+
+function Runtime.StartRenderer(window, frame, scale, popupLayer, blurSize, invalidateTooltip)
+    local fpsTimer, fpsFrames = 0, 0
+
+    local sweepTimer = 0
+    connect(RunService.RenderStepped, function(dt)
+        if not Runtime.Alive or window.Destroyed then return end
+        if not window.Gui or not window.Gui.Parent then Library:Unload() return end
+        restoreFades()
+        sweepTimer = sweepTimer + dt
+        if sweepTimer >= Runtime.SweepInterval then
+            sweepTimer = 0
+            sweepConnections()
+        end
+        local elapsed = math.max(0, Runtime.Number(dt, 0))
+        dt = math.min(elapsed, 0.1)
+        local now = os.clock()
+        local performance = Library.Performance or {}
+        local idleRate = window.Visible
+            and math.clamp(tonumber(performance.IdleUpdateRate) or 12, 4, 60)
+            or math.clamp(tonumber(performance.HiddenUpdateRate) or 6, 2, 30)
+        window.UpdateAccumulator = (window.UpdateAccumulator or 0) + dt
+        local active = now <= (window.ActiveUntil or 0) or Runtime.ThemeDirty or window.Drag ~= nil
+            or window.Animating == true
+            or math.abs(window.Alpha - (window.Visible and 1 or 0)) > 0.001
+        local runUi = active or window.UpdateAccumulator >= 1 / idleRate
+        local uiDt = active and dt or math.min(window.UpdateAccumulator, 0.1)
+        if runUi then window.UpdateAccumulator = 0 end
+        local k = motionFactor(18, dt)
+        if window.GlassBlur then
+            local camera = workspace.CurrentCamera
+            if window.GlassBlur.Parent ~= camera then window.GlassBlur.Parent = camera end
+            local amount = math.clamp(window.Alpha, 0, 1)
+            window.GlassBlur.Size = blurSize * amount
+            window.GlassBlur.Enabled = amount > 0.01 and camera ~= nil
+        end
+
+        if Runtime.ThemeDirty then
+            local theme = themes[state.Theme] or themes[1]
+            local moving = false
+            for i, target in ipairs(theme) do
+                local current = palette[i]
+                if colorDelta(current, target) > 0.0005 then
+                    current = current:Lerp(target, k)
+                    if colorDelta(current, target) <= 0.0005 then current = target else moving = true end
+                else
+                    current = target
+                end
+                palette[i] = current
+            end
+            if colorDelta(accent, state.Accent) > 0.0005 then
+                accent = accent:Lerp(state.Accent, k)
+                if colorDelta(accent, state.Accent) <= 0.0005 then accent = state.Accent else moving = true end
+            else
+                accent = state.Accent
+            end
+            white = palette[7] or pureWhite
+            for label in pairs(foregroundLabels) do
+                if label.Parent then label.TextColor3 = white else foregroundLabels[label] = nil end
+            end
+            for icon in pairs(foregroundIcons) do
+                if icon.Parent then
+                    if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
+                        icon.ImageColor3 = white
+                    else
+                        icon.TextColor3 = white
+                    end
+                else
+                    foregroundIcons[icon] = nil
+                end
+            end
+            for stroke, index in pairs(themedStrokes) do
+                if stroke.Parent then stroke.Color = palette[index] else themedStrokes[stroke] = nil end
+            end
+            for object, index in pairs(themedBackgrounds) do
+                if object.Parent then object.BackgroundColor3 = palette[index] else themedBackgrounds[object] = nil end
+            end
+            for label, index in pairs(themedLabels) do
+                if label.Parent then label.TextColor3 = palette[index] else themedLabels[label] = nil end
+            end
+            Runtime.ThemeDirty = moving
+        end
+
+        fpsFrames = fpsFrames + 1
+        fpsTimer = fpsTimer + elapsed
+        if fpsTimer >= 0.5 then
+            window.FPS = math.floor(fpsFrames / fpsTimer + 0.5)
+            fpsFrames, fpsTimer = 0, 0
+            pcall(function()
+                window.Ping = math.floor(
+                    StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5)
+            end)
+        end
+
+        local camera = workspace.CurrentCamera
+        local viewportChanged = camera and camera.ViewportSize ~= window.Viewport
+        local scaleChanged = window.StepScale(dt)
+        if viewportChanged then
+            window.LayoutMini()
+            window.LayoutNotifications()
+            invalidateTooltip()
+        end
+        if viewportChanged or scaleChanged then
+            runUi = true
+            uiDt = dt
+            window.UpdateAccumulator = 0
+        end
+
+        local renderCache = nil
+        if runUi then
+            renderCache = window.RenderCache
+            table.clear(renderCache)
+        end
+        if runUi then runUpdates(Runtime.Overlay, uiDt, motionFactor(18, uiDt), renderCache) end
+        if not Runtime.Alive or window.Destroyed then return end
+
+        Runtime.StepNotifications(window, elapsed, dt)
+
+        window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
+        frame.Visible = window.Visible or window.Alpha > 0
+        window.PopupLayer.Visible = frame.Visible
+        if not frame.Visible then return end
+        local mainTransitioning = window.Alpha < 0.999
+
+        if runUi then
+            window.Animating = false
+            local uiK = motionFactor(18, uiDt)
+            table.clear(renderCache)
+            runUpdates(Runtime.Updates, uiDt, uiK, renderCache)
+            if not Runtime.Alive or window.Destroyed then return end
+
+            for _, tab in ipairs(window.TabList) do
+                local tabActive = window.Current == tab
+                tab.Alpha = transitionAlpha(tab.Alpha, tabActive and 1 or 0,
+                    uiDt, Library.TabDuration)
+                tab.Slide = approach(tab.Slide or 0, tabActive and 0 or (tab.ExitSlide or 0),
+                    motionFactor(4.25 / math.max(0.08, Library.TabDuration), uiDt))
+                if math.abs(tab.Alpha - (tabActive and 1 or 0)) > 0.001
+                    or math.abs(tab.Slide or 0) > 0.01 and tabActive then
+                    window.Animating = true
+                end
+                local page = tab.Page
+                page.Visible = tab.Alpha > 0.001
+                page.Interactable = tabActive and window.Visible
+                if page.Visible then
+                    page.Position = UDim2.fromOffset(PAD + tab.Slide, PAD)
+                    fadeGroup(page, tab.Alpha)
+                elseif not tabActive then
+                    tab.Slide = 0
+                    page.Position = UDim2.fromOffset(PAD, PAD)
+                end
+            end
+
+            for _, pop in ipairs(window.Popups) do
+                local show = pop:IsActive() and window.Visible
+                local object = pop.Object
+                if not show and pop.Alpha == 0 then
+                    object.Visible = false
+                    object.Interactable = false
+                    if pop.AnimateHeight then pop.CurrentHeight = 1 end
+                else
+                    pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, uiDt)
+                    if pop.AnimateHeight then
+                        pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, uiDt))
+                    else
+                        pop.CurrentHeight = pop.Height
+                    end
+                    if math.abs(pop.Alpha - (show and 1 or 0)) > 0.001
+                        or pop.AnimateHeight and math.abs(pop.CurrentHeight - (show and pop.Height or 1)) > 0.1 then
+                        window.Animating = true
+                    end
+                    object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
+                    object.Interactable = show and window.Visible
+                    if object.Visible then
+                        fadeGroup(object, pop.Alpha * window.Alpha)
+                        object.BackgroundColor3 = palette[2]
+                        object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
+                        local s = math.max(0.001, scale.Scale)
+                        local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
+                        local minX, minY = -window.Position.X / s, -window.Position.Y / s
+                        local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
+                        local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
+                        object.Position = UDim2.fromOffset(
+                            roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
+                            roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
+                        )
+                    end
+                end
+            end
+        end
+        if not runUi then
+            for _, tab in ipairs(window.TabList) do
+                if tab.Page.Visible then fadeGroup(tab.Page, tab.Alpha) end
+            end
+            for _, pop in ipairs(window.Popups) do
+                if pop.Object.Visible then fadeGroup(pop.Object, pop.Alpha * window.Alpha) end
+            end
+        end
+        local hiddenAmount = 1 - math.clamp(window.Alpha, 0, 1)
+        local revealOffset = hiddenAmount * hiddenAmount * 6 * window.ScaleCurrent
+        local animatedPosition = UDim2.fromOffset(window.Position.X, window.Position.Y + revealOffset)
+        frame.Position = animatedPosition
+        popupLayer.Position = animatedPosition
+        if mainTransitioning then
+            local targets = fadeTargets(frame)
+            local visibilityCache = window.RenderCache
+            table.clear(visibilityCache)
+            fadeTargetList(targets, window.Alpha, visibilityCache)
+        end
+    end)
+
+end
+
 function Library:CreateWindow(opts)
     opts = opts or {}
 
@@ -1153,6 +1527,9 @@ function Library:CreateWindow(opts)
     Runtime.Connections, Runtime.Updates, Runtime.Overlay, Runtime.Alive, Runtime.Owner = {}, {}, {}, true, nil
     Runtime.ThemeDirty = true
     Library.Maid = Maid.new()
+    Runtime.Root = Library.Maid
+    Runtime.Unloading = false
+    Library.Destroyed = false
     local configOptions = opts.Configs
     if configOptions == true then configOptions = {Enabled = true} end
     if type(configOptions) ~= "table" then configOptions = {Enabled = false} end
@@ -1399,7 +1776,7 @@ function Library:CreateWindow(opts)
         object.Active = true
         dragTargets[object] = true
         connect(object.InputBegan, function(input)
-            if not primary(input) or window.Drag then return end
+            if not primary(input) or window.Drag or window.Dialog or not Runtime.IsEnabled(object) then return end
             local point = Vector2.new(input.Position.X, input.Position.Y)
             local top = topTarget(point)
             if top and top ~= object then return end
@@ -1428,6 +1805,10 @@ function Library:CreateWindow(opts)
                     window:Wake(0.2)
                 end
             end
+            return
+        end
+        if not Runtime.IsEnabled(drag.Object) or not isRendered(drag.Object) or window.Dialog then
+            cancelDrag()
             return
         end
         window:Wake(0.25)
@@ -1591,7 +1972,7 @@ function Library:CreateWindow(opts)
             icon:Color(tint)
         end, hit)
         if config.Callback then
-            connect(hit.Activated, function() config.Callback(hit) end)
+            connect(hit.Activated, function() Runtime.InvokeOwned(Runtime.GetOwner(), config.Callback, hit) end)
         end
         return hit
     end
@@ -1959,7 +2340,7 @@ function Library:CreateWindow(opts)
             elseif kind == "game" or kind == "place" then
                 if gameName == nil and not gameNameRequested then
                     gameNameRequested = true
-                    task.spawn(function()
+                    Runtime.Spawn(function()
                         local ok, info = pcall(function()
                             return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
                         end)
@@ -2120,11 +2501,11 @@ function Library:CreateWindow(opts)
         if cancelled then return end
         local wm = window.WatermarkConfig
         if moved then
-            if type(wm.OnMove) == "function" then task.spawn(wm.OnMove, wm.Position) end
+            if type(wm.OnMove) == "function" then Runtime.Spawn(wm.OnMove, wm.Position) end
         elseif window.OpenConfig.Mode == "watermark" and wm.Enabled and wm.Toggle ~= false then
             window:SetVisible(not window.Visible)
         elseif type(wm.OnClick) == "function" then
-            task.spawn(wm.OnClick)
+            Runtime.Spawn(wm.OnClick)
         end
     end, DRAG_THRESHOLD)
 
@@ -2462,8 +2843,11 @@ function Library:CreateWindow(opts)
 
     connect(UIS.InputBegan, function(input, processed)
 
+        if window.Dialog then return end
         if window.PendingKeybind then
             local pending = window.PendingKeybind
+            if processed or UIS:GetFocusedTextBox() then return end
+            if not Runtime.IsEnabled(pending.Object) then pending:Cancel() return end
             if input.UserInputType == Enum.UserInputType.Keyboard then
                 if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Backspace then
                     pending:Set(nil)
@@ -2529,245 +2913,16 @@ function Library:CreateWindow(opts)
     if opts.Watermark ~= nil then Library:SetWatermark(opts.Watermark) end
 
     connect(gui.Destroying, function()
-        Runtime.Alive = false
-        if window.GlassBlur then window.GlassBlur:Destroy() window.GlassBlur = nil end
+        if not Runtime.Unloading and Library.Window == window then Library:Unload() end
     end)
 
-    local fpsTimer, fpsFrames = 0, 0
-
-    local sweepTimer = 0
-    connect(RunService.RenderStepped, function(dt)
-        if not Runtime.Alive then return end
-        restoreFades()
-        sweepTimer = sweepTimer + dt
-        if sweepTimer >= Runtime.SweepInterval then
-            sweepTimer = 0
-            sweepConnections()
-        end
-        dt = math.min(dt, 0.1)
-        local now = os.clock()
-        local performance = Library.Performance or {}
-        local idleRate = window.Visible
-            and math.clamp(tonumber(performance.IdleUpdateRate) or 12, 4, 60)
-            or math.clamp(tonumber(performance.HiddenUpdateRate) or 6, 2, 30)
-        window.UpdateAccumulator = (window.UpdateAccumulator or 0) + dt
-        local active = now <= (window.ActiveUntil or 0) or Runtime.ThemeDirty or window.Drag ~= nil
-            or window.Animating == true
-            or math.abs(window.Alpha - (window.Visible and 1 or 0)) > 0.001
-        local runUi = active or window.UpdateAccumulator >= 1 / idleRate
-        local uiDt = active and dt or math.min(window.UpdateAccumulator, 0.1)
-        if runUi then window.UpdateAccumulator = 0 end
-        local k = motionFactor(18, dt)
-        if window.GlassBlur then
-            local camera = workspace.CurrentCamera
-            if window.GlassBlur.Parent ~= camera then window.GlassBlur.Parent = camera end
-            local amount = math.clamp(window.Alpha, 0, 1)
-            window.GlassBlur.Size = blurSize * amount
-            window.GlassBlur.Enabled = amount > 0.01 and camera ~= nil
-        end
-
-        if Runtime.ThemeDirty then
-            local theme = themes[state.Theme] or themes[1]
-            local moving = false
-            for i, target in ipairs(theme) do
-                local current = palette[i]
-                if colorDelta(current, target) > 0.0005 then
-                    current = current:Lerp(target, k)
-                    if colorDelta(current, target) <= 0.0005 then current = target else moving = true end
-                else
-                    current = target
-                end
-                palette[i] = current
-            end
-            if colorDelta(accent, state.Accent) > 0.0005 then
-                accent = accent:Lerp(state.Accent, k)
-                if colorDelta(accent, state.Accent) <= 0.0005 then accent = state.Accent else moving = true end
-            else
-                accent = state.Accent
-            end
-            white = palette[7] or pureWhite
-            for label in pairs(foregroundLabels) do
-                if label.Parent then label.TextColor3 = white else foregroundLabels[label] = nil end
-            end
-            for icon in pairs(foregroundIcons) do
-                if icon.Parent then
-                    if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
-                        icon.ImageColor3 = white
-                    else
-                        icon.TextColor3 = white
-                    end
-                else
-                    foregroundIcons[icon] = nil
-                end
-            end
-            for stroke, index in pairs(themedStrokes) do
-                if stroke.Parent then stroke.Color = palette[index] else themedStrokes[stroke] = nil end
-            end
-            for object, index in pairs(themedBackgrounds) do
-                if object.Parent then object.BackgroundColor3 = palette[index] else themedBackgrounds[object] = nil end
-            end
-            for label, index in pairs(themedLabels) do
-                if label.Parent then label.TextColor3 = palette[index] else themedLabels[label] = nil end
-            end
-            Runtime.ThemeDirty = moving
-        end
-
-        fpsFrames = fpsFrames + 1
-        fpsTimer = fpsTimer + dt
-        if fpsTimer >= 0.5 then
-            window.FPS = math.floor(fpsFrames / fpsTimer + 0.5)
-            fpsFrames, fpsTimer = 0, 0
-            pcall(function()
-                window.Ping = math.floor(
-                    StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() + 0.5)
-            end)
-        end
-
-        local camera = workspace.CurrentCamera
-        local viewportChanged = camera and camera.ViewportSize ~= window.Viewport
-        local scaleChanged = window.StepScale(dt)
-        if viewportChanged then
-            window.LayoutMini()
-            window.LayoutNotifications()
-            tooltipCaption = nil
-        end
-        if viewportChanged or scaleChanged then
-            runUi = true
-            uiDt = dt
-            window.UpdateAccumulator = 0
-        end
-
-        local renderCache = nil
-        if runUi then
-            renderCache = window.RenderCache
-            table.clear(renderCache)
-        end
-        if runUi then runUpdates(Runtime.Overlay, uiDt, motionFactor(18, uiDt), renderCache) end
-
-        for index = #window.Notifications, 1, -1 do
-            local notif = window.Notifications[index]
-            if notif.Destroyed then
-                table.remove(window.Notifications, index)
-            else
-            if not notif.Sticky and not (notif.Hover and Library.NotificationOptions.PauseOnHover) then
-                notif.Life = math.max(0, notif.Life - dt)
-            end
-            local target = (notif.Life > 0) and 1 or 0
-            notif.Alpha = fadeAlpha(notif.Alpha, target, dt)
-            notif.Y = approach(notif.Y, notif.TargetY, motionFactor(20, dt))
-            fadeGroup(notif.Object, notif.Alpha)
-            local tint = notif.Color or accent
-            notif.Object.BackgroundColor3 = palette[2]
-            notif.Bar.BackgroundColor3 = tint
-            notif.Icon:Color(tint)
-            if notif.Progress then
-                notif.Progress.BackgroundColor3 = tint
-                notif.Progress.Visible = not notif.Sticky
-                notif.Progress.Size = UDim2.fromOffset(
-                    roundPixel(notif.Width * math.clamp(notif.Life / math.max(0.01, notif.Duration or 4), 0, 1)), 2)
-            end
-            notif.Object.Position = UDim2.fromOffset(roundPixel((notif.Width + 10) * (1 - notif.Alpha) * (Library.NotificationOptions.Position == "Left" and -1 or 1)), roundPixel(notif.Y))
-            if notif.Life <= 0 and notif.Alpha <= 0.01 then
-                if notif.Maid then notif.Maid:Destroy() else notif.Object:Destroy() end
-                if notif.Id and window.NotificationIds[notif.Id] == notif then window.NotificationIds[notif.Id] = nil end
-                notif.Destroyed = true
-                table.remove(window.Notifications, index)
-            end
-            end
-        end
-        local offset = 0
-        for _, notif in ipairs(window.Notifications) do
-            notif.TargetY = offset
-            offset = offset + notif.Height + Library.NotificationOptions.Gap
-        end
-
-        window.Alpha = fadeAlpha(window.Alpha, window.Visible and 1 or 0, dt)
-        frame.Visible = window.Visible or window.Alpha > 0
-        window.PopupLayer.Visible = frame.Visible
-        if not frame.Visible then return end
-        local mainTransitioning = window.Alpha < 0.999
-
-        if runUi then
-            window.Animating = false
-            local uiK = motionFactor(18, uiDt)
-            runUpdates(Runtime.Updates, uiDt, uiK, renderCache)
-
-            for _, tab in ipairs(window.TabList) do
-                local tabActive = window.Current == tab
-                tab.Alpha = transitionAlpha(tab.Alpha, tabActive and 1 or 0,
-                    uiDt, Library.TabDuration)
-                tab.Slide = approach(tab.Slide or 0, tabActive and 0 or (tab.ExitSlide or 0),
-                    motionFactor(4.25 / math.max(0.08, Library.TabDuration), uiDt))
-                if math.abs(tab.Alpha - (tabActive and 1 or 0)) > 0.001
-                    or math.abs(tab.Slide or 0) > 0.01 and tabActive then
-                    window.Animating = true
-                end
-                local page = tab.Page
-                page.Visible = tab.Alpha > 0.001
-                page.Interactable = tabActive and window.Visible
-                if page.Visible then
-                    page.Position = UDim2.fromOffset(PAD + tab.Slide, PAD)
-                    fadeGroup(page, tab.Alpha)
-                elseif not tabActive then
-                    tab.Slide = 0
-                    page.Position = UDim2.fromOffset(PAD, PAD)
-                end
-            end
-
-            for _, pop in ipairs(window.Popups) do
-                local show = pop:IsActive() and window.Visible
-                local object = pop.Object
-                if not show and pop.Alpha == 0 then
-                    object.Visible = false
-                    object.Interactable = false
-                    if pop.AnimateHeight then pop.CurrentHeight = 1 end
-                else
-                    pop.Alpha = fadeAlpha(pop.Alpha, show and 1 or 0, uiDt)
-                    if pop.AnimateHeight then
-                        pop.CurrentHeight = approach(pop.CurrentHeight, show and pop.Height or 1, motionFactor(16, uiDt))
-                    else
-                        pop.CurrentHeight = pop.Height
-                    end
-                    if math.abs(pop.Alpha - (show and 1 or 0)) > 0.001
-                        or pop.AnimateHeight and math.abs(pop.CurrentHeight - (show and pop.Height or 1)) > 0.1 then
-                        window.Animating = true
-                    end
-                    object.Visible = pop.Alpha > 0 and pop.Anchor ~= nil
-                    object.Interactable = show and window.Visible
-                    if object.Visible then
-                        fadeGroup(object, pop.Alpha * window.Alpha)
-                        object.BackgroundColor3 = palette[2]
-                        object.Size = UDim2.fromOffset(roundPixel(pop.Width), math.max(1, roundPixel(pop.CurrentHeight)))
-                        local s = math.max(0.001, scale.Scale)
-                        local origin = (pop.Anchor.AbsolutePosition - window.Position) / s
-                        local minX, minY = -window.Position.X / s, -window.Position.Y / s
-                        local maxX = (window.Viewport.X - window.Position.X) / s - pop.Width
-                        local maxY = (window.Viewport.Y - window.Position.Y) / s - pop.Height
-                        object.Position = UDim2.fromOffset(
-                            roundPixel(math.clamp(origin.X, minX, math.max(minX, maxX))),
-                            roundPixel(math.clamp(origin.Y, minY, math.max(minY, maxY)))
-                        )
-                    end
-                end
-            end
-        end
-        local hiddenAmount = 1 - math.clamp(window.Alpha, 0, 1)
-        local revealOffset = hiddenAmount * hiddenAmount * 6 * window.ScaleCurrent
-        local animatedPosition = UDim2.fromOffset(window.Position.X, window.Position.Y + revealOffset)
-        frame.Position = animatedPosition
-        popupLayer.Position = animatedPosition
-        if mainTransitioning then
-            local targets = fadeTargets(frame)
-            local visibilityCache = window.RenderCache
-            table.clear(visibilityCache)
-            fadeTargetList(targets, window.Alpha, visibilityCache)
-        end
-    end)
+    Runtime.StartRenderer(window, frame, scale, popupLayer, blurSize, function() tooltipCaption = nil end)
 
     return window
 end
 
 function Window:SetVisible(value)
+    if self.Destroyed then return end
     self.Visible = value == true
     if self.Wake then self:Wake() end
     self.Frame.Visible = self.Visible or self.Alpha > 0
@@ -2834,7 +2989,7 @@ function Window:SetOpenMode(options)
 end
 
 function Window:SetScale(value, exact)
-    local snapped = exact and (tonumber(value) or state.Scale) or snapScale(value)
+    local snapped = exact and Runtime.Number(value, state.Scale) or snapScale(value)
     state.Scale = snapped
     Library.Scale = snapped
     self.Layout()
@@ -2861,7 +3016,7 @@ end
 
 function Window:SelectTab(name)
     local tab = type(name) == "table" and name or self.Tabs[name]
-    if not tab or self.Current == tab then return end
+    if self.Destroyed or not tab or tab.Destroyed or tab.Window ~= self or self.Current == tab then return end
     local previous = self.Current
     local direction = 1
     if previous and tab.Index and previous.Index and tab.Index < previous.Index then direction = -1 end
@@ -2887,6 +3042,7 @@ function Window:SelectTab(name)
 end
 
 function Window:CreateTab(opts)
+    if self.Destroyed then return nil, "window destroyed" end
     opts = opts or {}
     local name = tostring(opts.Name or ("Tab" .. tostring(#self.TabList + 1)))
     if self.Tabs[name] then error("WolfUi: duplicate tab name '" .. name .. "'", 2) end
@@ -2915,6 +3071,7 @@ function Window:CreateTab(opts)
         Elements = {},
     }, Tab)
 
+    tab.Maid = Maid.new(Library.Maid)
     self.Tabs[name] = tab
     self.TabList[index] = tab
 
@@ -2927,15 +3084,15 @@ function Window:CreateTab(opts)
     local title = text(hit, opts.Title or name, 0, 39.3, SIDEBAR_W - 12, 15, 11, palette[3], "center")
     self.TabHolder.CanvasSize = UDim2.fromOffset(0, index * TAB_SLOT)
 
-    connect(hit.Activated, function() self:SelectTab(tab) end)
+    connect(hit.Activated, function() self:SelectTab(tab) end, tab.Maid)
     if opts.Tooltip then self:Tooltip(hit, opts.Tooltip) end
 
     local hover = false
-    connect(hit.MouseEnter, function() hover = true end)
-    connect(hit.MouseLeave, function() hover = false end)
+    connect(hit.MouseEnter, function() hover = true end, tab.Maid)
+    connect(hit.MouseLeave, function() hover = false end, tab.Maid)
 
     local alpha, hoverAlpha, tint = 0, 0, palette[3]
-    step(function(dt, k)
+    local update = step(function(dt, k)
         local active = self.Current == tab
         alpha = approach(alpha, active and 1 or 0, k)
         hoverAlpha = approach(hoverAlpha, (hover and not active) and 1 or 0, k)
@@ -2947,11 +3104,11 @@ function Window:CreateTab(opts)
         icon:Alpha(1 - alpha * (1 - state.AccentAlpha))
         title:Alpha(1 - alpha * (1 - state.AccentAlpha))
     end, hit)
+    tab.Maid:Add(function() update.Alive, update.Callback, update.Object = false, nil, nil end)
 
     tab.Button = hit
     tab.Icon = icon
     tab.TitleLabel = title
-    tab.Maid = Maid.new(Library.Maid)
     tab.Maid:Add(page)
     tab.Maid:Add(hit)
     function tab:Destroy()
@@ -3048,7 +3205,7 @@ function Tab:_grow()
     self.Height = height
     if (self.LayoutDepth or 0) > 0 then self.LayoutDirty = true return end
     self.Page.Size = UDim2.fromOffset(self:_pageWidth(), math.max(1, height))
-    if self.OnResize then self.OnResize(height) end
+    if self.OnResize then Runtime.InvokeOwned(self.Maid, self.OnResize, height) end
     if self.Window and self.Window.Current == self then
         self.Window.Scroll.CanvasSize = UDim2.fromOffset(0, height + PAD * 2)
     end
@@ -3065,8 +3222,8 @@ function Tab:_card(w, h, name)
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
     card.Name = name or "Element"
     local record = self:_track(card)
-    if Runtime.Owner then
-        local owner = Runtime.Owner
+    if Runtime.GetOwner() then
+        local owner = Runtime.GetOwner()
         owner.UiObjects = owner.UiObjects or {}
         owner.UiObjects[card] = true
         owner:Add(card)
@@ -3184,8 +3341,8 @@ local function baseApi(tab, card, flag)
         Library.Elements[flag] = api
     end
     tab.Elements[#tab.Elements + 1] = api
-    if Runtime.Owner then
-        Runtime.Owner:Add(function()
+    if Runtime.GetOwner() then
+        Runtime.GetOwner():Add(function()
             if flag and Library.Elements[flag] == api then Library.Elements[flag] = nil end
             for index, element in ipairs(tab.Elements) do
                 if element == api then table.remove(tab.Elements, index) break end
@@ -3321,16 +3478,16 @@ local function createMiniButton(window, config)
     local flash = 0
 
     function mini:Press()
-        if self.Destroyed or not self.Enabled then return end
+        if self.Destroyed or not self.Enabled or not Runtime.IsEnabled(button) then return end
         flash = 1 / 9
         if config.OnPress then
-            config.OnPress(self)
+            Runtime.InvokeOwned(Runtime.GetOwner(), config.OnPress, self)
             return
         end
         if self.Mode == "Toggle" then
             self.Active = not self.Active
         end
-        if config.Callback then task.spawn(config.Callback, self.Active) end
+        if config.Callback then Runtime.Spawn(config.Callback, self.Active) end
     end
 
     function mini:Get() return self.Active end
@@ -3377,8 +3534,7 @@ local function createMiniButton(window, config)
     function mini:Destroy()
         if self.Destroyed then return end
         self.Destroyed, self.Enabled = true, false
-        local updateIndex = table.find(Runtime.Overlay, self.Update)
-        if updateIndex then table.remove(Runtime.Overlay, updateIndex) end
+        if self.Update then self.Update.Alive, self.Update.Callback, self.Update.Object = false, nil, nil end
         for index, item in ipairs(window.Mini) do
             if item == self then
                 table.remove(window.Mini, index)
@@ -3447,8 +3603,8 @@ local function createMiniButton(window, config)
         button.Position = UDim2.fromOffset(roundPixel(shownPosition.X), roundPixel(shownPosition.Y))
     end
     mini.Update = overlayStep(updateMini)
-    if Runtime.Owner then
-        Runtime.Owner:Add(function() mini:Destroy() end)
+    if Runtime.GetOwner() then
+        Runtime.GetOwner():Add(function() mini:Destroy() end)
     end
     window.LayoutMini()
     updateMini(0, 1)
@@ -3463,7 +3619,7 @@ end
 function Window:Tooltip(object, message)
     if not object or message == nil or message == "" then return end
     local token, touch = 0, nil
-    local tooltipOwner = Runtime.Owner or Library.Maid
+    local tooltipOwner = Runtime.GetOwner() or Library.Maid
     connect(object.InputBegan, function(input)
         if input.UserInputType ~= Enum.UserInputType.Touch then return end
         token = token + 1
@@ -3531,6 +3687,8 @@ local function createSubMenu(window, anchor, opts)
         Elements = {},
         Height = 0,
         IsSubMenu = true,
+        Maid = pop.Maid,
+        Object = pop.Object,
     }, Tab)
 
     connect(holder:GetPropertyChangedSignal("CanvasPosition"), function() window:Wake() end)
@@ -3546,10 +3704,27 @@ local function createSubMenu(window, anchor, opts)
             math.clamp(holder.CanvasPosition.Y, 0, math.max(0, height - viewHeight)))
     end
 
-    function menu:Open(anchorOverride) pop:Open(anchorOverride or anchor) end
+    function menu:Open(anchorOverride) if self.Enabled ~= false then pop:Open(anchorOverride or anchor) end end
     function menu:Close() pop:Close() end
-    function menu:Toggle(anchorOverride) pop:Toggle(anchorOverride or anchor) end
+    function menu:Toggle(anchorOverride) if self.Enabled ~= false then pop:Toggle(anchorOverride or anchor) end end
     function menu:IsOpen() return pop:IsActive() end
+    function menu:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        pop:Destroy()
+    end
+    function menu:SetVisible(value) if value then self:Open() else self:Close() end end
+    function menu:GetVisible() return self:IsOpen() end
+    function menu:SetEnabled(value)
+        self.Enabled = value ~= false
+        pop.Object.Interactable = self.Enabled
+        Runtime.Disabled[pop.Object] = not self.Enabled or nil
+        if not self.Enabled then self:Close() end
+        return self.Enabled
+    end
+    function menu:GetEnabled() return self.Enabled ~= false end
+    function menu:SetValue(value) return self:SetVisible(value) end
+    pop.Maid:Add(function() menu.Destroyed = true end)
 
     return menu
 end
@@ -3596,7 +3771,7 @@ local function attachSettings(tab, parent, x, y, size, opts)
     end
     addElements(opts.Items or opts.Elements)
     if type(opts.Build) == "function" then
-        local built = opts.Build(menu)
+        local _, built = Runtime.InvokeOwned(Runtime.GetOwner(), opts.Build, menu)
         if type(built) == "table" and built[1] ~= nil then addElements(built) end
     end
     menu.Icon = icon
@@ -3615,7 +3790,7 @@ function Tab:AddGroup(opts)
     local body = transparent(card, 10, 36, w - 20, 1)
     local group = setmetatable({Object = card, Page = body, Window = self.Window,
         Name = opts.Name or "Group", Width = w - 20, Height = 0, Elements = {},
-        Cursor = {X = 0, Y = 0, RowHeight = 0}, Maid = Runtime.Owner,
+        Cursor = {X = 0, Y = 0, RowHeight = 0}, Maid = Runtime.GetOwner(),
         IsGroup = true, Collapsed = opts.Collapsed == true, TargetHeight = 36}, Tab)
     local shown = 36
     local function sizeTarget()
@@ -3660,8 +3835,8 @@ function Tab:AddGroup(opts)
         if shown ~= group.TargetHeight then group.Window.Animating = true end
     end, card)
     self.Elements[#self.Elements + 1] = group
-    if Runtime.Owner then
-        Runtime.Owner:Add(function()
+    if Runtime.GetOwner() then
+        Runtime.GetOwner():Add(function()
             for index, element in ipairs(parent.Elements) do
                 if element == group then table.remove(parent.Elements, index) break end
             end
@@ -3694,6 +3869,7 @@ function Tab:AddStat(opts)
         if description ~= nil then detail:SetText(description) end
     end
     function api:Get() return value:GetText() end
+    function api:SetValue(newValue, silent, description) return self:Set(newValue, description) end
     function api:SetName(name) title:SetText(name) end
     function api:SetDescription(caption) detail:SetText(caption) end
     return api
@@ -3790,7 +3966,8 @@ end
 
 local function fromHex(value)
     if type(value) ~= "string" then return nil end
-    local hex = string.gsub(value, "[^%x]", "")
+    local hex = string.match(value, "^%s*#?(%x+)%s*$")
+    if not hex then return nil end
     if #hex == 3 then
         hex = string.gsub(hex, "(%x)", "%1%1")
     end
@@ -3815,7 +3992,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
     local window = tab.Window
     local flag = opts.Flag or ((opts.Name or "Color") .. "." .. tostring(tab.Name))
     local color = typeof(opts.Default) == "Color3" and opts.Default or state.Accent
-    local alphaValue = opts.Alpha ~= nil and math.clamp(opts.Alpha, 0, 1) or 1
+    local alphaValue = opts.Alpha ~= nil and math.clamp(Runtime.Number(opts.Alpha, 1), 0, 1) or 1
     local useAlpha = opts.UseAlpha ~= false
 
     local anchor = transparent(parent, x, y, size, size, "TextButton")
@@ -3908,20 +4085,23 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         anchor.Visible = visible == true
         if not anchor.Visible then pop:Close() end
     end
-    if Runtime.Owner then
-        Runtime.Owner:Add(function() if Library.Elements[flag] == api then Library.Elements[flag] = nil end end)
+    if Runtime.GetOwner() then
+        Runtime.GetOwner():Add(function() if Library.Elements[flag] == api then Library.Elements[flag] = nil end end)
     end
 
-    local function push()
+    local function push(silent)
         local result = Color3.fromHSV(hue, saturation, value)
+        color = result
+        dot.BackgroundColor3 = result
+        dot.BackgroundTransparency = useAlpha and (1 - alphaValue) or 0
         Library.Flags[flag] = result
         fireChange(flag, result)
         if useAlpha then
             Library.Flags[flag .. ".Alpha"] = alphaValue
             fireChange(flag .. ".Alpha", alphaValue)
         end
-        if opts.Callback then
-            task.spawn(opts.Callback, result, alphaValue)
+        if not silent and opts.Callback then
+            Runtime.Spawn(opts.Callback, result, alphaValue)
         end
     end
 
@@ -3929,14 +4109,14 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         return Color3.fromHSV(hue, saturation, value), alphaValue
     end
 
-    function api:Set(newColor, newAlpha)
+    function api:Set(newColor, newAlpha, silent)
         if typeof(newColor) == "Color3" then
             hue, saturation, value = newColor:ToHSV()
         end
         if newAlpha ~= nil then
-            alphaValue = math.clamp(newAlpha, 0, 1)
+            alphaValue = math.clamp(Runtime.Number(newAlpha, alphaValue), 0, 1)
         end
-        push()
+        push(silent)
     end
 
     for index, swatch in ipairs(presets) do
@@ -3985,7 +4165,8 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
 
     local svX, svY = INNER * saturation, SV_H * (1 - value)
     local hueX, alphaX = INNER * hue, INNER * alphaValue
-    local lastHue = nil
+    local lastHue, lastHexColor = nil, nil
+    local hexText = "#" .. toHex(color)
 
     step(function(dt, k)
         svX = approach(svX, math.clamp(INNER * saturation, 5, INNER - 5), k)
@@ -4010,7 +4191,9 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
         hexBox.TextColor3 = white
         if alphaBar then alphaBar.BackgroundColor3 = current end
         if not editing then
-            local hexText = "#" .. toHex(current)
+            if current ~= lastHexColor then
+                lastHexColor, hexText = current, "#" .. toHex(current)
+            end
             if hexBox.Text ~= hexText then hexBox.Text = hexText end
         end
     end, preview)
@@ -4025,7 +4208,7 @@ local function attachColorPicker(tab, parent, x, y, size, opts)
             Set = function(_, newAlpha) api:Set(nil, tonumber(newAlpha)) end,
         }
     end
-    if opts.Callback then task.spawn(opts.Callback, color, alphaValue) end
+    if opts.Callback then Runtime.Spawn(opts.Callback, color, alphaValue) end
     return api
 end
 
@@ -4041,7 +4224,8 @@ function Tab:AddColorPicker(opts)
     local picker = attachColorPicker(self, card, w - 24, 14.5, 14, opts)
     local api = baseApi(self, card, picker.Flag)
     api.Get = function(_) return picker:Get() end
-    api.Set = function(_, color, alpha) picker:Set(color, alpha) end
+    api.Set = function(_, color, alpha, silent) picker:Set(color, alpha, silent) end
+    api.Picker = picker
     bindTitle(api, title, opts)
     step(function() title:Color(palette[3]:Lerp(white, 0.35)) end, card)
     return api
@@ -4061,12 +4245,16 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     local bind = {Key = key, Flag = flag, Object = button}
 
     function bind:Fire()
-        if opts.Callback then task.spawn(opts.Callback, self.Key) end
-        if opts.Toggle then opts.Toggle() end
+        if self.Destroyed or not Runtime.IsEnabled(button) then return end
+        if opts.Callback then Runtime.Spawn(opts.Callback, self.Key) end
+        if opts.Toggle then Runtime.InvokeOwned(Runtime.GetOwner(), opts.Toggle) end
     end
 
-    function bind:Set(value)
+    function bind:Set(value, silent)
+        if self.Destroyed then return end
         if type(value) == "string" then value = keyFromName(value) end
+        if value ~= nil and (typeof(value) ~= "EnumItem"
+            or value.EnumType ~= Enum.KeyCode and value.EnumType ~= Enum.UserInputType) then return end
         self.Key = value
         caption:SetText(keyName(value))
         Library.Flags[flag] = value and keyName(value) or "NONE"
@@ -4074,11 +4262,14 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     end
 
     function bind:Get() return self.Key end
-    function bind:Cancel() caption:SetText(keyName(self.Key)) end
+    function bind:Cancel()
+        if window.PendingKeybind == self then window.PendingKeybind = nil end
+        caption:SetText(keyName(self.Key))
+    end
 
     window.Keybinds[#window.Keybinds + 1] = bind
-    if Runtime.Owner then
-        Runtime.Owner:Add(function()
+    if Runtime.GetOwner() then
+        Runtime.GetOwner():Add(function()
             local index = table.find(window.Keybinds, bind)
             if index then table.remove(window.Keybinds, index) end
             if window.PendingKeybind == bind then window.PendingKeybind = nil end
@@ -4086,6 +4277,8 @@ local function attachKeybind(tab, parent, x, y, w, h, opts)
     end
 
     connect(button.Activated, function()
+        if not Runtime.IsEnabled(button) then return end
+        if window.PendingKeybind then window.PendingKeybind:Cancel() end
         window.PendingKeybind = bind
         caption:SetText("...")
     end)
@@ -4117,7 +4310,8 @@ function Tab:AddKeybind(opts)
     local bind = attachKeybind(self, card, w - 56, 14.5, 46, 14, opts)
     local api = baseApi(self, card, bind.Flag)
     api.Get = function(_) return bind:Get() end
-    api.Set = function(_, value) bind:Set(value) end
+    api.Set = function(_, value, silent) bind:Set(value, silent) end
+    api.Keybind = bind
     bindTitle(api, title, opts)
     step(function() title:Color(palette[3]:Lerp(white, 0.35)) end, card)
     return api
@@ -4179,7 +4373,7 @@ function Tab:AddToggle(opts)
         Library.Flags[flag] = value
         fireChange(flag, value)
         if mini and mini.Config.ShowWhenActive then mini:SetVisible(value) end
-        if fire and opts.Callback then task.spawn(opts.Callback, value) end
+        if fire and opts.Callback then Runtime.Spawn(opts.Callback, value) end
     end
 
     function api:Get() return value end
@@ -4259,7 +4453,7 @@ function Tab:AddToggle(opts)
     end, card)
 
     push(false)
-    if opts.Callback and value then task.spawn(opts.Callback, value) end
+    if opts.Callback and value then Runtime.Spawn(opts.Callback, value) end
     api.ColorPicker = colorPicker
     api.ColorPickers = colorPickers
     api.LayoutAccessories = layoutAccessories
@@ -4275,11 +4469,13 @@ local function makeSlider(tab, parent, x, y, w, opts)
     opts = opts or {}
     local name = opts.Name or "Slider"
     local flag = opts.Flag or ((tab and tab.Name or "TAB") .. "." .. name)
-    local min = tonumber(opts.Min) or 0
-    local max = tonumber(opts.Max) or 100
+    local min = Runtime.Number(opts.Min, 0)
+    local max = Runtime.Number(opts.Max, 100)
     if max < min then min, max = max, min end
-    local decimals = math.max(0, math.floor(tonumber(opts.Decimals) or 0))
-    local suffix = opts.Suffix or ""
+    local decimals = math.clamp(math.floor(Runtime.Number(opts.Decimals, 0)), 0, 10)
+    local suffix = tostring(opts.Suffix or "")
+    local valueFormat = "%." .. tostring(decimals) .. "f"
+    local lastCaptionValue
 
     local card = paint(rect(parent, x, y, w, 58, palette[2], Library.Design.CardRadius), 2)
     card.BackgroundTransparency = Library.Design.CardTransparency
@@ -4304,7 +4500,7 @@ local function makeSlider(tab, parent, x, y, w, opts)
     })
     local thumb = rect(track, 0, 0, 10, 10, white, 3)
 
-    local value = math.clamp(tonumber(opts.Default) or min, min, max)
+    local value = math.clamp(Runtime.Number(opts.Default, min), min, max)
 
     local function quantize(raw)
         if decimals <= 0 then return math.floor(raw + 0.5) end
@@ -4312,24 +4508,25 @@ local function makeSlider(tab, parent, x, y, w, opts)
         return math.floor(raw * m + 0.5) / m
     end
 
+    value = math.clamp(quantize(value), min, max)
     local api = {Flag = flag, Object = card}
 
     local function push(fire)
         Library.Flags[flag] = value
         fireChange(flag, value)
-        if fire and opts.Callback then task.spawn(opts.Callback, value) end
+        if fire and opts.Callback then Runtime.Spawn(opts.Callback, value) end
     end
 
     function api:Get() return value end
     function api:Set(newValue, silent)
-        value = math.clamp(quantize(tonumber(newValue) or min), min, max)
+        value = math.clamp(quantize(Runtime.Number(newValue, value)), min, max)
         push(not silent)
     end
     function api:SetVisible(v) card.Visible = v and true or false end
     function api:Destroy() card:Destroy() end
     function api:SetRange(newMin, newMax)
-        min = tonumber(newMin) or min
-        max = tonumber(newMax) or max
+        min = Runtime.Number(newMin, min)
+        max = Runtime.Number(newMax, max)
         if max < min then min, max = max, min end
         self:Set(value, true)
     end
@@ -4342,10 +4539,11 @@ local function makeSlider(tab, parent, x, y, w, opts)
         dragging = true
         local ratio = math.clamp(
             (point.X - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
-        api:Set(min + (max - min) * ratio)
+        local nextValue = math.clamp(quantize(min + (max - min) * ratio), min, max)
+        if nextValue ~= value then api:Set(nextValue) end
     end, function(cancelled)
         dragging = false
-        if not cancelled and type(opts.OnRelease) == "function" then task.spawn(opts.OnRelease, value) end
+        if not cancelled and type(opts.OnRelease) == "function" then Runtime.Spawn(opts.OnRelease, value) end
     end)
     if opts.Tooltip then tab.Window:Tooltip(hit, opts.Tooltip) end
 
@@ -4364,12 +4562,15 @@ local function makeSlider(tab, parent, x, y, w, opts)
         thumb.Position = UDim2.fromOffset(roundPixel(math.clamp((w - 20) * a, 5, w - 25) - 5), 0)
         thumb.BackgroundColor3 = white:Lerp(accent, glow * 0.35)
         track.BackgroundColor3 = palette[1]:Lerp(palette[4], glow * 0.6)
-        valueLabel:SetText(string.format("%." .. tostring(decimals) .. "f", value) .. suffix)
+        if lastCaptionValue ~= value then
+            lastCaptionValue = value
+            valueLabel:SetText(string.format(valueFormat, value) .. suffix)
+        end
     end, card)
 
     Library.Elements[flag] = api
     push(false)
-    if opts.Callback then task.spawn(opts.Callback, value) end
+    if opts.Callback then Runtime.Spawn(opts.Callback, value) end
     return api
 end
 
@@ -4494,7 +4695,7 @@ function Tab:AddDropdown(opts)
         for index, option in ipairs(options) do
             if selection[index] then names[#names + 1] = option end
         end
-        return names, selection
+        return names, table.clone(selection)
     end
 
     local function push(fire)
@@ -4507,63 +4708,80 @@ function Tab:AddDropdown(opts)
         else
             Library.Flags[flag] = nil
         end
-        Library.Flags[flag .. ".Text"] = previewText()
-        preview:SetText(previewText())
+        local caption = previewText()
+        Library.Flags[flag .. ".Text"] = caption
+        preview:SetText(caption)
         fireChange(flag, Library.Flags[flag])
         if fire and opts.Callback then
-            task.spawn(opts.Callback, selectedValue())
+            Runtime.Spawn(opts.Callback, selectedValue())
         end
     end
 
+    local rowsOwner = Runtime.GetOwner() or Library.Maid
+    local function updateAvailability()
+        local available = enabled and #options > 0
+        control.Active = available
+        control.Interactable = available
+        if not available then pop:Close() end
+    end
+
     local function buildRows()
-        for _, row in ipairs(rows) do
-            row.Object:Destroy()
-        end
-        rows = {}
         list.CanvasSize = UDim2.fromOffset(0, #options * ROW_H)
         local visibleRows = math.min(#options, maxRows)
         if tonumber(opts.MaxRows) == 0 then visibleRows = #options end
         list.ScrollingEnabled = #options > visibleRows
         pop.Height = math.max(ROW_H, visibleRows * ROW_H)
-        local available = enabled and #options > 0
-        control.Active = available
-        pcall(function() control.Interactable = available end)
-        if not available then pop:Close() end
-
+        list.CanvasPosition = Vector2.new(0, math.clamp(list.CanvasPosition.Y, 0,
+            math.max(0, #options * ROW_H - pop.Height)))
+        updateAvailability()
+        for index = #rows, #options + 33, -1 do
+            rows[index].Maid:Destroy()
+            rows[index] = nil
+        end
+        for index, entry in ipairs(rows) do
+            entry.Object.Visible = index <= #options
+            entry.Hovered = false
+        end
         for index, option in ipairs(options) do
-            local firstRow = index == 1
-            local lastRow = index == #options
-            local row = rect(list, 0, (index - 1) * ROW_H,
-                controlW, ROW_H, palette[5], (firstRow or lastRow) and 5 or nil, "TextButton")
-            row.BackgroundTransparency = 1
-            local edgeFill
-            if firstRow ~= lastRow then
-                edgeFill = rect(row, 0, firstRow and 5 or 0, controlW,
-                    ROW_H - 5, palette[5])
-                edgeFill.BackgroundTransparency = 1
+            local entry = rows[index]
+            if not entry then
+                local rowMaid = Maid.new(rowsOwner)
+                entry = withOwner(rowMaid, function()
+                    local row = rect(list, 0, (index - 1) * ROW_H,
+                        controlW, ROW_H, palette[5], 5, "TextButton")
+                    row.BackgroundTransparency = 1
+                    rowMaid:Add(row)
+                    local edgeFill = rect(row, 0, 5, controlW, ROW_H - 5, palette[5])
+                    edgeFill.BackgroundTransparency = 1
+                    local result = {Object = row, Fill = edgeFill,
+                        Corner = row:FindFirstChildOfClass("UICorner"),
+                        Mark = iconLabel(row, {"check"}, 0, 9.5, 12, accent, "v"),
+                        Title = text(row, option, 10, 0, controlW - 20, ROW_H, 11, palette[3]),
+                        Alpha = 0, Hover = 0, Hovered = false, Index = index, Maid = rowMaid}
+                    connect(row.MouseEnter, function() result.Hovered = true end)
+                    connect(row.MouseLeave, function() result.Hovered = false end)
+                    connect(row.Activated, function()
+                        if not enabled or not Runtime.IsEnabled(card) or not options[index] then return end
+                        if multiple then selection[index] = not selection[index] or nil
+                        else selection = index; pop:Close() end
+                        push(true)
+                    end)
+                    return result
+                end)
+                rows[index] = entry
             end
-            local mark = iconLabel(row, {"check"}, 0, 9.5, 12, accent, "v")
-            local title = text(row, option, 10, 0, controlW - 20, ROW_H, 11, palette[3])
-            local entry = {Object = row, Fill = edgeFill, Mark = mark, Title = title,
-                Alpha = 0, Hover = 0, Hovered = false, Index = index}
-            rows[#rows + 1] = entry
-            connect(row.MouseEnter, function() entry.Hovered = true end)
-            connect(row.MouseLeave, function() entry.Hovered = false end)
-
-            connect(row.Activated, function()
-                if multiple then
-                    selection[index] = not selection[index] or nil
-                else
-                    selection = index
-                    pop:Close()
-                end
-                push(true)
-            end)
+            local firstRow, lastRow = index == 1, index == #options
+            entry.Object.Visible = true
+            entry.Title:SetText(option)
+            entry.Corner.CornerRadius = UDim.new(0, (firstRow or lastRow) and 5 or 0)
+            entry.Fill.Visible = firstRow ~= lastRow
+            entry.Fill.Position = UDim2.fromOffset(0, firstRow and 5 or 0)
         end
     end
 
     step(function(dt, k)
-        for _, entry in ipairs(rows) do
+        for index = 1, #options do
+            local entry = rows[index]
             local selected
             if multiple then
                 selected = selection[entry.Index] and true or false
@@ -4606,7 +4824,7 @@ function Tab:AddDropdown(opts)
                 end
                 value = found or selection
             end
-            selection = math.clamp(math.floor(tonumber(value) or 1), 1, math.max(1, #options))
+            selection = math.clamp(math.floor(Runtime.Number(value, 1)), 1, math.max(1, #options))
         end
         push(not silent)
     end
@@ -4621,7 +4839,7 @@ function Tab:AddDropdown(opts)
             if previous then previousNames[previous] = true end
         end
         options = {}
-        for _, option in ipairs(list_ or {}) do options[#options + 1] = tostring(option) end
+        for _, option in ipairs(type(list_) == "table" and list_ or {}) do options[#options + 1] = tostring(option) end
         if multiple then
             selection = {}
             for index, option in ipairs(options) do
@@ -4639,7 +4857,7 @@ function Tab:AddDropdown(opts)
     function api:GetOptions() return options end
     function api:SetEnabled(value)
         enabled = value ~= false
-        buildRows()
+        updateAvailability()
         return enabled
     end
     function api:GetEnabled() return enabled end
@@ -4647,7 +4865,7 @@ function Tab:AddDropdown(opts)
 
     buildRows()
     push(false)
-    if opts.Callback then task.spawn(opts.Callback, selectedValue()) end
+    if opts.Callback then Runtime.Spawn(opts.Callback, selectedValue()) end
     return api
 end
 
@@ -4693,40 +4911,51 @@ function Tab:AddTextBox(opts)
     local api = baseApi(self, card, flag)
     local suppressText = nil
     local numeric = opts.Numeric == true
+    local lastPublished = nil
 
-    local function push(fire)
-        Library.Flags[flag] = box.Text
-        fireChange(flag, box.Text)
-        if fire and opts.Callback then task.spawn(opts.Callback, box.Text) end
+    local function normalize(value)
+        local result = tostring(value == nil and "" or value)
+        if numeric then
+            result = string.gsub(result, "[^%d%.%-]", "")
+            local negative = string.sub(result, 1, 1) == "-"
+            result = string.gsub(result, "%-", "")
+            local dot = string.find(result, ".", 1, true)
+            if dot then
+                result = string.sub(result, 1, dot) .. string.gsub(string.sub(result, dot + 1), "%.", "")
+            end
+            if negative then result = "-" .. result end
+        end
+        if maxLength > 0 then
+            local length = utf8.len(result)
+            if length and length > maxLength then
+                local offset = utf8.offset(result, maxLength + 1)
+                if offset then result = string.sub(result, 1, offset - 1) end
+            elseif not length then
+                result = string.sub(result, 1, maxLength)
+            end
+        end
+        return result
     end
 
+    local function push(fire)
+        lastPublished = box.Text
+        Library.Flags[flag] = box.Text
+        fireChange(flag, box.Text)
+        if fire and opts.Callback then Runtime.Spawn(opts.Callback, box.Text) end
+    end
+
+    box.Text = normalize(box.Text)
     connect(box:GetPropertyChangedSignal("Text"), function()
-        local length = maxLength > 0 and utf8.len(box.Text) or nil
-        if length and length > maxLength then
-            local offset = utf8.offset(box.Text, maxLength + 1)
-            if offset then
-                box.Text = string.sub(box.Text, 1, offset - 1)
-                return
-            end
-        end
-        if numeric then
-            local cleaned = string.gsub(box.Text, "[^%d%.%-]", "")
-            if cleaned ~= box.Text then
-                box.Text = cleaned
-                return
-            end
-        end
-        if suppressText ~= nil and box.Text == suppressText then
-            suppressText = nil
-            return
-        end
+        local cleaned = normalize(box.Text)
+        if cleaned ~= box.Text then box.Text = cleaned end
+        if suppressText ~= nil and box.Text == suppressText then return end
         suppressText = nil
-        push(true)
+        if lastPublished ~= box.Text then push(true) end
     end)
 
     connect(box.FocusLost, function(enterPressed)
-        if enterPressed and opts.OnEnter then task.spawn(opts.OnEnter, box.Text) end
-        if opts.OnFocusLost then task.spawn(opts.OnFocusLost, box.Text, enterPressed) end
+        if enterPressed and opts.OnEnter then Runtime.Spawn(opts.OnEnter, box.Text) end
+        if opts.OnFocusLost then Runtime.Spawn(opts.OnFocusLost, box.Text, enterPressed) end
     end)
 
     local focused = false
@@ -4743,17 +4972,16 @@ function Tab:AddTextBox(opts)
     end
 
     function api:Set(value, silent)
-        local previous = box.Text
-        local newText = tostring(value == nil and "" or value)
-        suppressText = (silent == true and newText ~= previous) and newText or nil
+        if self.Destroyed then return end
+        local newText = normalize(value)
+        suppressText = newText
+        lastPublished = newText
         box.Text = newText
-        if silent then
-            Library.Flags[flag] = box.Text
-        elseif box.Text == previous then
-            push(true)
-        end
+        if silent then Library.Flags[flag] = newText else push(true) end
     end
-    function api:Focus() box:CaptureFocus() end
+    function api:Focus()
+        if not self.Destroyed and Runtime.IsEnabled(card) and isRendered(card) then box:CaptureFocus() end
+    end
 
     if title then
         bindTitle(api, title, opts)
@@ -4807,7 +5035,7 @@ function Tab:AddButton(opts)
     local flash, color, hover = 0, palette[4], false
     local api = baseApi(self, card, nil)
     local loading = false
-    local buttonOwner = Runtime.Owner
+    local buttonOwner = Runtime.GetOwner()
     function api:SetText(value)
         captionText = tostring(value)
         if not loading then caption:SetText(captionText) end
@@ -4844,7 +5072,7 @@ function Tab:AddButton(opts)
                     if not self.Destroyed then self:SetLoading(false) end
                     if not ok then warn("WolfUi button '" .. name .. "': " .. tostring(err)) end
                 end)
-            else task.spawn(opts.Callback) end
+            else Runtime.Spawn(opts.Callback) end
         end
         return true
     end
@@ -4919,7 +5147,7 @@ function Tab:AddMiniButton(opts)
         Settings = opts.Settings,
         Callback = function(value)
             mini:SetVisible(value)
-            if opts.OnShow then task.spawn(opts.OnShow, value) end
+            if opts.OnShow then Runtime.Spawn(opts.OnShow, value) end
         end,
     })
     api.Mini = mini
@@ -4953,9 +5181,9 @@ function Tab:AddStepper(opts)
     local min = tonumber(opts.Min)
     local max = tonumber(opts.Max)
     if min and max and max < min then min, max = max, min end
-    local stepSize = math.abs(tonumber(opts.Step) or 1)
+    local stepSize = math.abs(Runtime.Number(opts.Step, 1))
     if stepSize == 0 then stepSize = 1 end
-    local decimals = math.max(0, math.floor(tonumber(opts.Decimals) or 0))
+    local decimals = math.clamp(math.floor(Runtime.Number(opts.Decimals, 0)), 0, 10)
     local suffix = opts.Suffix or ""
     local value = tonumber(opts.Default) or min or 0
     if min then value = math.max(min, value) end
@@ -4983,12 +5211,12 @@ function Tab:AddStepper(opts)
         Library.Flags[flag] = value
         valueLabel:SetText(string.format("%." .. tostring(decimals) .. "f", value) .. suffix)
         fireChange(flag, value)
-        if fire and opts.Callback then task.spawn(opts.Callback, value) end
+        if fire and opts.Callback then Runtime.Spawn(opts.Callback, value) end
     end
 
     function api:Get() return value end
     function api:Set(newValue, silent)
-        local raw = quantize(tonumber(newValue) or value)
+        local raw = quantize(Runtime.Number(newValue, value))
         if min then raw = math.max(raw, min) end
         if max then raw = math.min(raw, max) end
         value = raw
@@ -5011,7 +5239,7 @@ function Tab:AddStepper(opts)
     end, card)
 
     push(false)
-    if opts.Callback then task.spawn(opts.Callback, value) end
+    if opts.Callback then Runtime.Spawn(opts.Callback, value) end
     return api
 end
 
@@ -5049,7 +5277,7 @@ function Tab:AddSegmented(opts)
         Library.Flags[flag] = options[selection]
         Library.Flags[flag .. ".Index"] = selection
         fireChange(flag, options[selection])
-        if fire and opts.Callback then task.spawn(opts.Callback, options[selection], selection) end
+        if fire and opts.Callback then Runtime.Spawn(opts.Callback, options[selection], selection) end
     end
 
     function api:Get() return options[selection], selection end
@@ -5090,7 +5318,7 @@ function Tab:AddSegmented(opts)
         api:Set(opts.Default, true)
     end
     push(false)
-    if opts.Callback then task.spawn(opts.Callback, options[selection], selection) end
+    if opts.Callback then Runtime.Spawn(opts.Callback, options[selection], selection) end
     return api
 end
 
@@ -5112,7 +5340,7 @@ function Tab:AddProgressBar(opts)
 
     function api:Get() return value end
     function api:Set(newValue)
-        value = math.clamp(tonumber(newValue) or 0, 0, 1)
+        value = math.clamp(Runtime.Number(newValue, 0), 0, 1)
         if opts.Flag then Library.Flags[opts.Flag] = value end
     end
     bindTitle(api, title, opts)
@@ -5167,6 +5395,8 @@ function Tab:AddList(opts)
     local api = baseApi(self, card, flag)
     bindTitle(api, title, opts)
     local rows = {}
+    local rowsOwner = Runtime.GetOwner() or Library.Maid
+    local rowsMaid
     local ROW_H = 31
 
     local listY = 28 + (withInput and 41 or 0)
@@ -5189,12 +5419,14 @@ function Tab:AddList(opts)
         for index, item in ipairs(items) do copy[index] = item end
         Library.Flags[flag] = copy
         fireChange(flag, copy)
-        if fire and opts.Callback then task.spawn(opts.Callback, copy) end
+        if fire and opts.Callback then Runtime.Spawn(opts.Callback, copy) end
     end
 
     local function rebuild()
-        for _, row in ipairs(rows) do row:Destroy() end
+        if rowsMaid then rowsMaid:Destroy() end
+        rowsMaid = Maid.new(rowsOwner)
         rows = {}
+        withOwner(rowsMaid, function()
         empty.Object.Visible = #items == 0
         for index, item in ipairs(items) do
             local row = paint(rect(holder, 0, (index - 1) * ROW_H, w - 26, ROW_H - 4, palette[4], 3), 4)
@@ -5213,9 +5445,11 @@ function Tab:AddList(opts)
                 icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
                 caption:Color(white)
             end, row)
+            rowsMaid:Add(row)
             rows[#rows + 1] = row
         end
         holder.CanvasSize = UDim2.fromOffset(0, #items * ROW_H)
+        end)
     end
 
     if withInput then
@@ -5272,7 +5506,7 @@ function Tab:AddList(opts)
     end
     function api:Set(list, silent)
         items = {}
-        for _, item in ipairs(list or {}) do items[#items + 1] = tostring(item) end
+        for _, item in ipairs(type(list) == "table" and list or {}) do items[#items + 1] = tostring(item) end
         rebuild()
         push(not silent)
     end
@@ -5557,7 +5791,7 @@ function Tab:AddCardGrid(opts)
     local entries, byId = {}, {}
     local selected, order = {}, {}
     local filterText = ""
-    local owner = Runtime.Owner
+    local owner = Runtime.GetOwner()
     local tilesMaid
     local counterFlash = 0
 
@@ -5584,8 +5818,8 @@ function Tab:AddCardGrid(opts)
         Library.Flags[flag] = copy
         fireChange(flag, copy)
         if fire then
-            if def and type(def.Callback) == "function" then task.spawn(def.Callback, isSelected, def) end
-            if opts.Callback then task.spawn(opts.Callback, copy, def, isSelected) end
+            if def and type(def.Callback) == "function" then Runtime.Spawn(def.Callback, isSelected, def) end
+            if opts.Callback then Runtime.Spawn(opts.Callback, copy, def, isSelected) end
         end
     end
 
@@ -5594,15 +5828,15 @@ function Tab:AddCardGrid(opts)
         if entry then entry.Shake = 1 end
         counterFlash = 1
         if reason == "max" then
-            if opts.OnLimit then task.spawn(opts.OnLimit, maxSelected, entry and entry.Def) end
+            if opts.OnLimit then Runtime.Spawn(opts.OnLimit, maxSelected, entry and entry.Def) end
             if opts.LimitNotify then
                 local ok, message = pcall(string.format, tostring(opts.LimitText or "You can select up to %d"), maxSelected)
                 Library:Notify({Title = name, Text = ok and message or tostring(opts.LimitText), Type = "warning", Duration = 2})
             end
         elseif reason == "min" then
-            if opts.OnMinimum then task.spawn(opts.OnMinimum, minSelected, entry and entry.Def) end
+            if opts.OnMinimum then Runtime.Spawn(opts.OnMinimum, minSelected, entry and entry.Def) end
         elseif reason == "locked" then
-            if opts.OnLocked then task.spawn(opts.OnLocked, entry and entry.Def) end
+            if opts.OnLocked then Runtime.Spawn(opts.OnLocked, entry and entry.Def) end
         end
         if window.Wake then window:Wake(0.5) end
     end
@@ -5644,14 +5878,14 @@ function Tab:AddCardGrid(opts)
     local function toggleId(id)
         local entry = byId[id]
         if not entry then return end
-        if opts.OnCardClick then task.spawn(opts.OnCardClick, entry.Def, selected[id] == true) end
+        if opts.OnCardClick then Runtime.Spawn(opts.OnCardClick, entry.Def, selected[id] == true) end
         if selected[id] then
             if removeSelection(id) then push(true, entry.Def, false) end
         else
             local ok, replaced = addSelection(id)
             if ok then
                 local old = replaced and byId[replaced]
-                if old and type(old.Def.Callback) == "function" then task.spawn(old.Def.Callback, false, old.Def) end
+                if old and type(old.Def.Callback) == "function" then Runtime.Spawn(old.Def.Callback, false, old.Def) end
                 push(true, entry.Def, true)
             end
         end
@@ -5871,7 +6105,7 @@ function Tab:AddCardGrid(opts)
         if def.OnRightClick or opts.OnRightClick then
             connect(tile.MouseButton2Click, function()
                 local callback = def.OnRightClick or opts.OnRightClick
-                task.spawn(callback, def, selected[def.Id] == true)
+                Runtime.Spawn(callback, def, selected[def.Id] == true)
             end)
         end
         if def.Tooltip then window:Tooltip(tile, def.Tooltip) end
@@ -6114,7 +6348,7 @@ function Tab:AddCardGrid(opts)
         end
     end
     api:Set(defaults, true)
-    if opts.Callback and #order > 0 then task.spawn(opts.Callback, snapshot()) end
+    if opts.Callback and #order > 0 then Runtime.Spawn(opts.Callback, snapshot()) end
     return api
 end
 
@@ -6165,18 +6399,16 @@ end
 function Tab:AddConfigManager(opts)
     if not Library.Configs or not Library.Configs.Enabled then return nil, "configs are disabled" end
     opts = opts or {}
-    self:AddSection(opts.Name or "Configs")
+    local heading = self:AddSection(opts.Name or "Configs")
 
     if not Library:HasDefaults() then
-        task.defer(function()
+        (Runtime.GetOwner() or Library.Maid):Delay(0, function()
             if not Library:HasDefaults() then Library:CaptureDefaults() end
         end)
     end
 
     local nameFlag = self.Name .. ".ConfigName"
     local pickerFlag = self.Name .. ".ConfigPick"
-    local importFlag = self.Name .. ".ConfigImport"
-    local autoSaveFlag = self.Name .. ".ConfigAutoSave"
 
     local function say(message)
         Library:Notify({Title = "Configs", Text = tostring(message)})
@@ -6187,11 +6419,6 @@ function Tab:AddConfigManager(opts)
             local ok, err = Library:Safe(callback, ...)
             if not ok then say(string.match(tostring(err), "^[^\n]*") or "error") end
         end
-    end
-
-    local function stamp(value)
-        if type(value) ~= "number" then return "unknown" end
-        return os.date("%Y-%m-%d %H:%M", value)
     end
 
     local nameBox = self:AddTextBox({
@@ -6212,11 +6439,13 @@ function Tab:AddConfigManager(opts)
     Library.NoSaveFlags[pickerFlag .. ".Text"] = true
 
     local selectionButtons = {}
+    local controls = {heading, nameBox, picker}
+    local managerEnabled = true
 
     local function refresh()
         picker:SetOptions(Library:ListConfigs())
         local available = picker:HasOptions()
-        for _, button in ipairs(selectionButtons) do button:SetEnabled(available) end
+        for _, button in ipairs(selectionButtons) do button:SetEnabled(available and managerEnabled) end
         return available
     end
 
@@ -6227,18 +6456,13 @@ function Tab:AddConfigManager(opts)
         return value
     end
 
-    local function picked()
-        local value = picker:Get()
-        if value == nil or value == "" then return nil end
-        return value
-    end
-
     local function needsSelection(button)
         selectionButtons[#selectionButtons + 1] = button
+        controls[#controls + 1] = button
         return button
     end
 
-    self:AddButton({
+    controls[#controls + 1] = self:AddButton({
         Name = "Save config",
         AutoLoading = true,
         Text = "Save",
@@ -6295,37 +6519,7 @@ function Tab:AddConfigManager(opts)
         end),
     }))
 
-    needsSelection(self:AddButton({
-        Name = "Duplicate config",
-        Text = "Duplicate",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local source, target = picked(), nameBox:Get()
-            if not source then say("Pick a saved config first") return end
-            if target == nil or target == "" then say("Type the new name in the name field") return end
-            local ok, result = Library:CopyConfigFile(source, target)
-            if ok then refresh() end
-            say(ok and ("Copied " .. source .. " to " .. tostring(target)) or result)
-        end),
-    }))
-
-    needsSelection(self:AddButton({
-        Name = "Rename config",
-        Text = "Rename",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local source, target = picked(), nameBox:Get()
-            if not source then say("Pick a saved config first") return end
-            if target == nil or target == "" then say("Type the new name in the name field") return end
-            local ok, result = Library:RenameConfigFile(source, target)
-            if ok then refresh() end
-            say(ok and ("Renamed " .. source .. " to " .. tostring(target)) or result)
-        end),
-    }))
-
-    self:AddButton({
+    controls[#controls + 1] = self:AddButton({
         Name = "Refresh configs",
         Text = "Refresh",
         Compact = true,
@@ -6335,187 +6529,29 @@ function Tab:AddConfigManager(opts)
         end),
     })
 
-    self:AddButton({
-        Name = "Undo last load",
-        Text = "Undo",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local ok, detail = Library:UndoConfigLoad()
-            say(ok == true and "Previous settings restored" or detail)
-        end),
-    })
-
-    self:AddButton({
-        Name = "Reset to defaults",
-        Text = "Reset",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            Library:Dialog({
-                Title = "Reset all settings?",
-                Text = "Every setting returns to the value it had when the menu opened. You can undo this.",
-                ConfirmText = "Reset",
-                CancelText = "Cancel",
-                Confirm = guard(function()
-                    local ok, detail = Library:ResetToDefaults()
-                    say(ok == true and "Settings reset" or detail)
-                end),
-            })
-        end),
-    })
-
-    needsSelection(self:AddButton({
-        Name = "Restore backup",
-        Text = "Backup",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local name = picked() or chosen()
-            local list = Library:ListBackups(name)
-            if #list == 0 then say("No backups for " .. tostring(name)) return end
-            local newest = list[1]
-            Library:Dialog({
-                Title = "Restore backup?",
-                Text = string.format("%s has %d backup(s). Restore the newest one from %s? The current file is kept as a backup.",
-                    tostring(name), #list, stamp(newest.Modified)),
-                ConfirmText = "Restore",
-                CancelText = "Cancel",
-                Confirm = guard(function()
-                    local ok, result = Library:RestoreBackup(name, newest.Index, true)
-                    say(ok == true and ("Restored backup of " .. tostring(name)) or result)
-                end),
-            })
-        end),
-    }))
-
-    needsSelection(self:AddButton({
-        Name = "Autoload config",
-        Text = "Autoload",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local name = picked() or chosen()
-            local current = Library:GetAutoLoad()
-            if current == name then
-                local ok, result = Library:SetAutoLoad(nil)
-                say(ok and "Autoload disabled" or result)
-            else
-                local ok, result = Library:SetAutoLoad(name)
-                say(ok and ("Autoload: " .. tostring(name)) or result)
-            end
-        end),
-    }))
-
-    needsSelection(self:AddButton({
-        Name = "Config info",
-        Text = "Info",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local name = picked() or chosen()
-            local info = Library:GetConfigInfo(name)
-            if not info.Exists then say("Config not found: " .. tostring(name)) return end
-            if not info.Valid then say(tostring(name) .. " is damaged: " .. tostring(info.Error)) return end
-            local lines = {
-                string.format("%s | %d settings | %d backup(s)", info.Name, info.Flags or 0, info.Backups or 0),
-                "Saved: " .. stamp(info.Modified),
-            }
-            if info.Note and info.Note ~= "" then lines[#lines + 1] = "Note: " .. info.Note end
-            if info.ChecksumOk == false then lines[#lines + 1] = "File was edited outside the library" end
-            if Library:GetAutoLoad() == info.Name then lines[#lines + 1] = "Autoloads on start" end
-            say(table.concat(lines, "\n"))
-        end),
-    }))
-
-    needsSelection(self:AddButton({
-        Name = "Compare with current",
-        Text = "Diff",
-        Compact = true,
-        Width = 0.33,
-        Callback = guard(function()
-            local name = picked() or chosen()
-            local diff, problem = Library:DiffConfigFile(name)
-            if not diff then say(problem) return end
-            if diff.Total == 0 then say("Current settings match " .. tostring(name)) return end
-            local lines = {string.format("%d changed, %d new, %d missing vs %s", #diff.Changed, #diff.Added, #diff.Removed, tostring(name))}
-            for index = 1, math.min(5, #diff.Changed) do
-                lines[#lines + 1] = diff.Changed[index].Flag
-            end
-            say(table.concat(lines, "\n"))
-        end),
-    }))
-
-    local importBox = self:AddTextBox({
-        Name = opts.ImportLabel or "Import string",
-        Flag = importFlag,
-        Placeholder = "WOLF1:...",
-        Width = 0.5,
-        NoSave = true,
-    })
-
-    needsSelection(self:AddButton({
-        Name = "Export config",
-        Text = "Export",
-        Compact = true,
-        Width = 0.25,
-        Callback = guard(function()
-            local name = picked() or chosen()
-            local text, problem = Library:ExportConfigFile(name)
-            if not text then say(problem) return end
-            local env = Runtime.Env()
-            local copy = env.setclipboard or _G.setclipboard
-            if type(copy) == "function" and pcall(copy, text) then
-                say("Copied " .. tostring(name) .. " to clipboard")
-            else
-                say("Clipboard is not available on this executor")
-            end
-        end),
-    }))
-
-    self:AddButton({
-        Name = "Import config",
-        Text = "Import",
-        Compact = true,
-        Width = 0.25,
-        Callback = guard(function()
-            local text = importBox:Get()
-            if text == nil or text == "" then say("Paste an exported config string first") return end
-            local target = nameBox:Get()
-            if target == nil or target == "" then target = "imported" end
-            local ok, result = Library:ImportConfigAs(target, text)
-            if ok then
-                refresh()
-                say("Imported as " .. tostring(target))
-            else
-                say(result)
-            end
-        end),
-    })
-
-    Library.NoSaveFlags[autoSaveFlag] = true
-    self:AddToggle({
-        Name = opts.AutoSaveLabel or "Auto-save changes",
-        Flag = autoSaveFlag,
-        Default = false,
-        Width = 0.5,
-        Callback = function(value)
-            Library:SetAutoSave(value == true, opts.AutoSaveInterval or 60, opts.AutoSaveName or "autosave")
-        end,
-    })
-
     refresh()
 
     return {
         Refresh = refresh,
         Name = nameBox,
         Picker = picker,
-        Import = importBox,
+        Heading = heading,
+        Controls = controls,
+        SetValue = function(_, value, silent) return nameBox:Set(value, silent) end,
+        Get = function() return nameBox:Get() end,
+        SetVisible = function(_, visible)
+            for _, control in ipairs(controls) do control:SetVisible(visible) end
+        end,
+        SetEnabled = function(_, enabled)
+            managerEnabled = enabled ~= false
+            for _, control in ipairs(controls) do control:SetEnabled(enabled) end
+            if enabled ~= false then refresh() end
+        end,
     }
 end
 
 Library.CardNotificationVersion="5.9.3"
-Library.CardNotificationRevision="6.0.0"
+Library.CardNotificationRevision="7.0.0"
 function Library:NotifyCards(opts)
     opts=opts or {}
     local window=self.Window
@@ -6561,7 +6597,7 @@ function Library:NotifyCards(opts)
         if self.Destroyed or self.Closing then return end
         countValue=math.clamp(math.floor(tonumber(number) or 10),1,100)
         self.Value=countValue;value.Text=tostring(countValue)
-        if not silent and opts.ValueChanged then opts.ValueChanged(countValue,self) end
+        if not silent and opts.ValueChanged then Runtime.InvokeOwned(maid, opts.ValueChanged, countValue, self) end
     end
     maid:Connect(minus.Activated,function() api:SetValue(countValue-1) end)
     maid:Connect(plus.Activated,function() api:SetValue(countValue+1) end)
@@ -6624,8 +6660,8 @@ function Library:NotifyCards(opts)
             local selected=true
             if opts.ToggleSelection==true and api.Selected==tostring(cell.Def.Id) then selected=false end
             if selected then api:SetSelected(cell.Def.Id) else api:SetSelected(nil) end
-            if opts.Callback then opts.Callback(cell.Def.Id,cell.Def,api,selected) end
-            if opts.CloseOnSelect==true then api:Close("selected") end
+            if opts.Callback then Runtime.InvokeOwned(maid, opts.Callback, cell.Def.Id, cell.Def, api, selected) end
+            if not api.Destroyed and opts.CloseOnSelect==true then api:Close("selected") end
         end)
     end
     function api:SetCards(cards)
@@ -6664,10 +6700,13 @@ function Library:NotifyCards(opts)
         self.Destroyed=true
         maid:Destroy()
     end
+    maid:Add(function() api.Destroyed = true end)
     function api:Close(reason)
         if self.Destroyed or self.Closing then return end
         self.Closing=true
-        if opts.OnClose then opts.OnClose(reason or "manual",self) end
+        if opts.OnClose then Runtime.InvokeOwned(maid, opts.OnClose, reason or "manual", self) end
+        if self.Destroyed then return end
+        panel.Interactable = false
         local tween=tweenService:Create(panel,TweenInfo.new(0.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{GroupTransparency=1,Position=panel.Position+UDim2.fromOffset(0,8)})
         maid:Add(tween,"fade")
         maid:Once(tween.Completed,function() self:Destroy() end)
@@ -6832,7 +6871,7 @@ function Library:Notify(opts)
     maid:Connect(close.Activated, function() notif:Close() end)
     maid:Connect(object.Activated, function()
         if notif.Destroyed then return end
-        if notif.Callback then task.spawn(notif.Callback, notif) end
+        if notif.Callback then Runtime.Spawn(notif.Callback, notif) end
         if notif.CloseOnClick then notif:Close() end
     end)
     window.Notifications[#window.Notifications + 1] = notif
@@ -7138,16 +7177,17 @@ function Library:Dialog(opts)
         local tween = animate(1, 0.16)
         maid:Once(tween.Completed, function() self:Destroy() end)
     end
-    local labels = opts.Buttons or {opts.ConfirmText or "Confirm", opts.CancelText or "Cancel"}
+    local labels = type(opts.Buttons) == "table" and opts.Buttons
+        or {opts.ConfirmText or "Confirm", opts.CancelText or "Cancel"}
     if #labels == 0 then labels = {"Close"} end
     local count = math.min(4, #labels)
     local buttonW = math.floor((width - 40 - 8 * (count - 1)) / count)
     local function choose(index)
-        if api.Destroyed or api.Closing then return end
+        if api.Destroyed or api.Closing or not Runtime.IsEnabled(shade) then return end
         api:Close()
-        if index == 1 and opts.Confirm then task.spawn(opts.Confirm) end
-        if index == 2 and opts.Cancel then task.spawn(opts.Cancel) end
-        if opts.Callback then task.spawn(opts.Callback, index, tostring(labels[index])) end
+        if index == 1 and opts.Confirm then Runtime.Spawn(opts.Confirm) end
+        if index == 2 and opts.Cancel then Runtime.Spawn(opts.Cancel) end
+        if opts.Callback then Runtime.Spawn(opts.Callback, index, tostring(labels[index])) end
     end
     for index = 1, count do
         local button = paint(rect(card, 20 + (index - 1) * (buttonW + 8), height - 47,
@@ -7166,6 +7206,8 @@ function Library:Dialog(opts)
         api.Destroyed = true
         if window.Dialog == api then window.Dialog = nil end
     end)
+    if window.CancelDrag then window.CancelDrag() end
+    if window.PendingKeybind then window.PendingKeybind:Cancel() end
     window.Opened, window.Dialog = nil, api
     animate(0, 0.20)
     local close = api.Close
@@ -7298,7 +7340,11 @@ end
 
 function Library:LoadConfig(config)
     if type(config) ~= "table" then return false, "config is not a table" end
-    if self.MigrateConfig then config = self:MigrateConfig(config) end
+    if self.MigrateConfig then
+        local migrated, problem = self:MigrateConfig(config)
+        if not migrated then return false, problem end
+        config = migrated
+    end
     if config.Flags ~= nil and type(config.Flags) ~= "table" then return false,"Flags is not a table" end
     local staged, report = {}, {Applied=0, Unknown=0, Skipped=0, Errors={}}
     report.Migrated = config.__migrated
@@ -7682,7 +7728,7 @@ do
 
     local function emit(kind, name, detail)
         for _, listener in ipairs(listeners) do
-            task.spawn(function() pcall(listener, kind, name, detail) end)
+            Runtime.Spawn(function() pcall(listener, kind, name, detail) end)
         end
         if Library.Log then Library:Log(kind .. ": " .. tostring(name), "config") end
     end
@@ -7836,9 +7882,31 @@ do
             removeFile(temp)
             if not good then return false, "verification failed, existing config left untouched" end
         end
+        local existed = pathExists(path)
+        local oldContent
+        if existed then
+            local okRead, previousContent = pcall(readfile, path)
+            if not okRead then return false, "cannot read existing config before write" end
+            oldContent = previousContent
+        end
         rotateBackups(self, path)
         local okWrite, writeError = pcall(writefile, path, content)
-        if not okWrite then return false, tostring(writeError) end
+        if okWrite and self.Configs.Verify ~= false then
+            local okRead, written = pcall(readfile, path)
+            okWrite = okRead and written == content
+            if not okWrite then writeError = "destination verification failed" end
+        end
+        if not okWrite then
+            local restored
+            if existed then
+                restored = pcall(writefile, path, oldContent)
+                if restored then
+                    local readable, bytes = pcall(readfile, path)
+                    restored = readable and bytes == oldContent
+                end
+            else restored = removeFile(path) or not pathExists(path) end
+            return false, tostring(writeError) .. (restored and "; previous state restored" or "; rollback failed")
+        end
         local alternate = folder .. "/" .. base .. (extension == SECURE_EXTENSION and JSON_EXTENSION or SECURE_EXTENSION)
         removeFile(alternate)
         Cfg.Saved[base] = canonical(config.Flags or {})
@@ -7908,8 +7976,11 @@ do
                 if ok then
                     if type(result) == "table" then config = result end
                     applied[#applied + 1] = step.Version
-                elseif self.Log then
-                    self:Log("migration " .. step.Version .. " failed: " .. tostring(result), "error")
+                    config.__version = step.Version
+                else
+                    local problem = "migration " .. step.Version .. " failed: " .. tostring(result)
+                    if self.Log then self:Log(problem, "error") end
+                    return nil, problem
                 end
             end
         end
@@ -8060,12 +8131,14 @@ do
         for _, path in ipairs(candidates(self, base)) do
             if pathExists(path) then
                 local ok, err = pcall(delfile, path)
-                if ok then deleted = true else lastError = err end
-                for index = 1, 10 do removeFile(backupPath(path, index)) end
-                removeFile(path .. ".tmp")
+                if ok and not pathExists(path) then
+                    deleted = true
+                    for index = 1, 10 do removeFile(backupPath(path, index)) end
+                    removeFile(path .. ".tmp")
+                else lastError = err or "file still exists after delete" end
             end
         end
-        if deleted then
+        if deleted and not lastError then
             Cfg.Saved[base] = nil
             emit("delete", base)
             return true
@@ -8097,10 +8170,11 @@ do
         local copied, detail = self:CopyConfigFile(fromBase, toBase, overwrite)
         if not copied then return false, detail end
         local wasAutoLoad = self:GetAutoLoad() == fromBase
+        local savedSnapshot = Cfg.Saved[fromBase]
         local removed, removeError = self:DeleteConfigFile(fromBase)
         if not removed then return false, removeError end
-        if Cfg.Saved[fromBase] ~= nil then
-            Cfg.Saved[toBase] = Cfg.Saved[fromBase]
+        if savedSnapshot ~= nil then
+            Cfg.Saved[toBase] = savedSnapshot
             Cfg.Saved[fromBase] = nil
         end
         if wasAutoLoad then self:SetAutoLoad(toBase) end
@@ -8165,9 +8239,23 @@ do
         if not okRead then return false, tostring(data) end
         local okRaw, raw = pcall(readfile, candidate)
         if not okRaw then return false, tostring(raw) end
+        local oldRead, oldRaw = pcall(readfile, path)
+        if not oldRead then return false, "cannot read current config before restore" end
         rotateBackups(self, path)
         local okWrite, writeError = pcall(writefile, path, raw)
-        if not okWrite then return false, tostring(writeError) end
+        if okWrite and self.Configs.Verify ~= false then
+            local verified, bytes = pcall(readfile, path)
+            okWrite = verified and bytes == raw
+            if not okWrite then writeError = "backup destination verification failed" end
+        end
+        if not okWrite then
+            local rollback = pcall(writefile, path, oldRaw)
+            if rollback then
+                local readable, bytes = pcall(readfile, path)
+                rollback = readable and bytes == oldRaw
+            end
+            return false, tostring(writeError) .. (rollback and "; previous state restored" or "; rollback failed")
+        end
         Cfg.Saved[base] = nil
         emit("restore-backup", base, index)
         if load then return self:LoadConfigFile(base) end
@@ -8391,13 +8479,19 @@ do
 
     function Library:SetAutoSave(enabledState, interval, name)
         local previous = Cfg.AutoSave
-        if previous then previous.Active = false; Cfg.AutoSave = nil end
+        if previous then
+            previous.Active = false
+            if previous.Maid then previous.Maid:Destroy() end
+            Cfg.AutoSave = nil
+        end
         if not enabledState then return false end
-        local job = {Active = true}
+        if not Runtime.Alive or not Library.Maid then return false end
+        local job = {Active = true, Maid = Maid.new(Library.Maid)}
         Cfg.AutoSave = job
+        job.Maid:Add(function() job.Active = false end)
         local period = math.max(5, tonumber(interval) or 60)
         local slot = safeName(name or "autosave")
-        task.spawn(function()
+        job.Maid:Spawn(function()
             while job.Active and Runtime.Alive == true do
                 task.wait(period)
                 if job.Active and Runtime.Alive == true then
@@ -8414,10 +8508,28 @@ do
         end)
         return true
     end
+    Runtime.ResetConfigs = function()
+        Library:SetAutoSave(false)
+        Cfg.Defaults = nil
+        table.clear(Cfg.Saved)
+        table.clear(listeners)
+    end
 end
 
 function Library:Unload()
+    if Runtime.Unloading or self.Destroyed then return end
+    Runtime.Unloading = true
     Runtime.Alive = false
+    self.Destroyed = true
+    if self.SetAutoSave then self:SetAutoSave(false) end
+    local window = self.Window
+    if window then
+        window.Destroyed = true
+        if window.CancelDrag then pcall(window.CancelDrag) end
+        if window.PendingKeybind then pcall(window.PendingKeybind.Cancel, window.PendingKeybind) end
+        window.PendingKeybind, window.Opened = nil, nil
+        window.TooltipObject, window.TooltipText = nil, nil
+    end
     restoreFades()
     do
         local registry = Runtime.Env().__WolfUiWindows
@@ -8458,7 +8570,23 @@ function Library:Unload()
     if self.Window and self.Window.Events then
         pcall(function() self.Window.Events:Destroy() end)
     end
+    if window then
+        for _, tab in ipairs(window.TabList or {}) do
+            tab.Destroyed = true
+            table.clear(tab.Elements)
+            if tab.LayoutItems then table.clear(tab.LayoutItems) end
+        end
+        for _, key in ipairs({"Tabs", "TabList", "Popups", "Notifications", "NotificationIds", "Keybinds", "Mini", "RenderCache"}) do
+            if window[key] then table.clear(window[key]) end
+        end
+        window.Dialog, window.GlassBlur, window.Drag = nil, nil, nil
+    end
     self.Window = nil
+    self.Maid, Runtime.Root = nil, nil
+    table.clear(Runtime.FadePool)
+    table.clear(Runtime.Disabled)
+    table.clear(themedBackgrounds)
+    table.clear(themedLabels)
     self.Elements = {}
     self.NoSaveFlags = {}
     self.Flags = {}
@@ -8469,40 +8597,178 @@ function Library:Unload()
     unloadListeners = {}
     changeListeners = {}
     flagWatchers = {}
+    if Runtime.ResetConfigs then Runtime.ResetConfigs() end
+    Runtime.Unloading = false
+end
+
+function Runtime.CloseOwned(window, object)
+    if not window or not object then return end
+    local current = window.Opened
+    while current do
+        local anchor = current.Anchor
+        if anchor and (anchor == object or anchor:IsDescendantOf(object)) then current:Close() end
+        current = current.Parent
+    end
+    local pending = window.PendingKeybind
+    if pending and pending.Object and (pending.Object == object or pending.Object:IsDescendantOf(object)) then
+        pending:Cancel()
+    end
+    local drag = window.Drag
+    if drag and (drag.Object == object or drag.Object:IsDescendantOf(object)) then window.CancelDrag() end
+    local focused = UIS:GetFocusedTextBox()
+    if focused and (focused == object or focused:IsDescendantOf(object)) then focused:ReleaseFocus() end
+end
+
+function Runtime.CompleteApi(api, maid, window)
+    if type(api) ~= "table" or api._ApiCompleted then return api end
+    api._ApiCompleted = true
+    local object = api.Object
+    if not api.SetValue then
+        function api:SetValue(value, silent, extra)
+            if self.Destroyed then return end
+            if self.Picker or self._ColorPicker then
+                return self:Set(value, extra, silent)
+            end
+            local setter = self.Set or self.SetText or self.SetImage or self.SetActive or self.SetCollapsed
+            if setter then return setter(self, value, silent) end
+            self.Value = value
+            return self
+        end
+    end
+    if not api.GetValue then
+        function api:GetValue()
+            local getter = self.Get or self.GetText or self.GetCollapsed
+            if getter then return getter(self) end
+            return self.Value
+        end
+    end
+    if not api.GetVisible then
+        function api:GetVisible() return not self.Destroyed and (not object or object.Visible) end
+    end
+    local oldVisible = api.SetVisible
+    function api:SetVisible(value)
+        if self.Destroyed then return end
+        if not value then Runtime.CloseOwned(window, object) end
+        if oldVisible then oldVisible(self, value)
+        elseif object then object.Visible = value and true or false end
+        if window and window.Wake then window:Wake() end
+    end
+    local oldEnabled = api.SetEnabled
+    local enabled = true
+    if api.GetEnabled then enabled = api:GetEnabled() ~= false
+    elseif object then enabled = not Runtime.Disabled[object] end
+    function api:SetEnabled(value)
+        if self.Destroyed then return false end
+        enabled = value ~= false
+        if object then
+            Runtime.Disabled[object] = not enabled or nil
+            object.Interactable = enabled
+            if not enabled then Runtime.CloseOwned(window, object) end
+        end
+        if oldEnabled then oldEnabled(self, enabled) end
+        if window and window.Wake then window:Wake() end
+        return enabled
+    end
+    if not api.GetEnabled then
+        function api:GetEnabled() return not self.Destroyed and enabled end
+    end
+    if maid and object then
+        maid:Connect(object.Destroying, function()
+            if not api._Destroying and api.Destroy then api:Destroy() end
+        end)
+        maid:Add(function()
+            Runtime.Disabled[object] = nil
+            Runtime.CloseOwned(window, object)
+            api.Destroyed = true
+        end)
+    end
+    return api
 end
 
 local function ownElement(tab, api, maid)
-    if type(api) ~= "table" then return api end
+    if type(api) ~= "table" then maid:Destroy() return api end
     api.Maid = maid
-    if api.Object then
-        if not maid.UiObjects or not maid.UiObjects[api.Object] then maid:Add(api.Object) end
-        local record = tab and tab:_track(api.Object)
+    local object = api.Object
+    local window = tab and tab.Window or Library.Window
+    if object then
+        if not maid.UiObjects or not maid.UiObjects[object] then maid:Add(object) end
+        local record = tab and tab:_track(object)
         if record then tab:_watchLayout(record, maid) end
     end
     maid:Add(function()
         api.Destroyed = true
-        if api.Flag and Library.Elements[api.Flag] == api then Library.Elements[api.Flag] = nil end
+        if api.Flag and Library.Elements[api.Flag] == api then
+            Library.Elements[api.Flag] = nil
+            Library.NoSaveFlags[api.Flag] = nil
+        end
         if tab and tab.Elements then
-            for index, element in ipairs(tab.Elements) do
-                if element == api then table.remove(tab.Elements, index) break end
+            for index = #tab.Elements, 1, -1 do
+                if tab.Elements[index] == api then table.remove(tab.Elements, index) end
             end
         end
     end)
     local original = api.Destroy
     function api:Destroy()
-        if self.Destroyed then return end
-        self.Destroyed = true
-        if self.Flag and Library.Elements[self.Flag] == self then Library.Elements[self.Flag] = nil end
-        if tab and tab.Elements then
-            for i, other in ipairs(tab.Elements) do
-                if other == self then table.remove(tab.Elements, i) break end
-            end
-        end
-        maid:Destroy()
+        if self._Destroying or maid.Destroyed then return end
+        self._Destroying = true
+        Runtime.CloseOwned(window, object)
         if original then pcall(original, self) end
+        maid:Destroy()
+        self.Destroyed = true
+        self._Destroying = false
     end
     function api:GetMaid() return maid end
+    Runtime.CompleteApi(api, maid, window)
+    for name, method in pairs(api) do
+        if type(method) == "function" and (string.sub(name, 1, 3) == "Set"
+            or name == "Press" or name == "Toggle" or name == "Focus" or name == "Refresh"
+            or name == "Add" or name == "Remove" or name == "Clear" or name == "Select"
+            or name == "Deselect" or name == "SelectAll" or name == "ToggleCard"
+            or name == "AddCard" or name == "RemoveCard" or name == "UpdateCard") then
+            api[name] = function(self, ...)
+                if self.Destroyed or maid.Destroyed then return nil end
+                return withOwner(maid, method, self, ...)
+            end
+        end
+    end
     return api
+end
+
+do
+    local colorFactory, keyFactory, miniFactory = attachColorPicker, attachKeybind, createMiniButton
+    attachColorPicker = function(tab, ...)
+        local maid = Maid.new(Runtime.GetOwner() or tab.Maid or Library.Maid)
+        local ok, api = pcall(withOwner, maid, colorFactory, tab, ...)
+        if not ok then maid:Destroy(); error(api, 0) end
+        api._ColorPicker = true
+        local alphaFlag = api.Flag .. ".Alpha"
+        local proxy = Library.Elements[alphaFlag]
+        if proxy then
+            proxy.SetValue = function(_, value, silent) return api:Set(nil, value, silent) end
+            proxy.GetValue = proxy.Get
+            proxy.SetVisible = function(_, value) return api:SetVisible(value) end
+            proxy.SetEnabled = function(_, value) return api:SetEnabled(value) end
+            proxy.Destroy = function() return api:Destroy() end
+            maid:Add(function()
+                proxy.Destroyed = true
+                if Library.Elements[alphaFlag] == proxy then Library.Elements[alphaFlag] = nil end
+            end)
+        end
+        return ownElement(nil, api, maid)
+    end
+    attachKeybind = function(tab, ...)
+        local maid = Maid.new(Runtime.GetOwner() or tab.Maid or Library.Maid)
+        local ok, api = pcall(withOwner, maid, keyFactory, tab, ...)
+        if not ok then maid:Destroy(); error(api, 0) end
+        return ownElement(nil, api, maid)
+    end
+    createMiniButton = function(window, config)
+        local maid = Maid.new(Runtime.GetOwner() or Library.Maid)
+        local ok, api = pcall(withOwner, maid, miniFactory, window, config)
+        if not ok then maid:Destroy(); error(api, 0) end
+        api.Set = api.SetActive
+        return ownElement(nil, api, maid)
+    end
 end
 
 for name, fn in pairs(Tab) do
@@ -8510,14 +8776,12 @@ for name, fn in pairs(Tab) do
         and name ~= "AddElements" and name ~= "AddSelect" and name ~= "AddColor" and name ~= "AddInput"
         and name ~= "AddCards" and name ~= "AddCardSelector" then
         Tab[name] = function(self, ...)
-            local maid = Maid.new(self.Maid or Library.Maid)
-            local ok, result = pcall(withOwner, maid, fn, self, ...)
-            if not ok then
-                maid:Destroy()
-                error(result, 0)
-            end
-            local api = ownElement(self, result, maid)
-            return api
+            if self.Destroyed then return nil, "tab destroyed" end
+            local maid = Maid.new(Runtime.GetOwner() or self.Maid or Library.Maid)
+            local results = table.pack(pcall(withOwner, maid, fn, self, ...))
+            if not results[1] then maid:Destroy(); error(results[2], 0) end
+            results[2] = ownElement(self, results[2], maid)
+            return table.unpack(results, 2, results.n)
         end
     end
 end
@@ -8535,16 +8799,27 @@ end
 
 function Library:Collect(full)
     local dropped = sweepConnections(true)
-    if full then collectgarbage("collect") else collectgarbage("step") end
+    local collected, problem = pcall(collectgarbage, full and "collect" or "step")
     local stats = self:GetMemoryStats()
     stats.Dropped = dropped
+    stats.Collected = collected
+    if not collected then stats.CollectionError = tostring(problem) end
     return stats
 end
 
 function Library:GetMemoryStats()
     local window = self.Window
-    local live = 0
-    for _ in pairs(liveMaids) do live = live + 1 end
+    local live, connections, pendingTasks = 0, 0, 0
+    for maid in pairs(liveMaids) do
+        live = live + 1
+        for _, item in pairs(maid._tasks) do
+            if typeof(item) == "RBXScriptConnection" and item.Connected then connections = connections + 1
+            elseif typeof(item) == "thread" and coroutine.status(item) ~= "dead" then pendingTasks = pendingTasks + 1 end
+        end
+    end
+    for _, connection in ipairs(Runtime.Connections) do
+        if connection.Connected then connections = connections + 1 end
+    end
     local elements = 0
     for _ in pairs(self.Elements or {}) do elements = elements + 1 end
     local instances = 0
@@ -8553,7 +8828,10 @@ function Library:GetMemoryStats()
     for _ in pairs(fadeCaches) do fadeCount = fadeCount + 1 end
     return {
         LuaKB = collectgarbage("count"),
-        Connections = #Runtime.Connections,
+        Connections = connections,
+        PendingTasks = pendingTasks,
+        CallbackErrors = Runtime.Stats.CallbackErrors or 0,
+        LastCallbackError = Runtime.Stats.LastCallbackError,
         ConnectionsTotal = Runtime.Stats.Connections,
         ConnectionsSwept = Runtime.Stats.Disconnected,
         Updates = #Runtime.Updates,
@@ -8614,17 +8892,22 @@ do
     end
 
     function Library:Debounce(callback, delay)
-        delay = math.max(0, tonumber(delay) or 0.25)
-        local token = 0
+        assert(type(callback) == "function", "Debounce requires a callback")
+        delay = math.max(0, Runtime.Number(delay, 0.25))
+        local owner = Runtime.GetOwner() or self.Maid
+        local pending
         return function(...)
-            token = token + 1
-            local mine = token
-            local args = table.pack(...)
-            task.delay(delay, function()
-                if mine == token then
-                    Library:Safe(callback, table.unpack(args, 1, args.n))
-                end
-            end)
+            if self.Destroyed or owner and owner.Destroyed then return end
+            if pending and coroutine.status(pending) ~= "dead" then
+                pcall(task.cancel, pending)
+                if owner then owner._tasks[pending] = nil end
+            end
+            owner = owner or Runtime.GetOwner() or self.Maid
+            if owner then
+                pending = owner:Delay(delay, callback, ...)
+            else
+                pending = task.delay(delay, function(...) self:Safe(callback, ...) end, ...)
+            end
         end
     end
 
@@ -8730,6 +9013,29 @@ do
             return ok, text
         end
         return false, text
+    end
+end
+
+do
+    local createWindow = Library.CreateWindow
+    Library.CreateWindow = function(self, ...)
+        local ok, result = pcall(createWindow, self, ...)
+        if not ok then
+            self:Unload()
+            error(result, 0)
+        end
+        return result
+    end
+    for _, name in ipairs({"Notify", "NotifyCards", "Dialog"}) do
+        local factory = Library[name]
+        Library[name] = function(self, ...)
+            local api = factory(self, ...)
+            if api then
+                Runtime.CompleteApi(api, api.Maid, self.Window)
+                if not api.GetMaid then api.GetMaid = function() return api.Maid end end
+            end
+            return api
+        end
     end
 end
 
