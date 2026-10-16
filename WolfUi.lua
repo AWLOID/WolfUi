@@ -2805,10 +2805,24 @@ function Library:CreateWindow(opts)
             end
             tooltip.Visible = true
             tooltip.BackgroundColor3 = palette[1]
-            local origin = window.TooltipObject.AbsolutePosition
+            local anchor = window.TooltipObject
+            local origin = anchor.AbsolutePosition
+            local anchorSize = anchor.AbsoluteSize
+            local x = origin.X + anchorSize.X * 0.5 - tooltipWidth * 0.5
+            local aboveY = origin.Y - tooltipHeight - 6
+            local belowY = origin.Y + anchorSize.Y + 6
+            -- Prefer the side with actual free space. The previous implementation
+            -- always placed the tooltip above the control and then clamped it to
+            -- Y=0, which made touch hints appear detached/high on the screen.
+            local y
+            if aboveY >= 6 or belowY + tooltipHeight > viewport.Y - 6 then
+                y = aboveY
+            else
+                y = belowY
+            end
             tooltip.Position = UDim2.fromOffset(
-                math.clamp(origin.X, 0, math.max(0, viewport.X - tooltipWidth)),
-                math.clamp(origin.Y - tooltipHeight - 4, 0, math.max(0, viewport.Y - tooltipHeight))
+                math.clamp(x, 6, math.max(6, viewport.X - tooltipWidth - 6)),
+                math.clamp(y, 6, math.max(6, viewport.Y - tooltipHeight - 6))
             )
         else
             tooltip.Visible = false
@@ -5542,9 +5556,9 @@ function Tab:AddPlayerList(opts)
     opts = opts or {}
     local name = opts.Name or "Players"
     local flag = opts.Flag or (self.Name .. "." .. name)
-    local w = self:_width(opts.Width or 360)
-    local listH = math.max(120, math.floor(tonumber(opts.Height) or 330))
-    local rowH = math.max(42, math.floor(tonumber(opts.RowHeight) or 54))
+    local w = self:_width(opts.Width or 370)
+    local listH = math.max(140, math.floor(tonumber(opts.Height) or 348))
+    local rowH = math.max(56, math.floor(tonumber(opts.RowHeight) or 62))
     local includeSelf = opts.IncludeSelf == true
     local getRole = type(opts.GetRole) == "function" and opts.GetRole or function() return "" end
     local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
@@ -5553,7 +5567,7 @@ function Tab:AddPlayerList(opts)
 
     local card = self:_card(w, 54 + listH + 12, name)
     local api = baseApi(self, card, flag)
-    local title = text(card, name, 10, 9, w - 20, 15, 12, white)
+    local title = text(card, name, 10, 9, math.max(40, w - 70), 15, 12, white)
     local countLabel = text(card, "0", w - 58, 9, 48, 15, 10, palette[3], "right")
 
     local search = new("TextBox", card, {
@@ -5561,7 +5575,7 @@ function Tab:AddPlayerList(opts)
         BackgroundTransparency = 0.08,
         BorderSizePixel = 0,
         Position = UDim2.fromOffset(10, 29),
-        Size = UDim2.fromOffset(w - 20, 26),
+        Size = UDim2.fromOffset(math.max(80, w - 20), 26),
         ClearTextOnFocus = false,
         PlaceholderText = opts.Placeholder or "Find player...",
         PlaceholderColor3 = palette[3],
@@ -5579,17 +5593,18 @@ function Tab:AddPlayerList(opts)
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         Position = UDim2.fromOffset(10, 61),
-        Size = UDim2.fromOffset(w - 20, listH),
+        Size = UDim2.fromOffset(math.max(80, w - 20), listH),
         CanvasSize = UDim2.fromOffset(0, 0),
         ScrollBarThickness = 3,
         ScrollBarImageColor3 = palette[5],
         ScrollingDirection = Enum.ScrollingDirection.Y,
         ElasticBehavior = Enum.ElasticBehavior.Never,
         Active = true,
+        ClipsDescendants = true,
         ZIndex = 2,
     })
 
-    local empty = muted(holder, opts.Empty or "No players found", 8, 0, w - 36, rowH - 4, 11)
+    local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
     local rows = {}
     local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
     local rowsMaid = Maid.new(listMaid)
@@ -5609,33 +5624,56 @@ function Tab:AddPlayerList(opts)
         local id = tonumber(player.UserId) or 0
         if thumbCache[id] then return thumbCache[id] end
         local image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(id) .. "&w=48&h=48"
-        pcall(function()
-            local content, ready = Players:GetUserThumbnailAsync(
-                id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
-            if ready and type(content) == "string" and content ~= "" then image = content end
+        task.spawn(function()
+            local ok, content, ready = pcall(function()
+                return Players:GetUserThumbnailAsync(
+                    id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+            end)
+            if ok and ready and type(content) == "string" and content ~= "" then
+                thumbCache[id] = content
+                if rows[player] and rows[player].Parent then
+                    local avatar = rows[player]:FindFirstChild("Avatar")
+                    if avatar and avatar:IsA("ImageLabel") then avatar.Image = content end
+                end
+            end
         end)
         thumbCache[id] = image
         return image
     end
 
-    local function actionButton(row, x, width, iconNames, fallback, tooltip, callback, player)
-        local button = rect(row, x, 8, width, rowH - 20, palette[4], 4, "TextButton")
-        button.BackgroundTransparency = 0.1
+    local ACTION_W = 29
+    local ACTION_H = 32
+    local ACTION_GAP = 4
+    local ACTION_COUNT = 3
+    local ACTIONS_W = ACTION_W * ACTION_COUNT + ACTION_GAP * (ACTION_COUNT - 1)
+
+    local function actionButton(row, x, iconNames, fallback, tooltip, callback, player)
+        local y = math.floor((rowH - 4 - ACTION_H) * 0.5)
+        local button = rect(row, x, y, ACTION_W, ACTION_H, palette[4], 5, "TextButton")
+        button.BackgroundTransparency = 0.08
         button.AutoButtonColor = false
         button.ZIndex = 8
-        local icon = iconLabel(button, iconNames, math.max(2, (width - 16) * 0.5), math.max(2, (rowH - 36) * 0.5),
-            math.min(15, width - 6), palette[3], fallback)
+        button.ClipsDescendants = true
+
+        local iconSize = 14
+        local icon = iconLabel(button, iconNames,
+            math.floor((ACTION_W - iconSize) * 0.5),
+            math.floor((ACTION_H - iconSize) * 0.5),
+            iconSize, palette[3], fallback)
         icon.Object.ZIndex = 9
+
         connect(button.Activated, function()
             if player and player.Parent then Runtime.Spawn(callback, player) end
         end, rowsMaid)
+
         local hover = false
         connect(button.MouseEnter, function() hover = true end, rowsMaid)
         connect(button.MouseLeave, function() hover = false end, rowsMaid)
         step(function()
-            button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.75 or 0)
+            button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.8 or 0)
             icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
         end, button)
+
         if tooltip then self.Window:Tooltip(button, tooltip) end
         return button
     end
@@ -5650,6 +5688,7 @@ function Tab:AddPlayerList(opts)
         clearRows()
         local playersList = {}
         local needle = string.lower(filterText)
+
         for _, p in ipairs(Players:GetPlayers()) do
             if (includeSelf or p ~= Players.LocalPlayer) and
                 (needle == "" or string.find(string.lower(p.Name), needle, 1, true)
@@ -5657,48 +5696,61 @@ function Tab:AddPlayerList(opts)
                 playersList[#playersList + 1] = p
             end
         end
+
         table.sort(playersList, function(a, b)
             return string.lower(a.DisplayName) < string.lower(b.DisplayName)
         end)
 
         empty.Object.Visible = #playersList == 0
         countLabel:SetText(tostring(#playersList))
+
+        local rowWidth = math.max(80, w - 20)
+        local actionStart = rowWidth - ACTIONS_W - 4
+        local avatarSize = math.min(40, rowH - 16)
+        local infoX = 12 + avatarSize
+        local infoW = math.max(70, actionStart - infoX - 8)
+
         for index, p in ipairs(playersList) do
             local y = (index - 1) * rowH
-            local row = rect(holder, 0, y, w - 8, rowH - 4, palette[4], 5)
+            local row = rect(holder, 0, y, rowWidth - 4, rowH - 4, palette[4], 6)
+            row.Name = "PlayerRow_" .. tostring(p.UserId)
             row.ZIndex = 3
+            row.ClipsDescendants = true
             rows[p] = row
 
             local avatar = new("ImageLabel", row, {
+                Name = "Avatar",
                 BackgroundColor3 = palette[1],
-                BackgroundTransparency = 0.15,
+                BackgroundTransparency = 0.12,
                 BorderSizePixel = 0,
-                Position = UDim2.fromOffset(6, 6),
-                Size = UDim2.fromOffset(rowH - 16, rowH - 16),
+                Position = UDim2.fromOffset(7, math.floor((rowH - 4 - avatarSize) * 0.5)),
+                Size = UDim2.fromOffset(avatarSize, avatarSize),
                 Image = thumbnail(p),
                 ScaleType = Enum.ScaleType.Crop,
                 ZIndex = 5,
             })
             new("UICorner", avatar, {CornerRadius = UDim.new(1, 0)})
 
-            local nameW = math.max(80, w - 178)
-            local display = text(row, p.DisplayName, rowH - 4, 7, nameW, 15, 11, white)
+            local display = text(row, p.DisplayName, infoX, 8, infoW, 16, 11, white)
             display.Object.ZIndex = 6
-            local username = p.DisplayName ~= p.Name and ("@" .. p.Name) or p.Name
-            local role = text(row, roleText(p), rowH - 4, 24, nameW, 13, 9, palette[3])
-            role.Object.ZIndex = 6
-            local tag = text(row, username, rowH - 4, 36, nameW, 11, 8, palette[3])
-            tag.Object.ZIndex = 6
+            display.Object.TextTruncate = Enum.TextTruncate.AtEnd
 
-            local buttonW = 30
-            local gap = 4
-            local startX = w - 8 - (buttonW * 3 + gap * 2)
-            actionButton(row, startX, buttonW, {"eye", "view"}, "V", "Watch", onWatch, p)
-            actionButton(row, startX + buttonW + gap, buttonW, {"move", "send", "navigation"}, "T", "Teleport", onTeleport, p)
-            actionButton(row, startX + (buttonW + gap) * 2, buttonW, {"zap", "flame"}, "F", "Fling", onFling, p)
+            local username = p.DisplayName ~= p.Name and ("@" .. p.Name) or p.Name
+            local tag = text(row, username, infoX, 25, infoW, 12, 8, palette[3])
+            tag.Object.ZIndex = 6
+            tag.Object.TextTruncate = Enum.TextTruncate.AtEnd
+
+            local role = text(row, roleText(p), infoX, 39, infoW, 12, 9, palette[3])
+            role.Object.ZIndex = 6
+            role.Object.TextTruncate = Enum.TextTruncate.AtEnd
+
+            actionButton(row, actionStart, {"eye", "view"}, "V", "Watch", onWatch, p)
+            actionButton(row, actionStart + ACTION_W + ACTION_GAP, {"move", "send", "navigation"}, "T", "Teleport", onTeleport, p)
+            actionButton(row, actionStart + (ACTION_W + ACTION_GAP) * 2, {"zap", "flame"}, "F", "Fling", onFling, p)
 
             rowsMaid:Add(row)
         end
+
         holder.CanvasSize = UDim2.fromOffset(0, math.max(0, #playersList * rowH))
     end
 
@@ -5708,13 +5760,12 @@ function Tab:AddPlayerList(opts)
     end, listMaid)
     connect(Players.PlayerAdded, function() rebuild() end, listMaid)
     connect(Players.PlayerRemoving, function() rebuild() end, listMaid)
+
     local roleClock = 0
     step(function(dt)
         roleClock = roleClock + dt
-        if roleClock >= 0.5 then
+        if roleClock >= 0.75 then
             roleClock = 0
-            -- Roles can change without a PlayerAdded/Removing event. Rebuild at
-            -- a low rate so the list stays current without per-frame churn.
             rebuild()
         end
     end, card)
@@ -9666,6 +9717,15 @@ do
         local now = os.clock()
         if self.RebuildAt and now >= self.RebuildAt then self.RebuildAt = nil; self:Rebuild() end
         if self.CameraDirty then self:UpdateCamera() end
+        -- Force a lightweight render invalidation after resize/open. Some
+        -- ViewportFrame/WorldModel combinations otherwise keep a stale first
+        -- frame until a camera property changes.
+        if self.Camera and self.Object.Visible and self._lastViewportSize ~= screen then
+            self._lastViewportSize = screen
+            local fov = self.Camera.FieldOfView
+            self.Camera.FieldOfView = fov + 0.001
+            self.Camera.FieldOfView = fov
+        end
         -- Hard-lock the preview snapshot. This prevents animation controllers,
         -- avatar physics and any copied Motor6D state from mirroring live input.
         if self.Model and self.StaticPose then
@@ -9891,7 +9951,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "chams-stable-15-static-glow-zoom"
+    Library.ESPPreviewRevision = "chams-stable-16-preview-glow-zoom"
 end
 
 
