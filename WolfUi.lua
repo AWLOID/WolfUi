@@ -5538,6 +5538,210 @@ function Tab:AddList(opts)
     return api
 end
 
+function Tab:AddPlayerList(opts)
+    opts = opts or {}
+    local name = opts.Name or "Players"
+    local flag = opts.Flag or (self.Name .. "." .. name)
+    local w = self:_width(opts.Width or 360)
+    local listH = math.max(120, math.floor(tonumber(opts.Height) or 330))
+    local rowH = math.max(42, math.floor(tonumber(opts.RowHeight) or 54))
+    local includeSelf = opts.IncludeSelf == true
+    local getRole = type(opts.GetRole) == "function" and opts.GetRole or function() return "" end
+    local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
+    local onTeleport = type(opts.OnTeleport) == "function" and opts.OnTeleport or function() end
+    local onFling = type(opts.OnFling) == "function" and opts.OnFling or function() end
+
+    local card = self:_card(w, 54 + listH + 12, name)
+    local api = baseApi(self, card, flag)
+    local title = text(card, name, 10, 9, w - 20, 15, 12, white)
+    local countLabel = text(card, "0", w - 58, 9, 48, 15, 10, palette[3], "right")
+
+    local search = new("TextBox", card, {
+        BackgroundColor3 = palette[4],
+        BackgroundTransparency = 0.08,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(10, 29),
+        Size = UDim2.fromOffset(w - 20, 26),
+        ClearTextOnFocus = false,
+        PlaceholderText = opts.Placeholder or "Find player...",
+        PlaceholderColor3 = palette[3],
+        Text = "",
+        TextColor3 = white,
+        Font = UI_FONT,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 3,
+    })
+    new("UICorner", search, {CornerRadius = UDim.new(0, 5)})
+    new("UIPadding", search, {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 8)})
+
+    local holder = new("ScrollingFrame", card, {
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(10, 61),
+        Size = UDim2.fromOffset(w - 20, listH),
+        CanvasSize = UDim2.fromOffset(0, 0),
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = palette[5],
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ElasticBehavior = Enum.ElasticBehavior.Never,
+        Active = true,
+        ZIndex = 2,
+    })
+
+    local empty = muted(holder, opts.Empty or "No players found", 8, 0, w - 36, rowH - 4, 11)
+    local rows = {}
+    local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
+    local rowsMaid = Maid.new(listMaid)
+    local filterText = ""
+
+    local function roleText(player)
+        local ok, value = pcall(getRole, player)
+        if ok and value ~= nil then
+            local result = tostring(value)
+            if result ~= "" then return result end
+        end
+        return "Unknown"
+    end
+
+    local thumbCache = {}
+    local function thumbnail(player)
+        local id = tonumber(player.UserId) or 0
+        if thumbCache[id] then return thumbCache[id] end
+        local image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(id) .. "&w=48&h=48"
+        pcall(function()
+            local content, ready = Players:GetUserThumbnailAsync(
+                id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+            if ready and type(content) == "string" and content ~= "" then image = content end
+        end)
+        thumbCache[id] = image
+        return image
+    end
+
+    local function actionButton(row, x, width, iconNames, fallback, tooltip, callback, player)
+        local button = rect(row, x, 8, width, rowH - 20, palette[4], 4, "TextButton")
+        button.BackgroundTransparency = 0.1
+        button.AutoButtonColor = false
+        button.ZIndex = 8
+        local icon = iconLabel(button, iconNames, math.max(2, (width - 16) * 0.5), math.max(2, (rowH - 36) * 0.5),
+            math.min(15, width - 6), palette[3], fallback)
+        icon.Object.ZIndex = 9
+        connect(button.Activated, function()
+            if player and player.Parent then Runtime.Spawn(callback, player) end
+        end, rowsMaid)
+        local hover = false
+        connect(button.MouseEnter, function() hover = true end, rowsMaid)
+        connect(button.MouseLeave, function() hover = false end, rowsMaid)
+        step(function()
+            button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.75 or 0)
+            icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
+        end, button)
+        if tooltip then self.Window:Tooltip(button, tooltip) end
+        return button
+    end
+
+    local function clearRows()
+        rowsMaid:Destroy()
+        rowsMaid = Maid.new(listMaid)
+        table.clear(rows)
+    end
+
+    local function rebuild()
+        clearRows()
+        local playersList = {}
+        local needle = string.lower(filterText)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if (includeSelf or p ~= Players.LocalPlayer) and
+                (needle == "" or string.find(string.lower(p.Name), needle, 1, true)
+                    or string.find(string.lower(p.DisplayName), needle, 1, true)) then
+                playersList[#playersList + 1] = p
+            end
+        end
+        table.sort(playersList, function(a, b)
+            return string.lower(a.DisplayName) < string.lower(b.DisplayName)
+        end)
+
+        empty.Object.Visible = #playersList == 0
+        countLabel:SetText(tostring(#playersList))
+        for index, p in ipairs(playersList) do
+            local y = (index - 1) * rowH
+            local row = rect(holder, 0, y, w - 8, rowH - 4, palette[4], 5)
+            row.ZIndex = 3
+            rows[p] = row
+
+            local avatar = new("ImageLabel", row, {
+                BackgroundColor3 = palette[1],
+                BackgroundTransparency = 0.15,
+                BorderSizePixel = 0,
+                Position = UDim2.fromOffset(6, 6),
+                Size = UDim2.fromOffset(rowH - 16, rowH - 16),
+                Image = thumbnail(p),
+                ScaleType = Enum.ScaleType.Crop,
+                ZIndex = 5,
+            })
+            new("UICorner", avatar, {CornerRadius = UDim.new(1, 0)})
+
+            local nameW = math.max(80, w - 178)
+            local display = text(row, p.DisplayName, rowH - 4, 7, nameW, 15, 11, white)
+            display.Object.ZIndex = 6
+            local username = p.DisplayName ~= p.Name and ("@" .. p.Name) or p.Name
+            local role = text(row, roleText(p), rowH - 4, 24, nameW, 13, 9, palette[3])
+            role.Object.ZIndex = 6
+            local tag = text(row, username, rowH - 4, 36, nameW, 11, 8, palette[3])
+            tag.Object.ZIndex = 6
+
+            local buttonW = 30
+            local gap = 4
+            local startX = w - 8 - (buttonW * 3 + gap * 2)
+            actionButton(row, startX, buttonW, {"eye", "view"}, "V", "Watch", onWatch, p)
+            actionButton(row, startX + buttonW + gap, buttonW, {"move", "send", "navigation"}, "T", "Teleport", onTeleport, p)
+            actionButton(row, startX + (buttonW + gap) * 2, buttonW, {"zap", "flame"}, "F", "Fling", onFling, p)
+
+            rowsMaid:Add(row)
+        end
+        holder.CanvasSize = UDim2.fromOffset(0, math.max(0, #playersList * rowH))
+    end
+
+    connect(search:GetPropertyChangedSignal("Text"), function()
+        filterText = search.Text or ""
+        rebuild()
+    end, listMaid)
+    connect(Players.PlayerAdded, function() rebuild() end, listMaid)
+    connect(Players.PlayerRemoving, function() rebuild() end, listMaid)
+    local roleClock = 0
+    step(function(dt)
+        roleClock = roleClock + dt
+        if roleClock >= 0.5 then
+            roleClock = 0
+            -- Roles can change without a PlayerAdded/Removing event. Rebuild at
+            -- a low rate so the list stays current without per-frame churn.
+            rebuild()
+        end
+    end, card)
+
+    function api:GetFilter() return filterText end
+    function api:SetFilter(value)
+        filterText = tostring(value or "")
+        search.Text = filterText
+        rebuild()
+    end
+    function api:Refresh() rebuild() end
+    function api:GetPlayers()
+        local result = {}
+        for p in pairs(rows) do result[#result + 1] = p end
+        return result
+    end
+    function api:Destroy()
+        if self.Destroyed then return end
+        self.Destroyed = true
+        listMaid:Destroy()
+        card:Destroy()
+    end
+
+    rebuild()
+    return api
+end
+
 function Tab:AddPlayerDropdown(opts)
     opts = opts or {}
     local function names(excluded)
@@ -9054,13 +9258,23 @@ do
         local side = right >= width * fit and "Right" or (left > right and "Left" or "Right")
         local room = side == "Right" and right or left
         local amount = math.min(fit, room / width)
-        -- Never silently lose the preview on narrow/mobile viewports. If neither
-        -- side has enough room, float it inside the viewport above the menu.
-        if amount < 0.45 then
+
+        -- The preview is a visual control, not a layout-dependent decoration.
+        -- On narrow screens it must remain reachable instead of disappearing.
+        if amount < 0.55 then
             side = "Overlay"
-            amount = math.min(fit, (screen.X - margin * 2) / width, (screen.Y - margin * 2) / height)
+            amount = math.min(fit, (screen.X - margin * 2) / width,
+                (screen.Y - margin * 2) / height)
         end
-        if amount < 0.25 then return 0, 0, 0, "Hidden" end
+        -- Keep a small but usable instance even while the window is being
+        -- resized/animated and AbsoluteSize briefly reports a tiny viewport.
+        if amount <= 0 then
+            amount = math.min(scale, 0.32)
+            side = "Overlay"
+        end
+        local minAmount = math.min(0.32, fit > 0 and fit or 0.32)
+        if fit > 0 then amount = math.max(amount, minAmount) end
+
         local w, h = width * amount, height * amount
         local x, y = position.X + size.X + gap, position.Y + (size.Y - h) * 0.5
         if side == "Left" then
@@ -9095,8 +9309,12 @@ do
                 self.Holder.Visible = false
                 self.Drag = nil
             else
-                -- Let the existing RenderStepped loop apply layout and visibility.
-                -- Calling Step(0) from a tab callback could re-enter the renderer.
+                -- Rebuild immediately when a visible preview has no model. The
+                -- render loop will handle layout; this only removes the startup
+                -- race where the preview could remain on its waiting state.
+                if self.Character and not self.Model then
+                    self:Refresh(true)
+                end
             end
         end
         return self
@@ -9158,6 +9376,7 @@ do
         self.Drag, self.Renderer, self.StateProvider, self.Character = nil, nil, nil, nil
         self.Maid:Destroy()
         self.Model, self.World, self.Camera, self.Window = nil, nil, nil, nil
+        self.StaticPose = nil
         table.clear(self.Parts)
         table.clear(self.Corners)
         self.State = {}
@@ -9167,6 +9386,8 @@ do
         if self.Model then self.Model:Destroy(); self.Model = nil end
         table.clear(self.Parts)
         table.clear(self.Corners)
+        table.clear(self.StaticPose or {})
+        self.StaticPose = {}
         self.BodyBounds, self.FullBounds = nil, nil
         self.Overlay.Visible = false
         self.Status.Text = "Waiting for character"
@@ -9286,6 +9507,17 @@ do
             clone.Name = "ESPPreviewCharacter"
             clone.Parent = self.World
             self.ModelSize = size
+            -- Freeze the final post-normalization pose as a snapshot.  Anchoring
+            -- alone is not enough for every avatar rig: Motor6D/SkinnedMesh
+            -- runtimes can still rewrite transforms.  Restoring this snapshot
+            -- each preview frame guarantees that gameplay movement never leaks
+            -- into the visual sample.
+            self.StaticPose = {}
+            for _, object in ipairs(clone:GetDescendants()) do
+                if object:IsA("BasePart") then
+                    self.StaticPose[object] = object.CFrame
+                end
+            end
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("BasePart") then
                     if object.Parent == clone then self.Parts[object.Name] = object end
@@ -9315,9 +9547,14 @@ do
         return ready
     end
 
-    function Preview:Refresh()
+    function Preview:Refresh(immediate)
         if self.Destroyed then return self end
-        self.RebuildAt = os.clock() + 0.15
+        if immediate == true or (self.Visible and not self.Model and self.Character) then
+            self.RebuildAt = nil
+            self:Rebuild()
+        else
+            self.RebuildAt = os.clock() + 0.12
+        end
         return self
     end
 
@@ -9339,7 +9576,7 @@ do
                 if not parent then self:ClearModel() else self:Refresh() end
             end)
         end
-        return self:Refresh()
+        return self:Refresh(self.Visible == true)
     end
 
     function Preview:UpdateCamera()
@@ -9429,6 +9666,21 @@ do
         local now = os.clock()
         if self.RebuildAt and now >= self.RebuildAt then self.RebuildAt = nil; self:Rebuild() end
         if self.CameraDirty then self:UpdateCamera() end
+        -- Hard-lock the preview snapshot. This prevents animation controllers,
+        -- avatar physics and any copied Motor6D state from mirroring live input.
+        if self.Model and self.StaticPose then
+            for part, cf in pairs(self.StaticPose) do
+                if part.Parent then
+                    if part.CFrame ~= cf then part.CFrame = cf end
+                    if part.AssemblyLinearVelocity ~= Vector3.zero then
+                        part.AssemblyLinearVelocity = Vector3.zero
+                    end
+                    if part.AssemblyAngularVelocity ~= Vector3.zero then
+                        part.AssemblyAngularVelocity = Vector3.zero
+                    end
+                end
+            end
+        end
         self.Elapsed = self.Elapsed + dt
         if not self.Drag and self.Elapsed < self.Interval then fadeGroup(self.Canvas, alpha); return end
         local elapsed = self.Elapsed
@@ -9579,7 +9831,7 @@ do
         local preview = setmetatable({Window = self, Maid = maid, Width = math.clamp(Runtime.Number(options.Width, 180), 120, 420),
             Height = math.clamp(Runtime.Number(options.Height, 250), 160, 600), Gap = math.clamp(Runtime.Number(options.Gap, 16), 4, 60),
             Visible = options.Visible ~= false, Enabled = options.Enabled ~= false, State = {}, Parts = {}, Corners = {},
-            Yaw = 0, Pitch = 0, Zoom = 1, Pan = Vector2.zero, Elapsed = 0, FocalLength = 1,
+            Yaw = 0, Pitch = 0, Zoom = 1, Pan = Vector2.zero, StaticPose = {}, Elapsed = 0, FocalLength = 1,
             Interval = 1 / math.clamp(Runtime.Number(options.UpdateRate, 30), 1, 60)}, Preview)
         preview.Size2D = Vector2.new(preview.Width, preview.Height - 32)
         local ok, problem = pcall(function()
@@ -9639,7 +9891,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "chams-stable-13-glow-zoom"
+    Library.ESPPreviewRevision = "chams-stable-15-static-glow-zoom"
 end
 
 
