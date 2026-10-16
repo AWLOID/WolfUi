@@ -5560,7 +5560,7 @@ function Tab:AddList(opts)
     return api
 end
 
-Library.PlayersListRevision = "players-cards-r3"
+Library.PlayersListRevision = "players-cards-r4"
 
 function Tab:AddPlayerList(opts)
     opts = opts or {}
@@ -5742,23 +5742,26 @@ function Tab:AddPlayerList(opts)
     layoutState.AvatarY = math.clamp(layoutState.AvatarY, -4, math.max(-4, rowH - layoutState.AvatarSize - 4))
     layoutState.DistanceY = math.clamp(layoutState.DistanceY, distanceMinY, distanceMaxY)
 
-    local customize = paint(rect(card, w - 54, 7, 38, 22, palette[4], 5, "TextButton"), 6)
+    local customize = paint(rect(card, w - 54, 7, 38, 22, palette[4], 5, "TextButton"), 4)
+    customize.ZIndex = 6
     customize.AutoButtonColor = false
     local customizeIcon = playerIcon(customize, {"settings","sliders-horizontal"}, 11, 4, 14, palette[3], "C")
     customizeIcon.Object.ZIndex = 7
 
-    local popup = paint(rect(card, w - 244, 32, 230, 176, palette[2], 7), 30)
+    local popup = paint(rect(card, w - 244, 32, 230, 176, palette[2], 7), 2)
     popup.Visible = false
     popup.ZIndex = 30
     new("UIStroke", popup, {Color = palette[5], Thickness = 1, Transparency = 0.1})
     text(popup, "Player card layout", 10, 8, 190, 18, 11, white)
     local function settingButton(parent, x, y, label, delta, key)
-        local b = paint(rect(parent, x, y, 96, 27, palette[4], 5, "TextButton"), 31)
+        local b = paint(rect(parent, x, y, 96, 27, palette[4], 5, "TextButton"), 4)
+        b.ZIndex = 31
         b.AutoButtonColor = false
         local t = text(b, label, 7, 0, 78, 27, 9, white)
         t.Object.ZIndex = 32
-        local minus = paint(rect(parent, x + 99, y, 27, 27, palette[4], 5, "TextButton"), 31)
-        local plus = paint(rect(parent, x + 130, y, 27, 27, palette[4], 5, "TextButton"), 31)
+        local minus = paint(rect(parent, x + 99, y, 27, 27, palette[4], 5, "TextButton"), 4)
+        local plus = paint(rect(parent, x + 130, y, 27, 27, palette[4], 5, "TextButton"), 4)
+        minus.ZIndex, plus.ZIndex = 31, 31
         text(minus, "-", 0, 0, 27, 27, 12, white, "center").Object.ZIndex = 32
         text(plus, "+", 0, 0, 27, 27, 12, white, "center").Object.ZIndex = 32
         local function change(v)
@@ -5779,7 +5782,8 @@ function Tab:AddPlayerList(opts)
     settingButton(popup, 10, 96, "Avatar size", 2, "AvatarSize")
     settingButton(popup, 10, 127, "Distance Y", 2, "DistanceY")
     settingButton(popup, 120, 127, "Info X", 2, "InfoX")
-    local showDistanceBtn = paint(rect(popup, 169, 34, 51, 27, palette[4], 5, "TextButton"), 31)
+    local showDistanceBtn = paint(rect(popup, 169, 34, 51, 27, palette[4], 5, "TextButton"), 4)
+    showDistanceBtn.ZIndex = 31
     text(showDistanceBtn, "ON", 0, 0, 51, 27, 9, white, "center").Object.ZIndex = 32
     connect(showDistanceBtn.Activated, function()
         layoutState.ShowDistance = not layoutState.ShowDistance
