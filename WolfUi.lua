@@ -5590,9 +5590,9 @@ function Tab:AddPlayerList(opts)
         BackgroundTransparency = 1, BorderSizePixel = 0,
         Position = UDim2.fromOffset(10, 61),
         Size = UDim2.fromOffset(math.max(80, w - 20), listH),
-        CanvasSize = UDim2.new(0, 0, 0, 0),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        ScrollBarThickness = 4, ScrollBarImageColor3 = palette[5],
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.None,
+        ScrollBarThickness = 5, ScrollBarImageColor3 = palette[5],
         ScrollingDirection = Enum.ScrollingDirection.Y,
         ScrollingEnabled = true, ElasticBehavior = Enum.ElasticBehavior.Never,
         Active = true, Selectable = true, ClipsDescendants = true, ZIndex = 2,
@@ -5608,6 +5608,16 @@ function Tab:AddPlayerList(opts)
         SortOrder = Enum.SortOrder.LayoutOrder,
         Padding = UDim.new(0, 4),
     })
+
+    -- Use the layout's measured content height rather than AutomaticCanvasSize.
+    -- This avoids the last-row clipping that can occur with nested/touch scrolling.
+    local function syncPlayerCanvas()
+        if not holder.Parent or not layout.Parent then return end
+        local contentH = math.ceil(layout.AbsoluteContentSize.Y) + 6
+        local viewportH = math.max(0, holder.AbsoluteSize.Y)
+        holder.CanvasSize = UDim2.fromOffset(0, math.max(contentH, viewportH))
+    end
+    connect(layout:GetPropertyChangedSignal("AbsoluteContentSize"), syncPlayerCanvas)
 
     local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
     empty.Object.LayoutOrder = 999999
@@ -5752,13 +5762,15 @@ function Tab:AddPlayerList(opts)
         empty.Object.Visible = #list == 0
         countLabel:SetText(tostring(#list))
         for i,p in ipairs(list) do makeRow(p, i) end
+        syncPlayerCanvas()
 
-        -- Roblox can update AbsoluteCanvasSize one frame after the hierarchy.
+        -- Roblox can update layout one frame after the hierarchy.
         -- Restore after layout settles, but never fight the user's subsequent
         -- touch/mouse input.
         task.defer(function()
             if not holder.Parent then return end
-            local maxY = math.max(0, holder.AbsoluteCanvasSize.Y - holder.AbsoluteSize.Y)
+            syncPlayerCanvas()
+            local maxY = math.max(0, holder.CanvasSize.Y.Offset - holder.AbsoluteSize.Y)
             holder.CanvasPosition = Vector2.new(0, math.clamp(oldScroll, 0, maxY))
         end)
     end
