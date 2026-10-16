@@ -5560,7 +5560,7 @@ function Tab:AddList(opts)
     return api
 end
 
-Library.PlayersListRevision = "players-scroll-r2"
+Library.PlayersListRevision = "players-cards-r3"
 
 function Tab:AddPlayerList(opts)
     opts = opts or {}
@@ -5572,6 +5572,11 @@ function Tab:AddPlayerList(opts)
     local rowH = math.max(58, math.floor(tonumber(opts.RowHeight) or 64))
     local LIST_TOP, LIST_BOTTOM, ROW_GAP, LIST_PADDING = 61, 8, 4, 2
     local BAR_WIDTH, BAR_GAP = 5, 4
+    local roleY = math.min(37, rowH - ROW_GAP - 23)
+    local usernameY = math.min(23, roleY - 12)
+    local displayY = math.min(6, usernameY - 16)
+    local distanceMaxY = rowH - ROW_GAP - 11
+    local distanceMinY = math.min(44, distanceMaxY)
     local includeSelf = opts.IncludeSelf == true
     local getRole = type(opts.GetRole) == "function" and opts.GetRole or function() return "" end
     local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
@@ -5585,6 +5590,14 @@ function Tab:AddPlayerList(opts)
     local filterText = ""
     local title = text(card, name, 10, 9, math.max(40, w - 118), 15, 12, white)
     local countLabel = text(card, "0", w - 104, 9, 40, 15, 10, palette[3], "right")
+
+    local function playerIcon(parent, names, x, y, size, color, fallback)
+        local ok, icon = pcall(iconLabel, parent, names, x, y, size, color, fallback)
+        if ok and icon and icon.Object then return icon end
+        api.LastIconError = tostring(icon)
+        return text(parent, fallback or "*", x, y, size, size,
+            math.max(8, size - 4), color, "center")
+    end
 
     local search = new("TextBox", card, {
         BackgroundColor3 = palette[4], BackgroundTransparency = 0.08,
@@ -5610,17 +5623,8 @@ function Tab:AddPlayerList(opts)
         ScrollingEnabled = false, ElasticBehavior = Enum.ElasticBehavior.Never,
         Active = true, Selectable = true, ClipsDescendants = true, ZIndex = 2,
     })
-    new("UIPadding", holder, {
-        PaddingTop = UDim.new(0, LIST_PADDING), PaddingBottom = UDim.new(0, LIST_PADDING),
-        PaddingLeft = UDim.new(0, 1), PaddingRight = UDim.new(0, 1 + BAR_WIDTH + BAR_GAP),
-    })
-    new("UIListLayout", holder, {
-        FillDirection = Enum.FillDirection.Vertical,
-        HorizontalAlignment = Enum.HorizontalAlignment.Left,
-        VerticalAlignment = Enum.VerticalAlignment.Top,
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, ROW_GAP),
-    })
+    -- Position fixed-height cards explicitly. No pending layout measurement
+    -- or hidden-page layout pass is needed to make the first rows visible.
 
     -- Rows have fixed logical heights. AbsoluteContentSize includes UIScale;
     -- feeding that value back into CanvasSize scales the content a second time.
@@ -5682,6 +5686,22 @@ function Tab:AddPlayerList(opts)
         return "Unknown"
     end
 
+    local rolePending = {}
+    local function refreshRole(player, row)
+        if rolePending[player] then return end
+        local owner = rowMaids[player]
+        if not owner or owner.Destroyed then return end
+        rolePending[player] = row
+        owner:Spawn(function()
+            local value = roleText(player)
+            if not owner.Destroyed and rows[player] == row and row.Parent then
+                local label = row:FindFirstChild("Role")
+                if label then label.Text = value end
+            end
+            if rolePending[player] == row then rolePending[player] = nil end
+        end)
+    end
+
     local thumbCache = {}
     local function thumbnail(player)
         local id = tonumber(player.UserId) or 0
@@ -5720,11 +5740,11 @@ function Tab:AddPlayerList(opts)
     layoutState.AvatarSize = math.clamp(layoutState.AvatarSize, 24, math.max(24, rowH - 8))
     layoutState.AvatarX = math.clamp(layoutState.AvatarX, 2, math.max(2, w - 55))
     layoutState.AvatarY = math.clamp(layoutState.AvatarY, -4, math.max(-4, rowH - layoutState.AvatarSize - 4))
-    layoutState.DistanceY = math.clamp(layoutState.DistanceY, 44, math.max(44, rowH - 13))
+    layoutState.DistanceY = math.clamp(layoutState.DistanceY, distanceMinY, distanceMaxY)
 
     local customize = paint(rect(card, w - 54, 7, 38, 22, palette[4], 5, "TextButton"), 6)
     customize.AutoButtonColor = false
-    local customizeIcon = iconLabel(customize, {"settings","sliders-horizontal"}, 11, 4, 14, palette[3], "C")
+    local customizeIcon = playerIcon(customize, {"settings","sliders-horizontal"}, 11, 4, 14, palette[3], "C")
     customizeIcon.Object.ZIndex = 7
 
     local popup = paint(rect(card, w - 244, 32, 230, 176, palette[2], 7), 30)
@@ -5746,7 +5766,7 @@ function Tab:AddPlayerList(opts)
             if key == "AvatarSize" then layoutState[key] = math.clamp(layoutState[key], 24, rowH - 8)
             elseif key == "AvatarX" then layoutState[key] = math.clamp(layoutState[key], 2, w - 55)
             elseif key == "AvatarY" then layoutState[key] = math.clamp(layoutState[key], -4, rowH - layoutState.AvatarSize - 4)
-            elseif key == "DistanceY" then layoutState[key] = math.clamp(layoutState[key], 44, rowH - 13)
+            elseif key == "DistanceY" then layoutState[key] = math.clamp(layoutState[key], distanceMinY, distanceMaxY)
             elseif key == "InfoX" then layoutState[key] = math.clamp(layoutState[key], -40, 60) end
             if api and api._ApplyLayout then api:_ApplyLayout() end
         end
@@ -5783,7 +5803,7 @@ function Tab:AddPlayerList(opts)
         button.ClipsDescendants = true
         button.ZIndex = 8
         local iconSize = 14
-        local icon = iconLabel(button, iconNames,
+        local icon = playerIcon(button, iconNames,
             math.floor((ACTION_W - iconSize) * 0.5), math.floor((ACTION_H - iconSize) * 0.5),
             iconSize, palette[3], fallback)
         icon.Object.ZIndex = 9
@@ -5799,7 +5819,10 @@ function Tab:AddPlayerList(opts)
                 icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
             end
         end, button)
-        if tooltip then self.Window:Tooltip(button, tooltip) end
+        if tooltip and self.Window and type(self.Window.Tooltip) == "function" then
+            local ok, problem = pcall(self.Window.Tooltip, self.Window, button, tooltip)
+            if not ok then api.LastTooltipError = tostring(problem) end
+        end
         return button
     end
 
@@ -5807,6 +5830,7 @@ function Tab:AddPlayerList(opts)
         local row = rows[player]
         local maid = rowMaids[player]
         rows[player], rowMaids[player] = nil, nil
+        rolePending[player] = nil
         if maid then maid:Destroy()
         elseif row then row:Destroy() end
     end
@@ -5818,7 +5842,8 @@ function Tab:AddPlayerList(opts)
         local infoX = 12 + layoutState.AvatarSize + layoutState.InfoX
         local infoW = math.max(64, actionStart - infoX - 8)
 
-        local row = rect(holder, 0, 0, rowWidth, rowH - ROW_GAP, palette[4], 6)
+        local row = rect(holder, 1, LIST_PADDING + (order - 1) * rowH,
+            rowWidth, rowH - ROW_GAP, palette[4], 6)
         row.Name = "PlayerRow_" .. tostring(p.UserId)
         row.LayoutOrder = order
         row.ZIndex = 3
@@ -5833,16 +5858,16 @@ function Tab:AddPlayerList(opts)
         })
         new("UICorner", avatar, {CornerRadius=UDim.new(1,0)})
 
-        local display = text(row, p.DisplayName, infoX, 6, infoW, 16, 11, white)
+        local display = text(row, p.DisplayName, infoX, displayY, infoW, 16, 11, white)
         display.Object.Name = "DisplayName"
         display.Object.ZIndex=6; display.Object.TextTruncate=Enum.TextTruncate.AtEnd
         local username = p.DisplayName ~= p.Name and ("@"..p.Name) or p.Name
-        local tag = text(row, username, infoX, 23, infoW, 12, 8, palette[3])
+        local tag = text(row, username, infoX, usernameY, infoW, 12, 8, palette[3])
         tag.Object.Name = "Username"
         tag.Object.ZIndex=6; tag.Object.TextTruncate=Enum.TextTruncate.AtEnd
-        local role = text(row, roleText(p), infoX, 37, infoW, 12, 9, palette[3])
+        local role = text(row, "Unknown", infoX, roleY, infoW, 12, 9, palette[3])
         role.Object.Name="Role"; role.Object.ZIndex=6; role.Object.TextTruncate=Enum.TextTruncate.AtEnd
-        local distance = text(row, "Distance: --", infoX, layoutState.DistanceY, infoW, 12, 8, palette[3])
+        local distance = text(row, "Distance: --", infoX, layoutState.DistanceY, infoW, 10, 8, palette[3])
         distance.Object.Name="Distance"; distance.Object.ZIndex=6; distance.Object.TextTruncate=Enum.TextTruncate.AtEnd
         distance.Object.Visible = layoutState.ShowDistance
 
@@ -5850,6 +5875,7 @@ function Tab:AddPlayerList(opts)
         actionButton(row, actionStart+ACTION_W+ACTION_GAP, {"move","send","navigation"}, "T", "Teleport", onTeleport, p, rowMaid)
         actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*2, {"zap","flame"}, "F", "Fling", onFling, p, rowMaid)
         rowMaid:Add(row)
+        refreshRole(p, row)
         return row
     end
 
@@ -5862,20 +5888,22 @@ function Tab:AddPlayerList(opts)
                     avatar.Size = UDim2.fromOffset(layoutState.AvatarSize, layoutState.AvatarSize)
                 end
                 local infoX = math.max(8, 12 + layoutState.AvatarSize + layoutState.InfoX)
-                local display = row:FindFirstChildWhichIsA("TextLabel", true)
-                local role = row:FindFirstChild("Role", true)
-                local distance = row:FindFirstChild("Distance", true)
-                if display then display.Position = UDim2.fromOffset(infoX, 6) end
-                local textLabels = {}
-                for _,child in ipairs(row:GetChildren()) do
-                    if child:IsA("TextLabel") and child ~= display and child ~= role and child ~= distance then
-                        textLabels[#textLabels+1] = child
+                local infoRight = math.max(math.min(38, rowH - 18) + 112,
+                    row.Size.X.Offset - ACTIONS_W - 8) - 8
+                local infoW = math.max(1, infoRight - infoX)
+                local display = row:FindFirstChild("DisplayName")
+                local username = row:FindFirstChild("Username")
+                local role = row:FindFirstChild("Role")
+                local distance = row:FindFirstChild("Distance")
+                for _,field in ipairs({{display, displayY}, {username, usernameY}, {role, roleY}}) do
+                    if field[1] then
+                        field[1].Position = UDim2.fromOffset(infoX, field[2])
+                        field[1].Size = UDim2.fromOffset(infoW, field[1].Size.Y.Offset)
                     end
                 end
-                if textLabels[1] then textLabels[1].Position = UDim2.fromOffset(infoX, 23) end
-                if role then role.Position = UDim2.fromOffset(infoX, 37) end
                 if distance then
                     distance.Position = UDim2.fromOffset(infoX, layoutState.DistanceY)
+                    distance.Size = UDim2.fromOffset(infoW, distance.Size.Y.Offset)
                     distance.Visible = layoutState.ShowDistance
                 end
             end
@@ -5924,6 +5952,7 @@ function Tab:AddPlayerList(opts)
         for i, p in ipairs(list) do
             if rows[p] then
                 rows[p].LayoutOrder = i
+                rows[p].Position = UDim2.fromOffset(1, LIST_PADDING + (i - 1) * rowH)
                 rows[p]:FindFirstChild("DisplayName").Text = p.DisplayName
                 rows[p]:FindFirstChild("Username").Text = p.DisplayName ~= p.Name and ("@" .. p.Name) or p.Name
             else
@@ -5939,7 +5968,7 @@ function Tab:AddPlayerList(opts)
         local maximum, unit = scrollMetrics()
         local target = logicalScroll * unit
         if resetScroll then
-            holder:ResetScrollVelocity()
+            pcall(function() holder:ResetScrollVelocity() end)
             target = 0
         elseif oldScroll > 0 and anchor and indices[anchor] then
             target = (LIST_PADDING + (indices[anchor] - 1) * rowH + anchorOffset) * unit
@@ -5972,8 +6001,7 @@ function Tab:AddPlayerList(opts)
             roleClock = 0
             for p,row in pairs(rows) do
                 if p.Parent and row.Parent then
-                    local roleLabel = row:FindFirstChild("Role", true)
-                    if roleLabel and roleLabel:IsA("TextLabel") then roleLabel.Text = roleText(p) end
+                    refreshRole(p, row)
                     local distanceLabel = row:FindFirstChild("Distance", true)
                     if distanceLabel and distanceLabel:IsA("TextLabel") then
                         local a = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -6003,7 +6031,7 @@ function Tab:AddPlayerList(opts)
     function api:Destroy()
         if self.Destroyed then return end
         self.Destroyed=true; listMaid:Destroy(); card:Destroy()
-        table.clear(rows); table.clear(rowOrder); table.clear(rowMaids)
+        table.clear(rows); table.clear(rowOrder); table.clear(rowMaids); table.clear(rolePending)
     end
 
     rebuild()
