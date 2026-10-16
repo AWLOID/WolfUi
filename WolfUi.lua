@@ -5573,254 +5573,233 @@ function Tab:AddPlayerList(opts)
     local countLabel = text(card, "0", w - 58, 9, 48, 15, 10, palette[3], "right")
 
     local search = new("TextBox", card, {
-        BackgroundColor3 = palette[4],
-        BackgroundTransparency = 0.08,
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(10, 28),
+        BackgroundColor3 = palette[4], BackgroundTransparency = 0.08,
+        BorderSizePixel = 0, Position = UDim2.fromOffset(10, 28),
         Size = UDim2.fromOffset(math.max(80, w - 20), 28),
-        ClearTextOnFocus = false,
-        PlaceholderText = opts.Placeholder or "Find player...",
-        PlaceholderColor3 = palette[3],
-        Text = "",
-        TextColor3 = white,
-        Font = UI_FONT,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 3,
+        ClearTextOnFocus = false, PlaceholderText = opts.Placeholder or "Find player...",
+        PlaceholderColor3 = palette[3], Text = "", TextColor3 = white,
+        Font = UI_FONT, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 3,
     })
     new("UICorner", search, {CornerRadius = UDim.new(0, 5)})
     new("UIPadding", search, {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 8)})
 
+    -- The list owns its layout.  Do not manually move rows or repeatedly
+    -- recreate the ScrollingFrame contents; both approaches can make touch
+    -- scrolling stop short of the last item.
     local holder = new("ScrollingFrame", card, {
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
+        BackgroundTransparency = 1, BorderSizePixel = 0,
         Position = UDim2.fromOffset(10, 61),
         Size = UDim2.fromOffset(math.max(80, w - 20), listH),
-        CanvasSize = UDim2.fromOffset(0, 0),
-        ScrollBarThickness = 3,
-        ScrollBarImageColor3 = palette[5],
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 4, ScrollBarImageColor3 = palette[5],
         ScrollingDirection = Enum.ScrollingDirection.Y,
-        ElasticBehavior = Enum.ElasticBehavior.Never,
-        Active = true,
-        ClipsDescendants = true,
-        ZIndex = 2,
+        ScrollingEnabled = true, ElasticBehavior = Enum.ElasticBehavior.Never,
+        Active = true, Selectable = true, ClipsDescendants = true, ZIndex = 2,
+    })
+    local padding = new("UIPadding", holder, {
+        PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2),
+        PaddingLeft = UDim.new(0, 1), PaddingRight = UDim.new(0, 1),
+    })
+    local layout = new("UIListLayout", holder, {
+        FillDirection = Enum.FillDirection.Vertical,
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        VerticalAlignment = Enum.VerticalAlignment.Top,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 4),
     })
 
     local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
-    local rows = {}
+    empty.Object.LayoutOrder = 999999
+    local rows, rowOrder = {}, {}
     local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
     local rowsMaid = Maid.new(listMaid)
     local filterText = ""
 
     local function roleText(player)
         local ok, value = pcall(getRole, player)
-        if ok and value ~= nil then
-            local result = tostring(value)
-            if result ~= "" then return result end
-        end
-        return "Неизвестно"
+        if ok and value ~= nil and tostring(value) ~= "" then return tostring(value) end
+        return "Unknown"
     end
 
     local thumbCache = {}
     local function thumbnail(player)
         local id = tonumber(player.UserId) or 0
         if thumbCache[id] then return thumbCache[id] end
-        local image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(id) .. "&w=48&h=48"
+        local fallback = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(id) .. "&w=48&h=48"
+        thumbCache[id] = fallback
         task.spawn(function()
             local ok, content, ready = pcall(function()
-                return Players:GetUserThumbnailAsync(
-                    id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+                return Players:GetUserThumbnailAsync(id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
             end)
             if ok and ready and type(content) == "string" and content ~= "" then
                 thumbCache[id] = content
-                if rows[player] and rows[player].Parent then
-                    local avatar = rows[player]:FindFirstChild("Avatar")
+                local row = rows[player]
+                if row and row.Parent then
+                    local avatar = row:FindFirstChild("Avatar")
                     if avatar and avatar:IsA("ImageLabel") then avatar.Image = content end
                 end
             end
         end)
-        thumbCache[id] = image
-        return image
+        return fallback
     end
 
-    local ACTION_W = 27
-    local ACTION_H = 29
-    local ACTION_GAP = 4
-    local ACTION_COUNT = 3
-    local ACTIONS_W = ACTION_W * ACTION_COUNT + ACTION_GAP * (ACTION_COUNT - 1)
+    local ACTION_W, ACTION_H, ACTION_GAP = 27, 29, 4
+    local ACTIONS_W = ACTION_W * 3 + ACTION_GAP * 2
 
     local function actionButton(row, x, iconNames, fallback, tooltip, callback, player)
         local y = math.floor((rowH - 4 - ACTION_H) * 0.5)
         local button = rect(row, x, y, ACTION_W, ACTION_H, palette[4], 5, "TextButton")
         button.BackgroundTransparency = 0.08
         button.AutoButtonColor = false
-        button.ZIndex = 8
         button.ClipsDescendants = true
-
+        button.ZIndex = 8
         local iconSize = 14
         local icon = iconLabel(button, iconNames,
-            math.floor((ACTION_W - iconSize) * 0.5),
-            math.floor((ACTION_H - iconSize) * 0.5),
+            math.floor((ACTION_W - iconSize) * 0.5), math.floor((ACTION_H - iconSize) * 0.5),
             iconSize, palette[3], fallback)
         icon.Object.ZIndex = 9
-
         connect(button.Activated, function()
             if player and player.Parent then Runtime.Spawn(callback, player) end
         end, rowsMaid)
-
         local hover = false
         connect(button.MouseEnter, function() hover = true end, rowsMaid)
         connect(button.MouseLeave, function() hover = false end, rowsMaid)
         step(function()
-            button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.8 or 0)
-            icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
+            if button.Parent then
+                button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.8 or 0)
+                icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
+            end
         end, button)
-
         if tooltip then self.Window:Tooltip(button, tooltip) end
         return button
     end
 
-    local function clearRows()
-        rowsMaid:Destroy()
-        rowsMaid = Maid.new(listMaid)
-        table.clear(rows)
+    local function destroyRow(player)
+        local row = rows[player]
+        if row then
+            rows[player] = nil
+            pcall(function() row:Destroy() end)
+        end
     end
 
-    local function rebuild()
-        -- Preserve the user's scroll position. This list is refreshed periodically
-        -- (roles can change), so rebuilding rows must never jump the scrollbar back
-        -- to the top.
-        local previousCanvasY = 0
-        pcall(function()
-            previousCanvasY = holder.CanvasPosition.Y
-        end)
-
-        clearRows()
-        local playersList = {}
-        local needle = string.lower(filterText)
-
-        for _, p in ipairs(Players:GetPlayers()) do
-            if (includeSelf or p ~= Players.LocalPlayer) and
-                (needle == "" or string.find(string.lower(p.Name), needle, 1, true)
-                    or string.find(string.lower(p.DisplayName), needle, 1, true)) then
-                playersList[#playersList + 1] = p
-            end
-        end
-
-        table.sort(playersList, function(a, b)
-            return string.lower(a.DisplayName) < string.lower(b.DisplayName)
-        end)
-
-        empty.Object.Visible = #playersList == 0
-        countLabel:SetText(tostring(#playersList))
-
-        local rowWidth = math.max(120, w - 20)
+    local function makeRow(p, order)
+        local rowWidth = math.max(120, w - 22)
         local avatarSize = math.min(38, rowH - 18)
         local actionStart = math.max(avatarSize + 112, rowWidth - ACTIONS_W - 8)
         local infoX = 12 + avatarSize
         local infoW = math.max(64, actionStart - infoX - 8)
 
-        for index, p in ipairs(playersList) do
-            local y = (index - 1) * rowH
-            local row = rect(holder, 0, y, rowWidth - 4, rowH - 4, palette[4], 6)
-            row.Name = "PlayerRow_" .. tostring(p.UserId)
-            row.ZIndex = 3
-            row.ClipsDescendants = true
-            rows[p] = row
+        local row = rect(holder, 0, 0, rowWidth, rowH - 4, palette[4], 6)
+        row.Name = "PlayerRow_" .. tostring(p.UserId)
+        row.LayoutOrder = order
+        row.ZIndex = 3
+        row.ClipsDescendants = true
+        rows[p] = row
+        rowOrder[#rowOrder + 1] = p
 
-            local avatar = new("ImageLabel", row, {
-                Name = "Avatar",
-                BackgroundColor3 = palette[1],
-                BackgroundTransparency = 0.12,
-                BorderSizePixel = 0,
-                Position = UDim2.fromOffset(7, math.floor((rowH - 4 - avatarSize) * 0.5)),
-                Size = UDim2.fromOffset(avatarSize, avatarSize),
-                Image = thumbnail(p),
-                ScaleType = Enum.ScaleType.Crop,
-                ZIndex = 5,
-            })
-            new("UICorner", avatar, {CornerRadius = UDim.new(1, 0)})
+        local avatar = new("ImageLabel", row, {
+            Name="Avatar", BackgroundColor3=palette[1], BackgroundTransparency=0.12,
+            BorderSizePixel=0, Position=UDim2.fromOffset(7, math.floor((rowH-4-avatarSize)*0.5)),
+            Size=UDim2.fromOffset(avatarSize, avatarSize), Image=thumbnail(p),
+            ScaleType=Enum.ScaleType.Crop, ZIndex=5,
+        })
+        new("UICorner", avatar, {CornerRadius=UDim.new(1,0)})
 
-            local display = text(row, p.DisplayName, infoX, 8, infoW, 16, 11, white)
-            display.Object.ZIndex = 6
-            display.Object.TextTruncate = Enum.TextTruncate.AtEnd
+        local display = text(row, p.DisplayName, infoX, 8, infoW, 16, 11, white)
+        display.Object.ZIndex=6; display.Object.TextTruncate=Enum.TextTruncate.AtEnd
+        local username = p.DisplayName ~= p.Name and ("@"..p.Name) or p.Name
+        local tag = text(row, username, infoX, 25, infoW, 12, 8, palette[3])
+        tag.Object.ZIndex=6; tag.Object.TextTruncate=Enum.TextTruncate.AtEnd
+        local role = text(row, roleText(p), infoX, 39, infoW, 12, 9, palette[3])
+        role.Object.Name="Role"; role.Object.ZIndex=6; role.Object.TextTruncate=Enum.TextTruncate.AtEnd
 
-            local username = p.DisplayName ~= p.Name and ("@" .. p.Name) or p.Name
-            local tag = text(row, username, infoX, 25, infoW, 12, 8, palette[3])
-            tag.Object.ZIndex = 6
-            tag.Object.TextTruncate = Enum.TextTruncate.AtEnd
-
-            local role = text(row, roleText(p), infoX, 39, infoW, 12, 9, palette[3])
-            role.Object.ZIndex = 6
-            role.Object.TextTruncate = Enum.TextTruncate.AtEnd
-
-            actionButton(row, actionStart, {"eye", "view"}, "Н", "Watch", onWatch, p)
-            actionButton(row, actionStart + ACTION_W + ACTION_GAP, {"move", "send", "navigation"}, "Т", "Teleport", onTeleport, p)
-            actionButton(row, actionStart + (ACTION_W + ACTION_GAP) * 2, {"zap", "flame"}, "Ф", "Fling", onFling, p)
-
-            rowsMaid:Add(row)
-        end
-
-        local contentHeight = math.max(0, #playersList * rowH)
-        holder.CanvasSize = UDim2.fromOffset(0, contentHeight)
-
-        -- ScrollingFrame can receive CanvasPosition before CanvasSize has
-        -- propagated. Defer the clamp by one frame so the final position is
-        -- calculated against the new content height.
-        local maxY = math.max(0, contentHeight - holder.AbsoluteSize.Y)
-        task.defer(function()
-            if holder.Parent then
-                pcall(function()
-                    holder.CanvasPosition = Vector2.new(0, math.clamp(previousCanvasY, 0, maxY))
-                end)
-            end
-        end)
+        actionButton(row, actionStart, {"eye","view"}, "W", "Watch", onWatch, p)
+        actionButton(row, actionStart+ACTION_W+ACTION_GAP, {"move","send","navigation"}, "T", "Teleport", onTeleport, p)
+        actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*2, {"zap","flame"}, "F", "Fling", onFling, p)
+        rowsMaid:Add(row)
+        return row
     end
 
-    -- Keep the list responsive to wheel/touch input even when a row or an
-    -- action button has focus. Roblox's ScrollingFrame handles touch/drag,
-    -- while these properties make the intended scroll surface unambiguous.
-    pcall(function()
-        holder.Active = true
-        holder.Selectable = true
-        holder.ScrollingEnabled = true
-        holder.ScrollingDirection = Enum.ScrollingDirection.Y
-        holder.ElasticBehavior = Enum.ElasticBehavior.Never
-    end)
+    local function matches(p, needle)
+        if needle == "" then return true end
+        return string.find(string.lower(p.Name), needle, 1, true) ~= nil
+            or string.find(string.lower(p.DisplayName), needle, 1, true) ~= nil
+    end
+
+    local function rebuild()
+        -- Capture only when a real filter/player-set change occurs.  Rows are
+        -- recreated as a batch and AutomaticCanvasSize computes the exact
+        -- content height, including the final row and layout padding.
+        local oldScroll = holder.CanvasPosition.Y
+        rowsMaid:Destroy()
+        rowsMaid = Maid.new(listMaid)
+        table.clear(rows); table.clear(rowOrder)
+
+        local list = {}
+        local needle = string.lower(filterText)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if (includeSelf or p ~= Players.LocalPlayer) and matches(p, needle) then
+                list[#list+1] = p
+            end
+        end
+        table.sort(list, function(a,b)
+            local ad, bd = string.lower(a.DisplayName), string.lower(b.DisplayName)
+            if ad == bd then return string.lower(a.Name) < string.lower(b.Name) end
+            return ad < bd
+        end)
+
+        empty.Object.Visible = #list == 0
+        countLabel:SetText(tostring(#list))
+        for i,p in ipairs(list) do makeRow(p, i) end
+
+        -- Roblox can update AbsoluteCanvasSize one frame after the hierarchy.
+        -- Restore after layout settles, but never fight the user's subsequent
+        -- touch/mouse input.
+        task.defer(function()
+            if not holder.Parent then return end
+            local maxY = math.max(0, holder.AbsoluteCanvasSize.Y - holder.AbsoluteSize.Y)
+            holder.CanvasPosition = Vector2.new(0, math.clamp(oldScroll, 0, maxY))
+        end)
+    end
 
     connect(search:GetPropertyChangedSignal("Text"), function()
         filterText = search.Text or ""
         rebuild()
     end, listMaid)
     connect(Players.PlayerAdded, function() rebuild() end, listMaid)
-    connect(Players.PlayerRemoving, function() rebuild() end, listMaid)
+    connect(Players.PlayerRemoving, function(p)
+        if rows[p] then destroyRow(p) end
+        rebuild()
+    end, listMaid)
 
     local roleClock = 0
     step(function(dt)
-        roleClock = roleClock + dt
+        roleClock += dt
         if roleClock >= 0.75 then
             roleClock = 0
-            rebuild()
+            for p,row in pairs(rows) do
+                if p.Parent and row.Parent then
+                    local roleLabel = row:FindFirstChild("Role", true)
+                    if roleLabel and roleLabel:IsA("TextLabel") then roleLabel.Text = roleText(p) end
+                end
+            end
         end
     end, card)
 
     function api:GetFilter() return filterText end
     function api:SetFilter(value)
-        filterText = tostring(value or "")
-        search.Text = filterText
-        rebuild()
+        filterText=tostring(value or ""); search.Text=filterText; rebuild()
     end
     function api:Refresh() rebuild() end
     function api:GetPlayers()
-        local result = {}
-        for p in pairs(rows) do result[#result + 1] = p end
+        local result={}
+        for p in pairs(rows) do result[#result+1]=p end
         return result
     end
     function api:Destroy()
         if self.Destroyed then return end
-        self.Destroyed = true
-        listMaid:Destroy()
-        card:Destroy()
+        self.Destroyed=true; listMaid:Destroy(); card:Destroy()
     end
 
     rebuild()
