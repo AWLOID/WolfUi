@@ -9134,8 +9134,18 @@ do
     end
 
     function Preview:SetZoom(value)
-        if not self.Destroyed then self.Zoom = math.clamp(Runtime.Number(value, 1), 0.5, 2); self.CameraDirty = true end
+        if not self.Destroyed then
+            self.Zoom = math.clamp(Runtime.Number(value, self.Zoom or 1), 0.5, 2)
+            self.CameraDirty = true
+            if self.ZoomValue then
+                self.ZoomValue.Text = string.format("%.1fx", self.Zoom)
+            end
+        end
         return self
+    end
+
+    function Preview:GetZoom()
+        return self.Zoom or 1
     end
 
     function Preview:ResetView()
@@ -9448,6 +9458,11 @@ do
                     self.Drag.Secondary = input
                     self.Drag.SecondaryPosition = Vector2.new(input.Position.X, input.Position.Y)
                     self.Drag.Move = true
+                    local p1 = self.Drag.Input.Position
+                    local p2 = input.Position
+                    self.Drag.PinchDistance = math.max(1, (Vector2.new(p1.X, p1.Y) - Vector2.new(p2.X, p2.Y)).Magnitude)
+                    self.Drag.PinchZoom = self.Zoom
+                    self.Drag.PinchMid = (Vector2.new(p1.X, p1.Y) + Vector2.new(p2.X, p2.Y)) * 0.5
                 end
                 return
             end
@@ -9464,12 +9479,28 @@ do
                 if input ~= drag.Input and not secondary then return end
             elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
             local position = Vector2.new(input.Position.X, input.Position.Y)
-            local delta = (position - (secondary and drag.SecondaryPosition or drag.Last)) / math.max(0.01, self.Scale.Scale)
-            if secondary then drag.SecondaryPosition = position else drag.Last = position end
-            if drag.Move then
-                self:SetPosition(self.Pan + Vector2.new(delta.X / self.Size2D.X, delta.Y / self.Size2D.Y) * 2)
+            if drag.Kind == Enum.UserInputType.Touch and drag.Secondary then
+                -- Two-finger gesture: pinch controls zoom while the midpoint
+                -- continues to pan the preview.
+                local p1 = Vector2.new(drag.Input.Position.X, drag.Input.Position.Y)
+                local p2 = Vector2.new(drag.Secondary.Position.X, drag.Secondary.Position.Y)
+                local distance = math.max(1, (p1 - p2).Magnitude)
+                local midpoint = (p1 + p2) * 0.5
+                if drag.PinchDistance and drag.PinchDistance > 1 then
+                    self:SetZoom((drag.PinchZoom or self.Zoom) * distance / drag.PinchDistance)
+                end
+                local deltaMid = (midpoint - (drag.PinchMid or midpoint)) / math.max(0.01, self.Scale.Scale)
+                drag.PinchMid = midpoint
+                self:SetPosition(self.Pan + Vector2.new(deltaMid.X / self.Size2D.X, deltaMid.Y / self.Size2D.Y) * 2)
+                if secondary then drag.SecondaryPosition = position else drag.Last = position end
             else
-                self:SetRotation(self.Yaw - delta.X * 0.6, self.Pitch + delta.Y * 0.4)
+                local delta = (position - (secondary and drag.SecondaryPosition or drag.Last)) / math.max(0.01, self.Scale.Scale)
+                if secondary then drag.SecondaryPosition = position else drag.Last = position end
+                if drag.Move then
+                    self:SetPosition(self.Pan + Vector2.new(delta.X / self.Size2D.X, delta.Y / self.Size2D.Y) * 2)
+                else
+                    self:SetRotation(self.Yaw - delta.X * 0.6, self.Pitch + delta.Y * 0.4)
+                end
             end
         end)
         self.Maid:Connect(UIS.InputEnded, function(input)
@@ -9480,15 +9511,64 @@ do
                     drag.Last = drag.SecondaryPosition
                 end
                 drag.Secondary, drag.SecondaryPosition, drag.Move = nil, nil, false
+                drag.PinchDistance, drag.PinchZoom, drag.PinchMid = nil, nil, nil
                 return
             end
             if drag and (input == drag.Input or drag.Kind ~= Enum.UserInputType.Touch and input.UserInputType == drag.Kind) then self.Drag = nil end
         end)
         self.Maid:Connect(UIS.WindowFocusReleased, function() self.Drag = nil end)
+
+        -- Mouse wheel zoom.  Keep this separate from drag state so zoom remains
+        -- responsive even while the preview is being rotated.
         self.Maid:Connect(self.InputSurface.InputChanged, function(input)
-            if self.Enabled and self.Object.Visible and not self.Window.Dialog and not self.Window.Opened and input.UserInputType == Enum.UserInputType.MouseWheel then
-                self:SetZoom(self.Zoom * 1.1 ^ input.Position.Z)
+            if self.Enabled and self.Object.Visible and not self.Window.Dialog and not self.Window.Opened
+                and input.UserInputType == Enum.UserInputType.MouseWheel then
+                self:SetZoom(self.Zoom * (1.1 ^ math.clamp(input.Position.Z, -4, 4)))
             end
+        end)
+
+        -- Explicit +/- controls make zoom usable on touch devices where a mouse
+        -- wheel is unavailable.  They sit above the transparent input surface.
+        local minus = rect(self.Object, self.Width - 52, 4, 22, 22, palette[4], 5, "TextButton")
+        minus.Name, minus.ZIndex, minus.Text = "PreviewZoomOut", 22, "−"
+        minus.TextColor3, minus.TextSize, minus.Font = white, 13, UI_FONT_BOLD
+        minus.AutoButtonColor = false
+        local plus = rect(self.Object, self.Width - 27, 4, 22, 22, palette[4], 5, "TextButton")
+        plus.Name, plus.ZIndex, plus.Text = "PreviewZoomIn", 22, "+"
+        plus.TextColor3, plus.TextSize, plus.Font = white, 13, UI_FONT_BOLD
+        plus.AutoButtonColor = false
+        local zoomValue = new("TextLabel", self.Object, {
+            Name = "PreviewZoomValue",
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(self.Width - 101, 4),
+            Size = UDim2.fromOffset(45, 22),
+            Text = "1.0x",
+            TextColor3 = white,
+            TextTransparency = 0.15,
+            Font = UI_FONT,
+            TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Right,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            ZIndex = 22,
+        })
+        self.ZoomOut, self.ZoomIn, self.ZoomValue = minus, plus, zoomValue
+        self.Maid:Connect(minus.MouseButton1Click, function()
+            if self.Enabled and self.Object.Visible and not self.Destroyed then self:SetZoom(self.Zoom - 0.1) end
+        end)
+        self.Maid:Connect(plus.MouseButton1Click, function()
+            if self.Enabled and self.Object.Visible and not self.Destroyed then self:SetZoom(self.Zoom + 0.1) end
+        end)
+        self.Maid:Connect(minus.MouseEnter, function()
+            if not self.Destroyed then minus.BackgroundColor3 = palette[5] end
+        end)
+        self.Maid:Connect(minus.MouseLeave, function()
+            if not self.Destroyed then minus.BackgroundColor3 = palette[4] end
+        end)
+        self.Maid:Connect(plus.MouseEnter, function()
+            if not self.Destroyed then plus.BackgroundColor3 = palette[5] end
+        end)
+        self.Maid:Connect(plus.MouseLeave, function()
+            if not self.Destroyed then plus.BackgroundColor3 = palette[4] end
         end)
     end
 
@@ -9522,7 +9602,7 @@ do
             end
             local gradient = self.Frame:FindFirstChildOfClass("UIGradient")
             if gradient then local copy = gradient:Clone(); copy.Parent = panel end
-            preview.Header = text(panel, options.Title or "ESP preview", 12, 0, preview.Width - 24, 32, 12).Object
+            preview.Header = text(panel, options.Title or "ESP preview", 12, 0, math.max(70, preview.Width - 112), 32, 12).Object
             preview.Canvas = transparent(panel, 0, 32, preview.Width, preview.Size2D.Y)
             preview.Canvas.ClipsDescendants = true
             local viewport = new("ViewportFrame", preview.Canvas, {Name = "Character", BackgroundTransparency = 1,
@@ -9559,7 +9639,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "chams-stable-11"
+    Library.ESPPreviewRevision = "chams-stable-13-glow-zoom"
 end
 
 
