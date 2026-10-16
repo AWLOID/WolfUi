@@ -9095,8 +9095,8 @@ do
                 self.Holder.Visible = false
                 self.Drag = nil
             else
-                -- Apply visibility now, rather than waiting for the next render tick.
-                self:Step(0)
+                -- Let the existing RenderStepped loop apply layout and visibility.
+                -- Calling Step(0) from a tab callback could re-enter the renderer.
             end
         end
         return self
@@ -9559,7 +9559,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "responsive-neutral-effects-10"
+    Library.ESPPreviewRevision = "chams-stable-11"
 end
 
 
