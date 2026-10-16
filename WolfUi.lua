@@ -9054,11 +9054,23 @@ do
         local side = right >= width * fit and "Right" or (left > right and "Left" or "Right")
         local room = side == "Right" and right or left
         local amount = math.min(fit, room / width)
+        -- Never silently lose the preview on narrow/mobile viewports. If neither
+        -- side has enough room, float it inside the viewport above the menu.
+        if amount < 0.45 then
+            side = "Overlay"
+            amount = math.min(fit, (screen.X - margin * 2) / width, (screen.Y - margin * 2) / height)
+        end
         if amount < 0.25 then return 0, 0, 0, "Hidden" end
         local w, h = width * amount, height * amount
         local x, y = position.X + size.X + gap, position.Y + (size.Y - h) * 0.5
-        if side == "Left" then x = position.X - gap - w end
-        return math.clamp(x, margin, math.max(margin, screen.X - margin - w)), y, amount, side
+        if side == "Left" then
+            x = position.X - gap - w
+        elseif side == "Overlay" then
+            x = position.X + size.X - w - margin
+            y = position.Y + margin
+        end
+        return math.clamp(x, margin, math.max(margin, screen.X - margin - w)),
+            math.clamp(y, margin, math.max(margin, screen.Y - margin - h)), amount, side
     end
 
     function Preview:GetMaid() return self.Maid end
@@ -9078,7 +9090,14 @@ do
     function Preview:SetVisible(value)
         if not self.Destroyed then
             self.Visible = value == true
-            if not self.Visible then self.Object.Visible = false; self.Drag = nil end
+            if not self.Visible then
+                self.Object.Visible = false
+                self.Holder.Visible = false
+                self.Drag = nil
+            else
+                -- Apply visibility now, rather than waiting for the next render tick.
+                self:Step(0)
+            end
         end
         return self
     end
@@ -9196,6 +9215,12 @@ do
             if current:IsA("Tool") then return false end
             current = current.Parent
         end
+        -- Ignore executor visual artifacts: they can be recreated every frame,
+        -- otherwise causing endless clone rebuilds and animation snapshots.
+        local name = object.Name or ""
+        if string.sub(name, 1, 7) == "Waraku_" or string.sub(name, 1, 7) == "Preview" then return false end
+        if object:IsA("Highlight") or object:IsA("Adornment") or object:IsA("ParticleEmitter")
+            or object:IsA("Beam") or object:IsA("Trail") then return false end
         return object:IsA("BasePart") or object:IsA("Accessory") or object:IsA("Clothing")
             or object:IsA("ShirtGraphic") or object:IsA("CharacterMesh") or object:IsA("DataModelMesh")
             or object:IsA("Decal") or object:IsA("SurfaceAppearance") or object:IsA("JointInstance")
@@ -9234,7 +9259,16 @@ do
             local root = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChild("Torso") or clone:FindFirstChild("UpperTorso")
             if not root then error("Character has no root part") end
             clone:PivotTo(root.CFrame:Inverse() * clone:GetPivot())
+            -- Reconstruct a neutral joint pose from Motor6D C0/C1 instead of
+            -- retaining the live animation transforms copied by :Clone().
             self:FreezePose(clone, root)
+            for _, part in ipairs(clone:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.Anchored = true
+                    part.AssemblyLinearVelocity = Vector3.zero
+                    part.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
             local bounds, size = clone:GetBoundingBox()
             clone:PivotTo(CFrame.new(-bounds.Position) * clone:GetPivot())
             self:ClearModel()
@@ -9354,6 +9388,7 @@ do
     function Preview:Step(dt)
         if self.Destroyed or self.Rendering then return end
         local window = self.Window
+        if not window or window.Destroyed or not self.Holder or not self.Holder.Parent then return end
         local screen = window.Viewport
         local menuScale = Runtime.Number(window.UIScale.Scale, window.ScaleCurrent or 1)
         local layout = window.Frame.Position
@@ -9391,12 +9426,12 @@ do
         self.Rendering = true
         if self.StateProvider then
             local ok, state = pcall(self.StateProvider, self)
-            if self.Destroyed then return end
+            if self.Destroyed then self.Rendering = false; return end
             if ok and type(state) == "table" then self.State = state elseif not ok then self.LastError = tostring(state) end
         end
         if self.Model and self.Renderer then
             local ok, problem = pcall(self.Renderer, self, elapsed, self.State)
-            if self.Destroyed then return end
+            if self.Destroyed then self.Rendering = false; return end
             self.Overlay.Visible = ok
             if not ok then self.LastError = tostring(problem) end
         end
@@ -9524,7 +9559,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "static-neutral-pose-8"
+    Library.ESPPreviewRevision = "responsive-neutral-effects-10"
 end
 
 
