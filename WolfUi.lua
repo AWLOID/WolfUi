@@ -5556,11 +5556,11 @@ end
 
 function Tab:AddPlayerList(opts)
     opts = opts or {}
-    local name = opts.Name or "Игроки"
+    local name = opts.Name or "Players"
     local flag = opts.Flag or (self.Name .. "." .. name)
     local w = self:_width(opts.Width or 370)
     local listH = math.max(140, math.floor(tonumber(opts.Height) or 360))
-    local rowH = math.max(56, math.floor(tonumber(opts.RowHeight) or 64))
+    local rowH = math.max(58, math.floor(tonumber(opts.RowHeight) or 64))
     local includeSelf = opts.IncludeSelf == true
     local getRole = type(opts.GetRole) == "function" and opts.GetRole or function() return "" end
     local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
@@ -5576,10 +5576,10 @@ function Tab:AddPlayerList(opts)
         BackgroundColor3 = palette[4],
         BackgroundTransparency = 0.08,
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(10, 29),
-        Size = UDim2.fromOffset(math.max(80, w - 20), 26),
+        Position = UDim2.fromOffset(10, 28),
+        Size = UDim2.fromOffset(math.max(80, w - 20), 28),
         ClearTextOnFocus = false,
-        PlaceholderText = opts.Placeholder or "Найти игрока...",
+        PlaceholderText = opts.Placeholder or "Find player...",
         PlaceholderColor3 = palette[3],
         Text = "",
         TextColor3 = white,
@@ -5606,7 +5606,7 @@ function Tab:AddPlayerList(opts)
         ZIndex = 2,
     })
 
-    local empty = muted(holder, opts.Empty or "Игроки не найдены", 8, 0, math.max(60, w - 36), rowH - 4, 11)
+    local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
     local rows = {}
     local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
     local rowsMaid = Maid.new(listMaid)
@@ -5643,8 +5643,8 @@ function Tab:AddPlayerList(opts)
         return image
     end
 
-    local ACTION_W = 28
-    local ACTION_H = 30
+    local ACTION_W = 27
+    local ACTION_H = 29
     local ACTION_GAP = 4
     local ACTION_COUNT = 3
     local ACTIONS_W = ACTION_W * ACTION_COUNT + ACTION_GAP * (ACTION_COUNT - 1)
@@ -5706,11 +5706,11 @@ function Tab:AddPlayerList(opts)
         empty.Object.Visible = #playersList == 0
         countLabel:SetText(tostring(#playersList))
 
-        local rowWidth = math.max(80, w - 22)
-        local avatarSize = math.min(40, rowH - 16)
-        local actionStart = math.max(avatarSize + 120, rowWidth - ACTIONS_W - 6)
+        local rowWidth = math.max(120, w - 20)
+        local avatarSize = math.min(38, rowH - 18)
+        local actionStart = math.max(avatarSize + 112, rowWidth - ACTIONS_W - 8)
         local infoX = 12 + avatarSize
-        local infoW = math.max(70, actionStart - infoX - 8)
+        local infoW = math.max(64, actionStart - infoX - 8)
 
         for index, p in ipairs(playersList) do
             local y = (index - 1) * rowH
@@ -5746,9 +5746,9 @@ function Tab:AddPlayerList(opts)
             role.Object.ZIndex = 6
             role.Object.TextTruncate = Enum.TextTruncate.AtEnd
 
-            actionButton(row, actionStart, {"eye", "view"}, "Н", "Наблюдать", onWatch, p)
-            actionButton(row, actionStart + ACTION_W + ACTION_GAP, {"move", "send", "navigation"}, "Т", "Телепорт", onTeleport, p)
-            actionButton(row, actionStart + (ACTION_W + ACTION_GAP) * 2, {"zap", "flame"}, "Ф", "Флинг", onFling, p)
+            actionButton(row, actionStart, {"eye", "view"}, "Н", "Watch", onWatch, p)
+            actionButton(row, actionStart + ACTION_W + ACTION_GAP, {"move", "send", "navigation"}, "Т", "Teleport", onTeleport, p)
+            actionButton(row, actionStart + (ACTION_W + ACTION_GAP) * 2, {"zap", "flame"}, "Ф", "Fling", onFling, p)
 
             rowsMaid:Add(row)
         end
@@ -9953,7 +9953,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "chams-stable-16-preview-glow-zoom"
+    Library.ESPPreviewRevision = "chams-stable-17-viewport-fx-players"
 end
 
 
