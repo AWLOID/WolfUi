@@ -5687,6 +5687,14 @@ function Tab:AddPlayerList(opts)
     end
 
     local function rebuild()
+        -- Preserve the user's scroll position. This list is refreshed periodically
+        -- (roles can change), so rebuilding rows must never jump the scrollbar back
+        -- to the top.
+        local previousCanvasY = 0
+        pcall(function()
+            previousCanvasY = holder.CanvasPosition.Y
+        end)
+
         clearRows()
         local playersList = {}
         local needle = string.lower(filterText)
@@ -5753,8 +5761,32 @@ function Tab:AddPlayerList(opts)
             rowsMaid:Add(row)
         end
 
-        holder.CanvasSize = UDim2.fromOffset(0, math.max(0, #playersList * rowH))
+        local contentHeight = math.max(0, #playersList * rowH)
+        holder.CanvasSize = UDim2.fromOffset(0, contentHeight)
+
+        -- ScrollingFrame can receive CanvasPosition before CanvasSize has
+        -- propagated. Defer the clamp by one frame so the final position is
+        -- calculated against the new content height.
+        local maxY = math.max(0, contentHeight - holder.AbsoluteSize.Y)
+        task.defer(function()
+            if holder.Parent then
+                pcall(function()
+                    holder.CanvasPosition = Vector2.new(0, math.clamp(previousCanvasY, 0, maxY))
+                end)
+            end
+        end)
     end
+
+    -- Keep the list responsive to wheel/touch input even when a row or an
+    -- action button has focus. Roblox's ScrollingFrame handles touch/drag,
+    -- while these properties make the intended scroll surface unambiguous.
+    pcall(function()
+        holder.Active = true
+        holder.Selectable = true
+        holder.ScrollingEnabled = true
+        holder.ScrollingDirection = Enum.ScrollingDirection.Y
+        holder.ElasticBehavior = Enum.ElasticBehavior.Never
+    end)
 
     connect(search:GetPropertyChangedSignal("Text"), function()
         filterText = search.Text or ""
