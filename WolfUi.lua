@@ -9630,6 +9630,8 @@ do
         self.Maid:Destroy()
         self.Model, self.World, self.Camera, self.Window = nil, nil, nil, nil
         self.StaticPose = nil
+        if self.FallbackSource then pcall(function() self.FallbackSource:Destroy() end) end
+        self.FallbackSource, self.PoseSteps, self.ModelSource = nil, nil, nil
         table.clear(self.Parts)
         table.clear(self.Corners)
         self.State = {}
@@ -9642,9 +9644,53 @@ do
         table.clear(self.StaticPose or {})
         self.StaticPose = {}
         self.BodyBounds, self.FullBounds = nil, nil
+        self.PoseSteps, self.ModelSource = nil, nil
         self.Overlay.Visible = false
         self.Status.Text = "Waiting for character"
         self.Status.Visible = true
+    end
+
+    local IDENTITY = CFrame.new()
+
+    -- R15 idle, driven procedurally from Motor6D names.  The display rig is fully
+    -- anchored (no physics, no Animator), so the pose is recomputed from the
+    -- joint C0/C1 data every frame instead of relying on animation assets.
+    local function idleTransform(name, t)
+        local breath = math.sin(t * 1.7)
+        if name == "Waist" then
+            return CFrame.Angles(0.012 * breath, 0.025 * math.sin(t * 0.55), 0.008 * math.sin(t * 0.8))
+        elseif name == "Neck" then
+            return CFrame.Angles(-0.012 * breath + 0.02 * math.sin(t * 0.9),
+                0.07 * math.sin(t * 0.43), 0.02 * math.sin(t * 0.61))
+        elseif name == "RightShoulder" then
+            return CFrame.Angles(0.025 * math.sin(t * 1.25 + 0.6), 0, 0.03 + 0.015 * breath)
+        elseif name == "LeftShoulder" then
+            return CFrame.Angles(0.025 * math.sin(t * 1.25 + 1.9), 0, -0.03 - 0.015 * breath)
+        elseif name == "RightElbow" then
+            return CFrame.Angles(0.09 + 0.02 * breath, 0, 0)
+        elseif name == "LeftElbow" then
+            return CFrame.Angles(0.09 + 0.02 * math.sin(t * 1.7 + 0.5), 0, 0)
+        elseif name == "RightWrist" then
+            return CFrame.Angles(0.02 * math.sin(t * 1.1), 0, 0)
+        elseif name == "LeftWrist" then
+            return CFrame.Angles(0.02 * math.sin(t * 1.1 + 1), 0, 0)
+        elseif name == "RightHip" then
+            return CFrame.Angles(0, 0, 0.006 * math.sin(t * 0.5))
+        elseif name == "LeftHip" then
+            return CFrame.Angles(0, 0, -0.006 * math.sin(t * 0.5))
+        end
+        return IDENTITY
+    end
+
+    -- R15 only.  A live character is usable for the preview when it is alive, has
+    -- the R15 body and its joints are still intact (a dead character has none).
+    local function characterReady(character)
+        if not character or not character.Parent then return false end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 or humanoid.RigType ~= Enum.HumanoidRigType.R15 then return false end
+        local upper = character:FindFirstChild("UpperTorso")
+        return character:FindFirstChild("HumanoidRootPart") ~= nil and character:FindFirstChild("Head") ~= nil
+            and upper ~= nil and upper:FindFirstChild("Waist") ~= nil
     end
 
     function Preview:FreezePose(model, root)
@@ -9666,7 +9712,7 @@ do
                         left, right = object.C0, object.C1
                         if object:IsA("Motor6D") then object.Transform = CFrame.new() end
                     end
-                    local edge = {first, second, left, right}
+                    local edge = {first, second, left, right, object.Name, object:IsA("Motor6D")}
                     if not graph[first] then graph[first] = {} end
                     if not graph[second] then graph[second] = {} end
                     graph[first][#graph[first] + 1] = edge
@@ -9674,7 +9720,7 @@ do
                 end
             end
         end
-        local queue, visited, index = {root}, {[root] = true}, 1
+        local queue, visited, index, steps = {root}, {[root] = true}, 1, {}
         while index <= #queue do
             local part = queue[index]
             index = index + 1
@@ -9684,13 +9730,18 @@ do
                     second.CFrame = first.CFrame * edge[3] * edge[4]:Inverse()
                     visited[second] = true
                     queue[#queue + 1] = second
+                    steps[#steps + 1] = {Child = second, Parent = first, Forward = true, Left = edge[3], Right = edge[4],
+                        LeftInv = edge[3]:Inverse(), RightInv = edge[4]:Inverse(), Name = edge[5], Motor = edge[6]}
                 elseif part == second and not visited[first] then
                     first.CFrame = second.CFrame * edge[4] * edge[3]:Inverse()
                     visited[first] = true
                     queue[#queue + 1] = first
+                    steps[#steps + 1] = {Child = first, Parent = second, Forward = false, Left = edge[3], Right = edge[4],
+                        LeftInv = edge[3]:Inverse(), RightInv = edge[4]:Inverse(), Name = edge[5], Motor = edge[6]}
                 end
             end
         end
+        return steps
     end
 
     function Preview:IsAppearanceChange(object)
@@ -9710,10 +9761,17 @@ do
             or object:IsA("Decal") or object:IsA("SurfaceAppearance") or object:IsA("JointInstance")
     end
 
-    function Preview:Rebuild()
+    function Preview:Rebuild(source)
         if self.Destroyed then return false end
-        local character = self.Character
-        if not character or not character.Parent then self:ClearModel(); return false end
+        local character = source or self.Character
+        local function unavailable(text)
+            -- Never drop a working model because a rebuild attempt failed.
+            if not self.Model then self.Status.Text = text; self.Status.Visible = true end
+        end
+        if not character or (not source and not characterReady(character)) then
+            unavailable("Waiting for character")
+            return false
+        end
         local archived = character.Archivable
         local ok, clone = pcall(function()
             character.Archivable = true
@@ -9721,8 +9779,7 @@ do
         end)
         pcall(function() character.Archivable = archived end)
         if not ok or not clone then
-            self:ClearModel()
-            self.Status.Text = "Character unavailable"
+            unavailable("Character unavailable")
             self.LastError = tostring(clone)
             return false
         end
@@ -9740,12 +9797,13 @@ do
                     object.AssemblyAngularVelocity = Vector3.zero
                 end
             end
-            local root = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChild("Torso") or clone:FindFirstChild("UpperTorso")
-            if not root then error("Character has no root part") end
+            -- R15 only: the display rig needs the root and the upper torso.
+            local root = clone:FindFirstChild("HumanoidRootPart")
+            if not root or not clone:FindFirstChild("UpperTorso") then error("R15 character required") end
             clone:PivotTo(root.CFrame:Inverse() * clone:GetPivot())
-            -- Reconstruct a neutral joint pose from Motor6D C0/C1 instead of
-            -- retaining the live animation transforms copied by :Clone().
-            self:FreezePose(clone, root)
+            -- Neutral pose from Motor6D C0/C1; the returned steps are replayed each
+            -- frame with the idle transforms (see Preview:ApplyIdle).
+            local steps = self:FreezePose(clone, root)
             -- A display rig has no live joints or animation/physics controllers.
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("JointInstance") or object:IsA("Constraint") then
@@ -9765,14 +9823,11 @@ do
             clone:PivotTo(CFrame.new(-bounds.Position) * clone:GetPivot())
             self:ClearModel()
             self.Model = clone
+            self.ModelSource = character
+            self.PoseSteps, self.PoseClock = steps, os.clock()
             clone.Name = "ESPPreviewCharacter"
             clone.Parent = self.World
             self.ModelSize = size
-            -- Freeze the final post-normalization pose as a snapshot.  Anchoring
-            -- alone is not enough for every avatar rig: Motor6D/SkinnedMesh
-            -- runtimes can still rewrite transforms.  Restoring this snapshot
-            -- each preview frame guarantees that gameplay movement never leaks
-            -- into the visual sample.
             self.StaticPose = {}
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("BasePart") then
@@ -9801,9 +9856,8 @@ do
         end)
         if not ready then
             clone:Destroy()
-            self:ClearModel()
-            self.Status.Text = "Character unavailable"
             self.LastError = tostring(problem)
+            unavailable("Character unavailable")
         end
         return ready
     end
@@ -9819,13 +9873,17 @@ do
         return self
     end
 
-    function Preview:SetCharacter(character)
+    -- keepModel: the displayed model survives (death, respawn, character removal)
+    -- until a new valid one is built; it is never cleared just because the
+    -- character went away.
+    function Preview:SetCharacter(character, keepModel)
         if self.Destroyed then return self end
         if character ~= nil and (typeof(character) ~= "Instance" or not character:IsA("Model")) then return self end
         if self.CharacterMaid then self.CharacterMaid:Destroy() end
         self.CharacterMaid = Maid.new(self.Maid)
         self.Character = character
-        self:ClearModel()
+        self.CharacterSince = os.clock()
+        if not keepModel then self:ClearModel() end
         if character then
             self.CharacterMaid:Connect(character.DescendantAdded, function(object)
                 if not self.Model and self:IsAppearanceChange(object) then self:Refresh() end
@@ -9834,10 +9892,92 @@ do
                 if not self.Model and self:IsAppearanceChange(object) then self:Refresh() end
             end)
             self.CharacterMaid:Connect(character.AncestryChanged, function(_, parent)
-                if not parent then self:ClearModel() else self:Refresh() end
+                if parent then self:Refresh() end
             end)
         end
-        return self:Refresh(self.Visible == true)
+        self.NeedsRebuild, self.NextAttempt, self.NextMaintain, self.Failures = true, 0, 0, 0
+        return self
+    end
+
+    -- R15 avatar built from the player's description; used only when no live
+    -- character has ever been available, so the preview is never empty.
+    function Preview:EnsureFallback(now)
+        local follow = self.FollowPlayer
+        if not follow or self.Model then return end
+        if self.FallbackSource then
+            self:Rebuild(self.FallbackSource)
+            return
+        end
+        if self.FallbackBusy or now < (self.NextFallback or 0) then return end
+        self.FallbackBusy, self.NextFallback = true, now + 5
+        task.spawn(function()
+            local ok, model = pcall(function()
+                local description = Players:GetHumanoidDescriptionFromUserId(follow.UserId)
+                return Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R15)
+            end)
+            self.FallbackBusy = false
+            if self.Destroyed then
+                if ok and typeof(model) == "Instance" then pcall(function() model:Destroy() end) end
+                return
+            end
+            if ok and typeof(model) == "Instance" then self.FallbackSource = model end
+        end)
+    end
+
+    -- Runs every frame, also while the preview tab is hidden, so the model is
+    -- always ready when the tab is opened again.
+    function Preview:Maintain(now)
+        if now < (self.NextMaintain or 0) then return end
+        self.NextMaintain = now + (self:CanShow() and 0.2 or 0.5)
+        local follow = self.FollowPlayer
+        if follow and follow.Character ~= self.Character then
+            self:SetCharacter(follow.Character, true)
+        end
+        if self.Model and (not self.Model.Parent or not self.World or not self.World.Parent) then
+            self.Model, self.PoseSteps, self.ModelSource = nil, nil, nil
+            self.Overlay.Visible = false
+        end
+        if self.RebuildAt and now >= self.RebuildAt then
+            self.RebuildAt = nil
+            self.NeedsRebuild = true
+        end
+        local character = self.Character
+        local usable = characterReady(character)
+        if usable and follow and follow.Character == character and now - (self.CharacterSince or now) < 5 then
+            local ok, loaded = pcall(function() return follow:HasAppearanceLoaded() end)
+            if ok and loaded == false then usable = false end
+        end
+        if usable then
+            if (self.NeedsRebuild or not self.Model or self.ModelSource ~= character) and now >= (self.NextAttempt or 0) then
+                self.NeedsRebuild = false
+                if self:Rebuild() then
+                    self.Failures, self.NextAttempt = 0, 0
+                else
+                    self.Failures = (self.Failures or 0) + 1
+                    self.NextAttempt = now + math.min(2, 0.3 * self.Failures)
+                end
+            end
+        elseif not self.Model then
+            self:EnsureFallback(now)
+        end
+    end
+
+    function Preview:ApplyIdle(now)
+        local steps = self.PoseSteps
+        if not steps then return end
+        local t = now - (self.PoseClock or now)
+        for index = 1, #steps do
+            local step = steps[index]
+            local child, parent = step.Child, step.Parent
+            if child.Parent and parent.Parent then
+                local transform = step.Motor and idleTransform(step.Name, t) or IDENTITY
+                if step.Forward then
+                    child.CFrame = parent.CFrame * step.Left * transform * step.RightInv
+                else
+                    child.CFrame = parent.CFrame * step.Right * transform:Inverse() * step.LeftInv
+                end
+            end
+        end
     end
 
     function Preview:UpdateCamera()
@@ -9895,6 +10035,8 @@ do
 
     function Preview:Step(dt)
         if self.Destroyed then return end
+        self:Maintain(os.clock())
+        if self.Destroyed then return end
         -- Hide before layout, renderer guards or yielding callbacks can return.
         if not self:CanShow() then
             self.Object.Visible, self.Holder.Visible = false, false
@@ -9943,21 +10085,8 @@ do
             self.Camera.FieldOfView = fov + 0.001
             self.Camera.FieldOfView = fov
         end
-        -- Hard-lock the preview snapshot. This prevents animation controllers,
-        -- avatar physics and any copied Motor6D state from mirroring live input.
-        if self.Model and self.StaticPose then
-            for part, cf in pairs(self.StaticPose) do
-                if part.Parent then
-                    if part.CFrame ~= cf then part.CFrame = cf end
-                    if part.AssemblyLinearVelocity ~= Vector3.zero then
-                        part.AssemblyLinearVelocity = Vector3.zero
-                    end
-                    if part.AssemblyAngularVelocity ~= Vector3.zero then
-                        part.AssemblyAngularVelocity = Vector3.zero
-                    end
-                end
-            end
-        end
+        -- Idle pose: recomputed from the neutral joint data every frame.
+        if self.Model and self.PoseSteps then self:ApplyIdle(os.clock()) end
         self.Elapsed = self.Elapsed + dt
         if not self.Drag and self.Elapsed < self.Interval then fadeGroup(self.Canvas, alpha); return end
         local elapsed = self.Elapsed
@@ -10151,8 +10280,10 @@ do
             preview:SetRenderer(options.Render or options.Renderer):SetStateProvider(options.StateProvider):SetValue(options.State or {})
             preview:SetCharacter(options.Character or player.Character)
             if options.Character == nil then
-                maid:Connect(player.CharacterAdded, function(character) preview:SetCharacter(character) end)
-                maid:Connect(player.CharacterRemoving, function(character) if preview.Character == character then preview:SetCharacter(nil) end end)
+                -- Follow the local player; Preview:Maintain keeps the model across
+                -- death and respawn instead of clearing it on CharacterRemoving.
+                preview.FollowPlayer = player
+                maid:Connect(player.CharacterAdded, function(character) preview:SetCharacter(character, true) end)
                 maid:Connect(player.CharacterAppearanceLoaded, function(character) if preview.Character == character then preview:Refresh() end end)
             end
             maid:Connect(self.TabChanged.Event, function()
@@ -10174,7 +10305,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "static-owner-tab-r5"
+    Library.ESPPreviewRevision = "idle-r15-persistent-r6"
 end
 
 
