@@ -2811,14 +2811,16 @@ function Library:CreateWindow(opts)
             local x = origin.X + anchorSize.X * 0.5 - tooltipWidth * 0.5
             local aboveY = origin.Y - tooltipHeight - 6
             local belowY = origin.Y + anchorSize.Y + 6
-            -- Prefer the side with actual free space. The previous implementation
-            -- always placed the tooltip above the control and then clamped it to
-            -- Y=0, which made touch hints appear detached/high on the screen.
+            -- Keep touch hints attached to the control. Prefer below when there
+            -- is room; otherwise place above. Never clamp a tooltip to a remote
+            -- position near the top of the window.
             local y
-            if aboveY >= 6 or belowY + tooltipHeight > viewport.Y - 6 then
+            if belowY + tooltipHeight <= viewport.Y - 6 then
+                y = belowY
+            elseif aboveY >= 6 then
                 y = aboveY
             else
-                y = belowY
+                y = math.clamp(belowY, 6, math.max(6, viewport.Y - tooltipHeight - 6))
             end
             tooltip.Position = UDim2.fromOffset(
                 math.clamp(x, 6, math.max(6, viewport.X - tooltipWidth - 6)),
@@ -5554,11 +5556,11 @@ end
 
 function Tab:AddPlayerList(opts)
     opts = opts or {}
-    local name = opts.Name or "Players"
+    local name = opts.Name or "Игроки"
     local flag = opts.Flag or (self.Name .. "." .. name)
     local w = self:_width(opts.Width or 370)
-    local listH = math.max(140, math.floor(tonumber(opts.Height) or 348))
-    local rowH = math.max(56, math.floor(tonumber(opts.RowHeight) or 62))
+    local listH = math.max(140, math.floor(tonumber(opts.Height) or 360))
+    local rowH = math.max(56, math.floor(tonumber(opts.RowHeight) or 64))
     local includeSelf = opts.IncludeSelf == true
     local getRole = type(opts.GetRole) == "function" and opts.GetRole or function() return "" end
     local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
@@ -5577,7 +5579,7 @@ function Tab:AddPlayerList(opts)
         Position = UDim2.fromOffset(10, 29),
         Size = UDim2.fromOffset(math.max(80, w - 20), 26),
         ClearTextOnFocus = false,
-        PlaceholderText = opts.Placeholder or "Find player...",
+        PlaceholderText = opts.Placeholder or "Найти игрока...",
         PlaceholderColor3 = palette[3],
         Text = "",
         TextColor3 = white,
@@ -5604,7 +5606,7 @@ function Tab:AddPlayerList(opts)
         ZIndex = 2,
     })
 
-    local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
+    local empty = muted(holder, opts.Empty or "Игроки не найдены", 8, 0, math.max(60, w - 36), rowH - 4, 11)
     local rows = {}
     local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
     local rowsMaid = Maid.new(listMaid)
@@ -5616,7 +5618,7 @@ function Tab:AddPlayerList(opts)
             local result = tostring(value)
             if result ~= "" then return result end
         end
-        return "Unknown"
+        return "Неизвестно"
     end
 
     local thumbCache = {}
@@ -5641,8 +5643,8 @@ function Tab:AddPlayerList(opts)
         return image
     end
 
-    local ACTION_W = 29
-    local ACTION_H = 32
+    local ACTION_W = 28
+    local ACTION_H = 30
     local ACTION_GAP = 4
     local ACTION_COUNT = 3
     local ACTIONS_W = ACTION_W * ACTION_COUNT + ACTION_GAP * (ACTION_COUNT - 1)
@@ -5704,9 +5706,9 @@ function Tab:AddPlayerList(opts)
         empty.Object.Visible = #playersList == 0
         countLabel:SetText(tostring(#playersList))
 
-        local rowWidth = math.max(80, w - 20)
-        local actionStart = rowWidth - ACTIONS_W - 4
+        local rowWidth = math.max(80, w - 22)
         local avatarSize = math.min(40, rowH - 16)
+        local actionStart = math.max(avatarSize + 120, rowWidth - ACTIONS_W - 6)
         local infoX = 12 + avatarSize
         local infoW = math.max(70, actionStart - infoX - 8)
 
@@ -5744,9 +5746,9 @@ function Tab:AddPlayerList(opts)
             role.Object.ZIndex = 6
             role.Object.TextTruncate = Enum.TextTruncate.AtEnd
 
-            actionButton(row, actionStart, {"eye", "view"}, "V", "Watch", onWatch, p)
-            actionButton(row, actionStart + ACTION_W + ACTION_GAP, {"move", "send", "navigation"}, "T", "Teleport", onTeleport, p)
-            actionButton(row, actionStart + (ACTION_W + ACTION_GAP) * 2, {"zap", "flame"}, "F", "Fling", onFling, p)
+            actionButton(row, actionStart, {"eye", "view"}, "Н", "Наблюдать", onWatch, p)
+            actionButton(row, actionStart + ACTION_W + ACTION_GAP, {"move", "send", "navigation"}, "Т", "Телепорт", onTeleport, p)
+            actionButton(row, actionStart + (ACTION_W + ACTION_GAP) * 2, {"zap", "flame"}, "Ф", "Флинг", onFling, p)
 
             rowsMaid:Add(row)
         end
@@ -5807,7 +5809,7 @@ function Tab:AddPlayerDropdown(opts)
     end
 
     local api = self:AddDropdown({
-        Name = opts.Name or "Player",
+        Name = opts.Name or "Игрок",
         Description = opts.Description,
         Flag = opts.Flag,
         Options = names(),
