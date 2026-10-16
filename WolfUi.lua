@@ -5560,6 +5560,8 @@ function Tab:AddList(opts)
     return api
 end
 
+Library.PlayersListRevision = "players-scroll-r2"
+
 function Tab:AddPlayerList(opts)
     opts = opts or {}
     local name = opts.Name or "Players"
@@ -5632,17 +5634,19 @@ function Tab:AddPlayerList(opts)
         Runtime.SetProperty(holder, "ScrollingEnabled", contentH > listH)
     end
 
-    -- Use a single scroll surface on a standalone Players page. Both sizes here
-    -- are logical offsets, so fitting also works at 75% and on small screens.
+    -- A hidden page or an in-progress window resize is not a usable viewport.
+    -- Never shrink a working list to one pixel while those sizes settle.
     local function fitPlayerViewport()
         if api.Destroyed or not card.Parent then return end
         local height = requestedListH
         local outer = self.Window and self.Window.Scroll
-        if opts.FitViewport ~= false and not self.IsGroup and not self.IsSubMenu
+        if self.Page.Visible and opts.FitViewport ~= false and not self.IsGroup and not self.IsSubMenu
             and outer and outer.Size.Y.Scale == 0 and outer.Size.Y.Offset > 0 then
             local available = outer.Size.Y.Offset - PAD * 2 - GAP
                 - card.Position.Y.Offset - LIST_TOP - LIST_BOTTOM
-            height = math.min(height, math.max(1, available))
+            if available >= rowH then
+                height = math.min(height, math.floor(available))
+            end
         end
         listH = height
         Runtime.SetProperty(holder, "Size", UDim2.fromOffset(math.max(80, w - 20), listH))
@@ -5653,6 +5657,7 @@ function Tab:AddPlayerList(opts)
         connect(self.Window.Scroll:GetPropertyChangedSignal("Size"), fitPlayerViewport, listMaid)
     end
     connect(card:GetPropertyChangedSignal("Position"), fitPlayerViewport, listMaid)
+    connect(self.Page:GetPropertyChangedSignal("Visible"), fitPlayerViewport, listMaid)
     fitPlayerViewport()
 
     -- The empty-state label is an overlay, never a row in the scrolling layout.
