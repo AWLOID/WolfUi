@@ -5609,15 +5609,27 @@ function Tab:AddPlayerList(opts)
         Padding = UDim.new(0, 4),
     })
 
-    -- Use the layout's measured content height rather than AutomaticCanvasSize.
-    -- This avoids the last-row clipping that can occur with nested/touch scrolling.
+    -- CanvasSize is expressed in the holder's local units, but
+    -- AbsoluteContentSize / AbsoluteSize are screen pixels.  Under the window
+    -- UIScale (any scale ~= 1) the old code mixed the two, so with a scale
+    -- below 1 the canvas came out too short and the last rows were
+    -- unreachable.  The height is computed from the row count (scale-free)
+    -- and cross-checked against the measured layout converted back to local
+    -- units.
+    local ROW_GAP, PAD_Y, TAIL = 4, 4, 8
     local function syncPlayerCanvas()
         if not holder.Parent or not layout.Parent then return end
-        local contentH = math.ceil(layout.AbsoluteContentSize.Y) + 6
-        local viewportH = math.max(0, holder.AbsoluteSize.Y)
-        holder.CanvasSize = UDim2.fromOffset(0, math.max(contentH, viewportH))
+        local localH = math.max(1, holder.Size.Y.Offset)
+        local scale = holder.AbsoluteSize.Y > 0 and (holder.AbsoluteSize.Y / localH) or 1
+        if scale <= 0 then scale = 1 end
+        local count = #rowOrder
+        local counted = count > 0 and (count * (rowH - 4) + (count - 1) * ROW_GAP + PAD_Y + TAIL) or 0
+        local measured = math.ceil(layout.AbsoluteContentSize.Y / scale) + PAD_Y + TAIL
+        local contentH = math.max(counted, measured)
+        holder.CanvasSize = UDim2.fromOffset(0, math.max(contentH, localH))
     end
     connect(layout:GetPropertyChangedSignal("AbsoluteContentSize"), syncPlayerCanvas)
+    connect(holder:GetPropertyChangedSignal("AbsoluteSize"), syncPlayerCanvas)
 
     local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
     empty.Object.LayoutOrder = 999999
@@ -5656,6 +5668,69 @@ function Tab:AddPlayerList(opts)
 
     local ACTION_W, ACTION_H, ACTION_GAP = 27, 29, 4
     local ACTIONS_W = ACTION_W * 3 + ACTION_GAP * 2
+
+    -- Player-card layout is configurable without adding permanent controls
+    -- below the list.  The compact Customize popup keeps the Players tab clean.
+    local layoutState = {
+        AvatarX = math.floor(tonumber(opts.AvatarX) or 7),
+        AvatarY = math.floor(tonumber(opts.AvatarY) or 0),
+        AvatarSize = math.floor(tonumber(opts.AvatarSize) or math.min(38, rowH - 18)),
+        InfoX = math.floor(tonumber(opts.InfoX) or 0),
+        DistanceY = math.floor(tonumber(opts.DistanceY) or 52),
+        ShowDistance = opts.ShowDistance ~= false,
+    }
+    layoutState.AvatarSize = math.clamp(layoutState.AvatarSize, 24, math.max(24, rowH - 8))
+    layoutState.AvatarX = math.clamp(layoutState.AvatarX, 2, math.max(2, w - 55))
+    layoutState.AvatarY = math.clamp(layoutState.AvatarY, -4, math.max(-4, rowH - layoutState.AvatarSize - 4))
+    layoutState.DistanceY = math.clamp(layoutState.DistanceY, 44, math.max(44, rowH - 13))
+
+    local customize = paint(rect(card, w - 54, 7, 38, 22, palette[4], 5, "TextButton"), 6)
+    customize.AutoButtonColor = false
+    local customizeIcon = iconLabel(customize, {"settings","sliders-horizontal"}, 11, 4, 14, palette[3], "C")
+    customizeIcon.Object.ZIndex = 7
+
+    local popup = paint(rect(card, w - 244, 32, 230, 176, palette[2], 7), 30)
+    popup.Visible = false
+    popup.ZIndex = 30
+    new("UIStroke", popup, {Color = palette[5], Thickness = 1, Transparency = 0.1})
+    text(popup, "Player card layout", 10, 8, 190, 18, 11, white)
+    local function settingButton(parent, x, y, label, delta, key)
+        local b = paint(rect(parent, x, y, 96, 27, palette[4], 5, "TextButton"), 31)
+        b.AutoButtonColor = false
+        local t = text(b, label, 7, 0, 78, 27, 9, white)
+        t.Object.ZIndex = 32
+        local minus = paint(rect(parent, x + 99, y, 27, 27, palette[4], 5, "TextButton"), 31)
+        local plus = paint(rect(parent, x + 130, y, 27, 27, palette[4], 5, "TextButton"), 31)
+        text(minus, "-", 0, 0, 27, 27, 12, white, "center").Object.ZIndex = 32
+        text(plus, "+", 0, 0, 27, 27, 12, white, "center").Object.ZIndex = 32
+        local function change(v)
+            layoutState[key] = layoutState[key] + v
+            if key == "AvatarSize" then layoutState[key] = math.clamp(layoutState[key], 24, rowH - 8)
+            elseif key == "AvatarX" then layoutState[key] = math.clamp(layoutState[key], 2, w - 55)
+            elseif key == "AvatarY" then layoutState[key] = math.clamp(layoutState[key], -4, rowH - layoutState.AvatarSize - 4)
+            elseif key == "DistanceY" then layoutState[key] = math.clamp(layoutState[key], 44, rowH - 13)
+            elseif key == "InfoX" then layoutState[key] = math.clamp(layoutState[key], -40, 60) end
+            if api and api._ApplyLayout then api:_ApplyLayout() end
+        end
+        connect(minus.Activated, function() change(-delta) end, listMaid)
+        connect(plus.Activated, function() change(delta) end, listMaid)
+        return b
+    end
+    settingButton(popup, 10, 34, "Avatar X", 2, "AvatarX")
+    settingButton(popup, 10, 65, "Avatar Y", 2, "AvatarY")
+    settingButton(popup, 10, 96, "Avatar size", 2, "AvatarSize")
+    settingButton(popup, 10, 127, "Distance Y", 2, "DistanceY")
+    settingButton(popup, 120, 127, "Info X", 2, "InfoX")
+    local showDistanceBtn = paint(rect(popup, 169, 34, 51, 27, palette[4], 5, "TextButton"), 31)
+    text(showDistanceBtn, "ON", 0, 0, 51, 27, 9, white, "center").Object.ZIndex = 32
+    connect(showDistanceBtn.Activated, function()
+        layoutState.ShowDistance = not layoutState.ShowDistance
+        showDistanceBtn:FindFirstChildOfClass("TextLabel").Text = layoutState.ShowDistance and "ON" or "OFF"
+        if api and api._ApplyLayout then api:_ApplyLayout() end
+    end, listMaid)
+    connect(customize.Activated, function()
+        popup.Visible = not popup.Visible
+    end, listMaid)
 
     local function actionButton(row, x, iconNames, fallback, tooltip, callback, player)
         local y = math.floor((rowH - 4 - ACTION_H) * 0.5)
@@ -5697,7 +5772,7 @@ function Tab:AddPlayerList(opts)
         local rowWidth = math.max(120, w - 22)
         local avatarSize = math.min(38, rowH - 18)
         local actionStart = math.max(avatarSize + 112, rowWidth - ACTIONS_W - 8)
-        local infoX = 12 + avatarSize
+        local infoX = 12 + layoutState.AvatarSize + layoutState.InfoX
         local infoW = math.max(64, actionStart - infoX - 8)
 
         local row = rect(holder, 0, 0, rowWidth, rowH - 4, palette[4], 6)
@@ -5710,25 +5785,57 @@ function Tab:AddPlayerList(opts)
 
         local avatar = new("ImageLabel", row, {
             Name="Avatar", BackgroundColor3=palette[1], BackgroundTransparency=0.12,
-            BorderSizePixel=0, Position=UDim2.fromOffset(7, math.floor((rowH-4-avatarSize)*0.5)),
-            Size=UDim2.fromOffset(avatarSize, avatarSize), Image=thumbnail(p),
+            BorderSizePixel=0, Position=UDim2.fromOffset(layoutState.AvatarX, layoutState.AvatarY),
+            Size=UDim2.fromOffset(layoutState.AvatarSize, layoutState.AvatarSize), Image=thumbnail(p),
             ScaleType=Enum.ScaleType.Crop, ZIndex=5,
         })
         new("UICorner", avatar, {CornerRadius=UDim.new(1,0)})
 
-        local display = text(row, p.DisplayName, infoX, 8, infoW, 16, 11, white)
+        local display = text(row, p.DisplayName, infoX, 6, infoW, 16, 11, white)
         display.Object.ZIndex=6; display.Object.TextTruncate=Enum.TextTruncate.AtEnd
         local username = p.DisplayName ~= p.Name and ("@"..p.Name) or p.Name
-        local tag = text(row, username, infoX, 25, infoW, 12, 8, palette[3])
+        local tag = text(row, username, infoX, 23, infoW, 12, 8, palette[3])
         tag.Object.ZIndex=6; tag.Object.TextTruncate=Enum.TextTruncate.AtEnd
-        local role = text(row, roleText(p), infoX, 39, infoW, 12, 9, palette[3])
+        local role = text(row, roleText(p), infoX, 37, infoW, 12, 9, palette[3])
         role.Object.Name="Role"; role.Object.ZIndex=6; role.Object.TextTruncate=Enum.TextTruncate.AtEnd
+        local distance = text(row, "Distance: --", infoX, layoutState.DistanceY, infoW, 12, 8, palette[3])
+        distance.Object.Name="Distance"; distance.Object.ZIndex=6; distance.Object.TextTruncate=Enum.TextTruncate.AtEnd
+        distance.Object.Visible = layoutState.ShowDistance
 
         actionButton(row, actionStart, {"eye","view"}, "W", "Watch", onWatch, p)
         actionButton(row, actionStart+ACTION_W+ACTION_GAP, {"move","send","navigation"}, "T", "Teleport", onTeleport, p)
         actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*2, {"zap","flame"}, "F", "Fling", onFling, p)
         rowsMaid:Add(row)
         return row
+    end
+
+    function api:_ApplyLayout()
+        for p,row in pairs(rows) do
+            if row and row.Parent then
+                local avatar = row:FindFirstChild("Avatar")
+                if avatar then
+                    avatar.Position = UDim2.fromOffset(layoutState.AvatarX, layoutState.AvatarY)
+                    avatar.Size = UDim2.fromOffset(layoutState.AvatarSize, layoutState.AvatarSize)
+                end
+                local infoX = math.max(8, 12 + layoutState.AvatarSize + layoutState.InfoX)
+                local display = row:FindFirstChildWhichIsA("TextLabel", true)
+                local role = row:FindFirstChild("Role", true)
+                local distance = row:FindFirstChild("Distance", true)
+                if display then display.Position = UDim2.fromOffset(infoX, 6) end
+                local textLabels = {}
+                for _,child in ipairs(row:GetChildren()) do
+                    if child:IsA("TextLabel") and child ~= display and child ~= role and child ~= distance then
+                        textLabels[#textLabels+1] = child
+                    end
+                end
+                if textLabels[1] then textLabels[1].Position = UDim2.fromOffset(infoX, 23) end
+                if role then role.Position = UDim2.fromOffset(infoX, 37) end
+                if distance then
+                    distance.Position = UDim2.fromOffset(infoX, layoutState.DistanceY)
+                    distance.Visible = layoutState.ShowDistance
+                end
+            end
+        end
     end
 
     local function matches(p, needle)
@@ -5770,7 +5877,7 @@ function Tab:AddPlayerList(opts)
         task.defer(function()
             if not holder.Parent then return end
             syncPlayerCanvas()
-            local maxY = math.max(0, holder.CanvasSize.Y.Offset - holder.AbsoluteSize.Y)
+            local maxY = math.max(0, holder.CanvasSize.Y.Offset - holder.Size.Y.Offset)
             holder.CanvasPosition = Vector2.new(0, math.clamp(oldScroll, 0, maxY))
         end)
     end
@@ -5794,6 +5901,17 @@ function Tab:AddPlayerList(opts)
                 if p.Parent and row.Parent then
                     local roleLabel = row:FindFirstChild("Role", true)
                     if roleLabel and roleLabel:IsA("TextLabel") then roleLabel.Text = roleText(p) end
+                    local distanceLabel = row:FindFirstChild("Distance", true)
+                    if distanceLabel and distanceLabel:IsA("TextLabel") then
+                        local a = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        local b = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                        if a and b then
+                            distanceLabel.Text = "Distance: " .. tostring(math.floor((a.Position - b.Position).Magnitude + 0.5))
+                        else
+                            distanceLabel.Text = "Distance: --"
+                        end
+                        distanceLabel.Visible = layoutState.ShowDistance
+                    end
                 end
             end
         end
