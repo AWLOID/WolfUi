@@ -5560,7 +5560,7 @@ function Tab:AddList(opts)
     return api
 end
 
-Library.PlayersListRevision = "players-cards-r4"
+Library.PlayersListRevision = "players-cards-r5"
 
 function Tab:AddPlayerList(opts)
     opts = opts or {}
@@ -5571,7 +5571,7 @@ function Tab:AddPlayerList(opts)
     local listH = requestedListH
     local rowH = math.max(58, math.floor(tonumber(opts.RowHeight) or 64))
     local LIST_TOP, LIST_BOTTOM, ROW_GAP, LIST_PADDING = 61, 8, 4, 2
-    local BAR_WIDTH, BAR_GAP = 5, 4
+    local BAR_WIDTH, BAR_GAP = 0, 0
     local roleY = math.min(37, rowH - ROW_GAP - 23)
     local usernameY = math.min(23, roleY - 12)
     local displayY = math.min(6, usernameY - 16)
@@ -5588,8 +5588,8 @@ function Tab:AddPlayerList(opts)
     local listMaid = Maid.new(Runtime.GetOwner() or self.Maid or Library.Maid)
     local rows, rowOrder, rowMaids = {}, {}, {}
     local filterText = ""
-    local title = text(card, name, 10, 9, math.max(40, w - 118), 15, 12, white)
-    local countLabel = text(card, "0", w - 104, 9, 40, 15, 10, palette[3], "right")
+    local title = text(card, name, 10, 9, math.max(40, w - 70), 15, 12, white)
+    local countLabel = text(card, "0", w - 50, 9, 40, 15, 10, palette[3], "right")
 
     local function playerIcon(parent, names, x, y, size, color, fallback)
         local ok, icon = pcall(iconLabel, parent, names, x, y, size, color, fallback)
@@ -5618,7 +5618,7 @@ function Tab:AddPlayerList(opts)
         CanvasSize = UDim2.fromOffset(0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.None,
         ScrollBarThickness = BAR_WIDTH, ScrollBarImageColor3 = palette[5],
-        ScrollBarImageTransparency = 0,
+        ScrollBarImageTransparency = 1,
         ScrollingDirection = Enum.ScrollingDirection.Y,
         ScrollingEnabled = false, ElasticBehavior = Enum.ElasticBehavior.Never,
         Active = true, Selectable = true, ClipsDescendants = true, ZIndex = 2,
@@ -5727,11 +5727,10 @@ function Tab:AddPlayerList(opts)
     local ACTION_W, ACTION_H, ACTION_GAP = 27, 29, 4
     local ACTIONS_W = ACTION_W * 3 + ACTION_GAP * 2
 
-    -- Player-card layout is configurable without adding permanent controls
-    -- below the list.  The compact Customize popup keeps the Players tab clean.
+    -- Shared geometry keeps avatars, text and actions aligned across rows.
     local layoutState = {
         AvatarX = math.floor(tonumber(opts.AvatarX) or 7),
-        AvatarY = math.floor(tonumber(opts.AvatarY) or 0),
+        AvatarY = math.floor(tonumber(opts.AvatarY) or math.floor((rowH - ROW_GAP - math.min(38, rowH - 18)) / 2)),
         AvatarSize = math.floor(tonumber(opts.AvatarSize) or math.min(38, rowH - 18)),
         InfoX = math.floor(tonumber(opts.InfoX) or 0),
         DistanceY = math.floor(tonumber(opts.DistanceY) or 52),
@@ -5742,60 +5741,7 @@ function Tab:AddPlayerList(opts)
     layoutState.AvatarY = math.clamp(layoutState.AvatarY, -4, math.max(-4, rowH - layoutState.AvatarSize - 4))
     layoutState.DistanceY = math.clamp(layoutState.DistanceY, distanceMinY, distanceMaxY)
 
-    local customize = paint(rect(card, w - 54, 7, 38, 22, palette[4], 5, "TextButton"), 4)
-    customize.ZIndex = 6
-    customize.AutoButtonColor = false
-    local customizeIcon = playerIcon(customize, {"settings","sliders-horizontal"}, 11, 4, 14, palette[3], "C")
-    customizeIcon.Object.ZIndex = 7
-
-    local popup = paint(rect(card, w - 244, 32, 230, 176, palette[2], 7), 2)
-    popup.Visible = false
-    popup.ZIndex = 30
-    new("UIStroke", popup, {Color = palette[5], Thickness = 1, Transparency = 0.1})
-    text(popup, "Player card layout", 10, 8, 190, 18, 11, white)
-    local function settingButton(parent, x, y, label, delta, key)
-        local b = paint(rect(parent, x, y, 96, 27, palette[4], 5, "TextButton"), 4)
-        b.ZIndex = 31
-        b.AutoButtonColor = false
-        local t = text(b, label, 7, 0, 78, 27, 9, white)
-        t.Object.ZIndex = 32
-        local minus = paint(rect(parent, x + 99, y, 27, 27, palette[4], 5, "TextButton"), 4)
-        local plus = paint(rect(parent, x + 130, y, 27, 27, palette[4], 5, "TextButton"), 4)
-        minus.ZIndex, plus.ZIndex = 31, 31
-        text(minus, "-", 0, 0, 27, 27, 12, white, "center").Object.ZIndex = 32
-        text(plus, "+", 0, 0, 27, 27, 12, white, "center").Object.ZIndex = 32
-        local function change(v)
-            layoutState[key] = layoutState[key] + v
-            if key == "AvatarSize" then layoutState[key] = math.clamp(layoutState[key], 24, rowH - 8)
-            elseif key == "AvatarX" then layoutState[key] = math.clamp(layoutState[key], 2, w - 55)
-            elseif key == "AvatarY" then layoutState[key] = math.clamp(layoutState[key], -4, rowH - layoutState.AvatarSize - 4)
-            elseif key == "DistanceY" then layoutState[key] = math.clamp(layoutState[key], distanceMinY, distanceMaxY)
-            elseif key == "InfoX" then layoutState[key] = math.clamp(layoutState[key], -40, 60) end
-            if api and api._ApplyLayout then api:_ApplyLayout() end
-        end
-        connect(minus.Activated, function() change(-delta) end, listMaid)
-        connect(plus.Activated, function() change(delta) end, listMaid)
-        return b
-    end
-    settingButton(popup, 10, 34, "Avatar X", 2, "AvatarX")
-    settingButton(popup, 10, 65, "Avatar Y", 2, "AvatarY")
-    settingButton(popup, 10, 96, "Avatar size", 2, "AvatarSize")
-    settingButton(popup, 10, 127, "Distance Y", 2, "DistanceY")
-    settingButton(popup, 120, 127, "Info X", 2, "InfoX")
-    local showDistanceBtn = paint(rect(popup, 169, 34, 51, 27, palette[4], 5, "TextButton"), 4)
-    showDistanceBtn.ZIndex = 31
-    text(showDistanceBtn, "ON", 0, 0, 51, 27, 9, white, "center").Object.ZIndex = 32
-    connect(showDistanceBtn.Activated, function()
-        layoutState.ShowDistance = not layoutState.ShowDistance
-        showDistanceBtn:FindFirstChildOfClass("TextLabel").Text = layoutState.ShowDistance and "ON" or "OFF"
-        if api and api._ApplyLayout then api:_ApplyLayout() end
-    end, listMaid)
-    connect(customize.Activated, function()
-        popup.Visible = not popup.Visible
-    end, listMaid)
-    popup.Active = true
     connect(holder:GetPropertyChangedSignal("CanvasPosition"), function()
-        popup.Visible = false
         if self.Window and self.Window.Wake then self.Window:Wake() end
     end, listMaid)
 
@@ -9601,10 +9547,17 @@ do
     end
     Preview.SetState = Preview.SetValue
 
+    function Preview:CanShow()
+        local window = self.Window
+        return not self.Destroyed and self.Visible == true and window ~= nil
+            and not window.Destroyed and window.Visible == true
+            and (not self.OwnerTab or (not self.OwnerTab.Destroyed and window.Current == self.OwnerTab))
+    end
+
     function Preview:SetVisible(value)
         if not self.Destroyed then
             self.Visible = value == true
-            if not self.Visible then
+            if not self:CanShow() then
                 self.Object.Visible = false
                 self.Holder.Visible = false
                 self.Drag = nil
@@ -9793,6 +9746,14 @@ do
             -- Reconstruct a neutral joint pose from Motor6D C0/C1 instead of
             -- retaining the live animation transforms copied by :Clone().
             self:FreezePose(clone, root)
+            -- A display rig has no live joints or animation/physics controllers.
+            for _, object in ipairs(clone:GetDescendants()) do
+                if object:IsA("JointInstance") or object:IsA("Constraint") then
+                    object:Destroy()
+                elseif object:IsA("Humanoid") then
+                    pcall(function() object.EvaluateStateMachine = false end)
+                end
+            end
             for _, part in ipairs(clone:GetDescendants()) do
                 if part:IsA("BasePart") then
                     part.Anchored = true
@@ -9867,10 +9828,10 @@ do
         self:ClearModel()
         if character then
             self.CharacterMaid:Connect(character.DescendantAdded, function(object)
-                if self:IsAppearanceChange(object) then self:Refresh() end
+                if not self.Model and self:IsAppearanceChange(object) then self:Refresh() end
             end)
             self.CharacterMaid:Connect(character.DescendantRemoving, function(object)
-                if self:IsAppearanceChange(object) then self:Refresh() end
+                if not self.Model and self:IsAppearanceChange(object) then self:Refresh() end
             end)
             self.CharacterMaid:Connect(character.AncestryChanged, function(_, parent)
                 if not parent then self:ClearModel() else self:Refresh() end
@@ -9933,7 +9894,14 @@ do
     end
 
     function Preview:Step(dt)
-        if self.Destroyed or self.Rendering then return end
+        if self.Destroyed then return end
+        -- Hide before layout, renderer guards or yielding callbacks can return.
+        if not self:CanShow() then
+            self.Object.Visible, self.Holder.Visible = false, false
+            self.Drag = nil
+            return
+        end
+        if self.Rendering then return end
         local window = self.Window
         if not window or window.Destroyed or not self.Holder or not self.Holder.Parent then return end
         local screen = window.Viewport
@@ -9947,7 +9915,7 @@ do
         local x, y, scale, side = Library.ComputeESPPreviewLayout(origin,
             menuSize, screen, self.Width, self.Height, self.Gap, menuScale)
         self.Side = side
-        local visible = self.Visible and window.Visible and not window.Destroyed and scale > 0
+        local visible = self:CanShow() and scale > 0
         set(self.Object, "Visible", visible)
         set(self.Holder, "Visible", visible)
         if not visible then self.Drag = nil; return end
@@ -10137,7 +10105,7 @@ do
         options = type(options) == "table" and options or {}
         assert(not self.Destroyed and self.Gui and self.Gui.Parent, "CreateESPPreview requires a live window")
         local maid = Maid.new(Library.Maid)
-        local preview = setmetatable({Window = self, Maid = maid, Width = math.clamp(Runtime.Number(options.Width, 180), 120, 420),
+        local preview = setmetatable({Window = self, OwnerTab = options.OwnerTab, Maid = maid, Width = math.clamp(Runtime.Number(options.Width, 180), 120, 420),
             Height = math.clamp(Runtime.Number(options.Height, 250), 160, 600), Gap = math.clamp(Runtime.Number(options.Gap, 16), 4, 60),
             Visible = options.Visible ~= false, Enabled = options.Enabled ~= false, State = {}, Parts = {}, Corners = {},
             Yaw = 0, Pitch = 0, Zoom = 1, Pan = Vector2.zero, StaticPose = {}, Elapsed = 0, FocalLength = 1,
@@ -10187,6 +10155,12 @@ do
                 maid:Connect(player.CharacterRemoving, function(character) if preview.Character == character then preview:SetCharacter(nil) end end)
                 maid:Connect(player.CharacterAppearanceLoaded, function(character) if preview.Character == character then preview:Refresh() end end)
             end
+            maid:Connect(self.TabChanged.Event, function()
+                if not preview:CanShow() then
+                    panel.Visible, holder.Visible = false, false
+                    preview.Drag = nil
+                end
+            end)
             maid:Connect(panel.Destroying, function() preview:Destroy() end)
             maid:Connect(holder.Destroying, function() preview:Destroy() end)
             maid:Add(function() preview:Destroy() end)
@@ -10200,7 +10174,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "chams-stable-17-viewport-fx-players"
+    Library.ESPPreviewRevision = "static-owner-tab-r5"
 end
 
 
