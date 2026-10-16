@@ -5616,6 +5616,7 @@ function Tab:AddPlayerList(opts)
     -- unreachable.  The height is computed from the row count (scale-free)
     -- and cross-checked against the measured layout converted back to local
     -- units.
+    local rows, rowOrder = {}, {}
     local ROW_GAP, PAD_Y, TAIL = 4, 4, 8
     local function syncPlayerCanvas()
         if not holder.Parent or not layout.Parent then return end
@@ -5633,7 +5634,6 @@ function Tab:AddPlayerList(opts)
 
     local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
     empty.Object.LayoutOrder = 999999
-    local rows, rowOrder = {}, {}
     local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
     local rowsMaid = Maid.new(listMaid)
     local filterText = ""
