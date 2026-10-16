@@ -644,18 +644,24 @@ end
 
 local function new(class, parent, props)
     local object = Instance.new(class)
+    if class == "ScrollingFrame" then
+        -- Hidden bars are the default, not an override of explicit options.
+        -- Keep Roblox's native bar images when a control requests a scrollbar.
+        object.ScrollBarThickness = 0
+        local nativeBar = props and (tonumber(props.ScrollBarThickness) or 0) > 0
+        object.ScrollBarImageTransparency = nativeBar and 0 or 1
+        object.VerticalScrollBarInset = Enum.ScrollBarInset.None
+        object.HorizontalScrollBarInset = Enum.ScrollBarInset.None
+        if not nativeBar then
+            object.TopImage = ""
+            object.MidImage = ""
+            object.BottomImage = ""
+        end
+    end
     for key, value in pairs(props or {}) do
         object[key] = value
     end
-    if class == "ScrollingFrame" then
-        object.ScrollBarThickness = 0
-        object.ScrollBarImageTransparency = 1
-        object.VerticalScrollBarInset = Enum.ScrollBarInset.None
-        object.HorizontalScrollBarInset = Enum.ScrollBarInset.None
-        object.TopImage = ""
-        object.MidImage = ""
-        object.BottomImage = ""
-    elseif class == "UIStroke" then
+    if class == "UIStroke" then
         object.LineJoinMode = Enum.LineJoinMode.Round
         for index = 1, 6 do
             if props and palette[index] and props.Color == palette[index] then
@@ -5559,18 +5565,24 @@ function Tab:AddPlayerList(opts)
     local name = opts.Name or "Players"
     local flag = opts.Flag or (self.Name .. "." .. name)
     local w = self:_width(opts.Width or 370)
-    local listH = math.max(140, math.floor(tonumber(opts.Height) or 360))
+    local requestedListH = math.max(140, math.floor(tonumber(opts.Height) or 360))
+    local listH = requestedListH
     local rowH = math.max(58, math.floor(tonumber(opts.RowHeight) or 64))
+    local LIST_TOP, LIST_BOTTOM, ROW_GAP, LIST_PADDING = 61, 8, 4, 2
+    local BAR_WIDTH, BAR_GAP = 5, 4
     local includeSelf = opts.IncludeSelf == true
     local getRole = type(opts.GetRole) == "function" and opts.GetRole or function() return "" end
     local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
     local onTeleport = type(opts.OnTeleport) == "function" and opts.OnTeleport or function() end
     local onFling = type(opts.OnFling) == "function" and opts.OnFling or function() end
 
-    local card = self:_card(w, 54 + listH + 12, name)
+    local card = self:_card(w, LIST_TOP + listH + LIST_BOTTOM, name)
     local api = baseApi(self, card, flag)
-    local title = text(card, name, 10, 9, math.max(40, w - 70), 15, 12, white)
-    local countLabel = text(card, "0", w - 58, 9, 48, 15, 10, palette[3], "right")
+    local listMaid = Maid.new(Runtime.GetOwner() or self.Maid or Library.Maid)
+    local rows, rowOrder, rowMaids = {}, {}, {}
+    local filterText = ""
+    local title = text(card, name, 10, 9, math.max(40, w - 118), 15, 12, white)
+    local countLabel = text(card, "0", w - 104, 9, 40, 15, 10, palette[3], "right")
 
     local search = new("TextBox", card, {
         BackgroundColor3 = palette[4], BackgroundTransparency = 0.08,
@@ -5583,60 +5595,81 @@ function Tab:AddPlayerList(opts)
     new("UICorner", search, {CornerRadius = UDim.new(0, 5)})
     new("UIPadding", search, {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 8)})
 
-    -- The list owns its layout.  Do not manually move rows or repeatedly
-    -- recreate the ScrollingFrame contents; both approaches can make touch
-    -- scrolling stop short of the last item.
     local holder = new("ScrollingFrame", card, {
+        Name = "PlayerList",
         BackgroundTransparency = 1, BorderSizePixel = 0,
-        Position = UDim2.fromOffset(10, 61),
+        Position = UDim2.fromOffset(10, LIST_TOP),
         Size = UDim2.fromOffset(math.max(80, w - 20), listH),
         CanvasSize = UDim2.fromOffset(0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.None,
-        ScrollBarThickness = 5, ScrollBarImageColor3 = palette[5],
+        ScrollBarThickness = BAR_WIDTH, ScrollBarImageColor3 = palette[5],
+        ScrollBarImageTransparency = 0,
         ScrollingDirection = Enum.ScrollingDirection.Y,
-        ScrollingEnabled = true, ElasticBehavior = Enum.ElasticBehavior.Never,
+        ScrollingEnabled = false, ElasticBehavior = Enum.ElasticBehavior.Never,
         Active = true, Selectable = true, ClipsDescendants = true, ZIndex = 2,
     })
-    local padding = new("UIPadding", holder, {
-        PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2),
-        PaddingLeft = UDim.new(0, 1), PaddingRight = UDim.new(0, 1),
+    new("UIPadding", holder, {
+        PaddingTop = UDim.new(0, LIST_PADDING), PaddingBottom = UDim.new(0, LIST_PADDING),
+        PaddingLeft = UDim.new(0, 1), PaddingRight = UDim.new(0, 1 + BAR_WIDTH + BAR_GAP),
     })
-    local layout = new("UIListLayout", holder, {
+    new("UIListLayout", holder, {
         FillDirection = Enum.FillDirection.Vertical,
         HorizontalAlignment = Enum.HorizontalAlignment.Left,
         VerticalAlignment = Enum.VerticalAlignment.Top,
         SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, 4),
+        Padding = UDim.new(0, ROW_GAP),
     })
 
-    -- CanvasSize is expressed in the holder's local units, but
-    -- AbsoluteContentSize / AbsoluteSize are screen pixels.  Under the window
-    -- UIScale (any scale ~= 1) the old code mixed the two, so with a scale
-    -- below 1 the canvas came out too short and the last rows were
-    -- unreachable.  The height is computed from the row count (scale-free)
-    -- and cross-checked against the measured layout converted back to local
-    -- units.
-    local rows, rowOrder = {}, {}
-    local ROW_GAP, PAD_Y, TAIL = 4, 4, 8
+    -- Rows have fixed logical heights. AbsoluteContentSize includes UIScale;
+    -- feeding that value back into CanvasSize scales the content a second time.
+    -- Compute once from the final row set, never from intermediate layout events.
     local function syncPlayerCanvas()
-        if not holder.Parent or not layout.Parent then return end
-        local localH = math.max(1, holder.Size.Y.Offset)
-        local scale = holder.AbsoluteSize.Y > 0 and (holder.AbsoluteSize.Y / localH) or 1
-        if scale <= 0 then scale = 1 end
+        if api.Destroyed or not holder.Parent then return end
         local count = #rowOrder
-        local counted = count > 0 and (count * (rowH - 4) + (count - 1) * ROW_GAP + PAD_Y + TAIL) or 0
-        local measured = math.ceil(layout.AbsoluteContentSize.Y / scale) + PAD_Y + TAIL
-        local contentH = math.max(counted, measured)
-        holder.CanvasSize = UDim2.fromOffset(0, math.max(contentH, localH))
+        local contentH = count > 0 and (LIST_PADDING * 2
+            + count * (rowH - ROW_GAP) + (count - 1) * ROW_GAP) or 0
+        Runtime.SetProperty(holder, "CanvasSize", UDim2.fromOffset(0, math.max(contentH, listH)))
+        Runtime.SetProperty(holder, "ScrollingEnabled", contentH > listH)
     end
-    connect(layout:GetPropertyChangedSignal("AbsoluteContentSize"), syncPlayerCanvas)
-    connect(holder:GetPropertyChangedSignal("AbsoluteSize"), syncPlayerCanvas)
 
-    local empty = muted(holder, opts.Empty or "No players found", 8, 0, math.max(60, w - 36), rowH - 4, 11)
-    empty.Object.LayoutOrder = 999999
-    local listMaid = Maid.new(Runtime.GetOwner() or Library.Maid)
-    local rowsMaid = Maid.new(listMaid)
-    local filterText = ""
+    -- Use a single scroll surface on a standalone Players page. Both sizes here
+    -- are logical offsets, so fitting also works at 75% and on small screens.
+    local function fitPlayerViewport()
+        if api.Destroyed or not card.Parent then return end
+        local height = requestedListH
+        local outer = self.Window and self.Window.Scroll
+        if opts.FitViewport ~= false and not self.IsGroup and not self.IsSubMenu
+            and outer and outer.Size.Y.Scale == 0 and outer.Size.Y.Offset > 0 then
+            local available = outer.Size.Y.Offset - PAD * 2 - GAP
+                - card.Position.Y.Offset - LIST_TOP - LIST_BOTTOM
+            height = math.min(height, math.max(1, available))
+        end
+        listH = height
+        Runtime.SetProperty(holder, "Size", UDim2.fromOffset(math.max(80, w - 20), listH))
+        Runtime.SetProperty(card, "Size", UDim2.fromOffset(w, LIST_TOP + listH + LIST_BOTTOM))
+        syncPlayerCanvas()
+    end
+    if self.Window and self.Window.Scroll then
+        connect(self.Window.Scroll:GetPropertyChangedSignal("Size"), fitPlayerViewport, listMaid)
+    end
+    connect(card:GetPropertyChangedSignal("Position"), fitPlayerViewport, listMaid)
+    fitPlayerViewport()
+
+    -- The empty-state label is an overlay, never a row in the scrolling layout.
+    local empty = muted(card, opts.Empty or "No players found", 18, LIST_TOP + LIST_PADDING,
+        math.max(60, w - 36), rowH - ROW_GAP, 11)
+    empty.Object.ZIndex = 4
+    api.Scroll = holder
+
+    local function scrollMetrics()
+        local logicalHeight = holder.CanvasSize.Y.Offset
+        local canvasHeight = holder.AbsoluteCanvasSize.Y
+        if canvasHeight <= 0 then canvasHeight = logicalHeight end
+        local unit = canvasHeight > 0 and logicalHeight > 0 and canvasHeight / logicalHeight or 1
+        local viewHeight = holder.AbsoluteWindowSize.Y
+        if viewHeight <= 0 then viewHeight = listH * unit end
+        return math.max(0, canvasHeight - viewHeight), unit
+    end
 
     local function roleText(player)
         local ok, value = pcall(getRole, player)
@@ -5650,7 +5683,7 @@ function Tab:AddPlayerList(opts)
         if thumbCache[id] then return thumbCache[id] end
         local fallback = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(id) .. "&w=48&h=48"
         thumbCache[id] = fallback
-        task.spawn(function()
+        listMaid:Spawn(function()
             local ok, content, ready = pcall(function()
                 return Players:GetUserThumbnailAsync(id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
             end)
@@ -5731,8 +5764,13 @@ function Tab:AddPlayerList(opts)
     connect(customize.Activated, function()
         popup.Visible = not popup.Visible
     end, listMaid)
+    popup.Active = true
+    connect(holder:GetPropertyChangedSignal("CanvasPosition"), function()
+        popup.Visible = false
+        if self.Window and self.Window.Wake then self.Window:Wake() end
+    end, listMaid)
 
-    local function actionButton(row, x, iconNames, fallback, tooltip, callback, player)
+    local function actionButton(row, x, iconNames, fallback, tooltip, callback, player, rowMaid)
         local y = math.floor((rowH - 4 - ACTION_H) * 0.5)
         local button = rect(row, x, y, ACTION_W, ACTION_H, palette[4], 5, "TextButton")
         button.BackgroundTransparency = 0.08
@@ -5746,10 +5784,10 @@ function Tab:AddPlayerList(opts)
         icon.Object.ZIndex = 9
         connect(button.Activated, function()
             if player and player.Parent then Runtime.Spawn(callback, player) end
-        end, rowsMaid)
+        end, rowMaid)
         local hover = false
-        connect(button.MouseEnter, function() hover = true end, rowsMaid)
-        connect(button.MouseLeave, function() hover = false end, rowsMaid)
+        connect(button.MouseEnter, function() hover = true end, rowMaid)
+        connect(button.MouseLeave, function() hover = false end, rowMaid)
         step(function()
             if button.Parent then
                 button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.8 or 0)
@@ -5762,26 +5800,25 @@ function Tab:AddPlayerList(opts)
 
     local function destroyRow(player)
         local row = rows[player]
-        if row then
-            rows[player] = nil
-            pcall(function() row:Destroy() end)
-        end
+        local maid = rowMaids[player]
+        rows[player], rowMaids[player] = nil, nil
+        if maid then maid:Destroy()
+        elseif row then row:Destroy() end
     end
 
-    local function makeRow(p, order)
-        local rowWidth = math.max(120, w - 22)
+    local function makeRow(p, order, rowMaid)
+        local rowWidth = math.max(120, w - 22 - BAR_WIDTH - BAR_GAP)
         local avatarSize = math.min(38, rowH - 18)
         local actionStart = math.max(avatarSize + 112, rowWidth - ACTIONS_W - 8)
         local infoX = 12 + layoutState.AvatarSize + layoutState.InfoX
         local infoW = math.max(64, actionStart - infoX - 8)
 
-        local row = rect(holder, 0, 0, rowWidth, rowH - 4, palette[4], 6)
+        local row = rect(holder, 0, 0, rowWidth, rowH - ROW_GAP, palette[4], 6)
         row.Name = "PlayerRow_" .. tostring(p.UserId)
         row.LayoutOrder = order
         row.ZIndex = 3
         row.ClipsDescendants = true
         rows[p] = row
-        rowOrder[#rowOrder + 1] = p
 
         local avatar = new("ImageLabel", row, {
             Name="Avatar", BackgroundColor3=palette[1], BackgroundTransparency=0.12,
@@ -5792,9 +5829,11 @@ function Tab:AddPlayerList(opts)
         new("UICorner", avatar, {CornerRadius=UDim.new(1,0)})
 
         local display = text(row, p.DisplayName, infoX, 6, infoW, 16, 11, white)
+        display.Object.Name = "DisplayName"
         display.Object.ZIndex=6; display.Object.TextTruncate=Enum.TextTruncate.AtEnd
         local username = p.DisplayName ~= p.Name and ("@"..p.Name) or p.Name
         local tag = text(row, username, infoX, 23, infoW, 12, 8, palette[3])
+        tag.Object.Name = "Username"
         tag.Object.ZIndex=6; tag.Object.TextTruncate=Enum.TextTruncate.AtEnd
         local role = text(row, roleText(p), infoX, 37, infoW, 12, 9, palette[3])
         role.Object.Name="Role"; role.Object.ZIndex=6; role.Object.TextTruncate=Enum.TextTruncate.AtEnd
@@ -5802,10 +5841,10 @@ function Tab:AddPlayerList(opts)
         distance.Object.Name="Distance"; distance.Object.ZIndex=6; distance.Object.TextTruncate=Enum.TextTruncate.AtEnd
         distance.Object.Visible = layoutState.ShowDistance
 
-        actionButton(row, actionStart, {"eye","view"}, "W", "Watch", onWatch, p)
-        actionButton(row, actionStart+ACTION_W+ACTION_GAP, {"move","send","navigation"}, "T", "Teleport", onTeleport, p)
-        actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*2, {"zap","flame"}, "F", "Fling", onFling, p)
-        rowsMaid:Add(row)
+        actionButton(row, actionStart, {"eye","view"}, "W", "Watch", onWatch, p, rowMaid)
+        actionButton(row, actionStart+ACTION_W+ACTION_GAP, {"move","send","navigation"}, "T", "Teleport", onTeleport, p, rowMaid)
+        actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*2, {"zap","flame"}, "F", "Fling", onFling, p, rowMaid)
+        rowMaid:Add(row)
         return row
     end
 
@@ -5844,19 +5883,19 @@ function Tab:AddPlayerList(opts)
             or string.find(string.lower(p.DisplayName), needle, 1, true) ~= nil
     end
 
-    local function rebuild()
-        -- Capture only when a real filter/player-set change occurs.  Rows are
-        -- recreated as a batch and AutomaticCanvasSize computes the exact
-        -- content height, including the final row and layout padding.
+    local function rebuild(excluded, resetScroll)
+        if api.Destroyed or listMaid.Destroyed or not holder.Parent then return end
         local oldScroll = holder.CanvasPosition.Y
-        rowsMaid:Destroy()
-        rowsMaid = Maid.new(listMaid)
-        table.clear(rows); table.clear(rowOrder)
-
-        local list = {}
+        local _, oldUnit = scrollMetrics()
+        local logicalScroll = oldScroll / oldUnit
+        local anchorIndex = math.floor(math.max(0, logicalScroll - LIST_PADDING) / rowH) + 1
+        local anchor = rowOrder[anchorIndex]
+        local anchorOffset = logicalScroll - (LIST_PADDING + (anchorIndex - 1) * rowH)
+        local list, indices = {}, {}
         local needle = string.lower(filterText)
         for _, p in ipairs(Players:GetPlayers()) do
-            if (includeSelf or p ~= Players.LocalPlayer) and matches(p, needle) then
+            -- PlayerRemoving fires before GetPlayers() stops returning p.
+            if p ~= excluded and (includeSelf or p ~= Players.LocalPlayer) and matches(p, needle) then
                 list[#list+1] = p
             end
         end
@@ -5866,34 +5905,63 @@ function Tab:AddPlayerList(opts)
             return ad < bd
         end)
 
-        empty.Object.Visible = #list == 0
+        for i, p in ipairs(list) do indices[p] = i end
+        if anchor and not indices[anchor] then
+            -- Keep the next surviving row at the old anchor's screen position.
+            anchor = nil
+            for i = anchorIndex + 1, #rowOrder do
+                if indices[rowOrder[i]] then anchor = rowOrder[i]; break end
+            end
+        end
+        for p in pairs(rows) do
+            if not indices[p] then destroyRow(p) end
+        end
+        for i, p in ipairs(list) do
+            if rows[p] then
+                rows[p].LayoutOrder = i
+                rows[p]:FindFirstChild("DisplayName").Text = p.DisplayName
+                rows[p]:FindFirstChild("Username").Text = p.DisplayName ~= p.Name and ("@" .. p.Name) or p.Name
+            else
+                local rowMaid = Maid.new(listMaid)
+                rowMaids[p] = rowMaid
+                withOwner(rowMaid, makeRow, p, i, rowMaid)
+            end
+        end
+        rowOrder = list
+        empty.Object.Visible = #rowOrder == 0
         countLabel:SetText(tostring(#list))
-        for i,p in ipairs(list) do makeRow(p, i) end
         syncPlayerCanvas()
-
-        -- Roblox can update layout one frame after the hierarchy.
-        -- Restore after layout settles, but never fight the user's subsequent
-        -- touch/mouse input.
-        task.defer(function()
-            if not holder.Parent then return end
-            syncPlayerCanvas()
-            local maxY = math.max(0, holder.CanvasSize.Y.Offset - holder.Size.Y.Offset)
-            holder.CanvasPosition = Vector2.new(0, math.clamp(oldScroll, 0, maxY))
-        end)
+        local maximum, unit = scrollMetrics()
+        local target = logicalScroll * unit
+        if resetScroll then
+            holder:ResetScrollVelocity()
+            target = 0
+        elseif oldScroll > 0 and anchor and indices[anchor] then
+            target = (LIST_PADDING + (indices[anchor] - 1) * rowH + anchorOffset) * unit
+        end
+        -- No deferred restoration: an older refresh must not overwrite a new
+        -- wheel/touch gesture or a newer search result.
+        Runtime.SetProperty(holder, "CanvasPosition", Vector2.new(0, math.clamp(target, 0, maximum)))
     end
 
+    local function setFilter(value)
+        value = tostring(value or "")
+        if filterText == value then return end
+        filterText = value
+        if search.Text ~= value then search.Text = value end
+        rebuild(nil, true)
+    end
     connect(search:GetPropertyChangedSignal("Text"), function()
-        filterText = search.Text or ""
-        rebuild()
+        setFilter(search.Text)
     end, listMaid)
     connect(Players.PlayerAdded, function() rebuild() end, listMaid)
     connect(Players.PlayerRemoving, function(p)
-        if rows[p] then destroyRow(p) end
-        rebuild()
+        rebuild(p)
     end, listMaid)
 
     local roleClock = 0
     step(function(dt)
+        holder.ScrollBarImageColor3 = palette[5]
         roleClock += dt
         if roleClock >= 0.75 then
             roleClock = 0
@@ -5919,17 +5987,18 @@ function Tab:AddPlayerList(opts)
 
     function api:GetFilter() return filterText end
     function api:SetFilter(value)
-        filterText=tostring(value or ""); search.Text=filterText; rebuild()
+        setFilter(value)
     end
     function api:Refresh() rebuild() end
     function api:GetPlayers()
         local result={}
-        for p in pairs(rows) do result[#result+1]=p end
+        for i,p in ipairs(rowOrder) do result[i]=p end
         return result
     end
     function api:Destroy()
         if self.Destroyed then return end
         self.Destroyed=true; listMaid:Destroy(); card:Destroy()
+        table.clear(rows); table.clear(rowOrder); table.clear(rowMaids)
     end
 
     rebuild()
