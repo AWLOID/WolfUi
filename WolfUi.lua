@@ -9227,6 +9227,8 @@ do
                     object.Anchored = true
                     object.CanCollide, object.CanTouch, object.CanQuery = false, false, false
                     object.LocalTransparencyModifier = 0
+                    object.AssemblyLinearVelocity = Vector3.zero
+                    object.AssemblyAngularVelocity = Vector3.zero
                 end
             end
             local root = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChild("Torso") or clone:FindFirstChild("UpperTorso")
@@ -9522,7 +9524,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "static-neutral-pose-7"
+    Library.ESPPreviewRevision = "static-neutral-pose-8"
 end
 
 
