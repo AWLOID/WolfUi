@@ -9682,15 +9682,34 @@ do
         return IDENTITY
     end
 
+    -- The 15 Motor6D joints of an R15 body.  A character that has just spawned can
+    -- have only some of them; building from it would leave limbs outside the pose
+    -- graph (no idle on those parts), so the preview waits until all are present.
+    local R15_JOINTS = {"Root", "Waist", "Neck", "RightShoulder", "LeftShoulder", "RightElbow", "LeftElbow",
+        "RightWrist", "LeftWrist", "RightHip", "LeftHip", "RightKnee", "LeftKnee", "RightAnkle", "LeftAnkle"}
+
+    local function countJoints(model)
+        local found, count = {}, 0
+        for _, object in ipairs(model:GetDescendants()) do
+            if object:IsA("Motor6D") and not found[object.Name] then
+                found[object.Name] = true
+            end
+        end
+        for _, name in ipairs(R15_JOINTS) do
+            if found[name] then count = count + 1 end
+        end
+        return count
+    end
+
     -- R15 only.  A live character is usable for the preview when it is alive, has
-    -- the R15 body and its joints are still intact (a dead character has none).
+    -- the R15 body and every joint is in place (a dead character has none).
     local function characterReady(character)
         if not character or not character.Parent then return false end
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         if not humanoid or humanoid.Health <= 0 or humanoid.RigType ~= Enum.HumanoidRigType.R15 then return false end
-        local upper = character:FindFirstChild("UpperTorso")
-        return character:FindFirstChild("HumanoidRootPart") ~= nil and character:FindFirstChild("Head") ~= nil
-            and upper ~= nil and upper:FindFirstChild("Waist") ~= nil
+        if not (character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Head")
+            and character:FindFirstChild("UpperTorso") and character:FindFirstChild("LowerTorso")) then return false end
+        return countJoints(character) >= #R15_JOINTS
     end
 
     function Preview:FreezePose(model, root)
@@ -9804,6 +9823,13 @@ do
             -- Neutral pose from Motor6D C0/C1; the returned steps are replayed each
             -- frame with the idle transforms (see Preview:ApplyIdle).
             local steps = self:FreezePose(clone, root)
+            local motors = {}
+            for _, step in ipairs(steps) do
+                if step.Motor then motors[step.Name] = true end
+            end
+            for _, name in ipairs(R15_JOINTS) do
+                if not motors[name] then error("joint missing from pose graph: " .. name) end
+            end
             -- A display rig has no live joints or animation/physics controllers.
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("JointInstance") or object:IsA("Constraint") then
