@@ -5781,7 +5781,18 @@ function Tab:AddPlayerList(opts)
             iconSize, palette[3], fallback)
         icon.Object.ZIndex = 9
         connect(button.Activated, function()
-            if player and player.Parent then Runtime.Spawn(callback, player) end
+            if not player or not player.Parent then return end
+            if enabled then
+                local ok, value = pcall(enabled, player)
+                if not ok or value ~= true then return end
+            end
+            if button:GetAttribute("ActionBusy") then return end
+            button:SetAttribute("ActionBusy", true)
+            Runtime.Spawn(function()
+                local ok, problem = pcall(callback, player)
+                if button.Parent then button:SetAttribute("ActionBusy", false) end
+                if not ok then api.LastActionError = tostring(problem) end
+            end)
         end, rowMaid)
         local hover = false
         connect(button.MouseEnter, function() hover = true end, rowMaid)
@@ -9781,15 +9792,16 @@ do
         return count
     end
 
-    -- R15 only.  0 = unusable (dead or no R15 body), 1 = body present but some
-    -- joints still missing (shown at once, upgraded later), 2 = every joint present.
+    -- 0 = unavailable, 1 = partial R15, 2 = complete R15 or available R6 body.
     local function characterQuality(character)
         if not character or not character.Parent then return 0 end
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         if not humanoid or humanoid.Health <= 0 then return 0 end
-        if not (character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("UpperTorso")
-            and character:FindFirstChild("Head")) then return 0 end
-        return countJoints(character) >= #R15_JOINTS and 2 or 1
+        if not (character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Head")) then return 0 end
+        if character:FindFirstChild("UpperTorso") then
+            return countJoints(character) >= #R15_JOINTS and 2 or 1
+        end
+        return character:FindFirstChild("Torso") and 2 or 0
     end
 
     function Preview:FreezePose(model, root)
@@ -9811,7 +9823,7 @@ do
                         left, right = object.C0, object.C1
                         if object:IsA("Motor6D") then object.Transform = CFrame.new() end
                     end
-                    local edge = {first, second, left, right, object.Name, object:IsA("Motor6D")}
+                    local edge = {first, second, left, right, object.Name, object:IsA("Motor6D"), object}
                     if not graph[first] then graph[first] = {} end
                     if not graph[second] then graph[second] = {} end
                     graph[first][#graph[first] + 1] = edge
@@ -9830,13 +9842,13 @@ do
                     visited[second] = true
                     queue[#queue + 1] = second
                     steps[#steps + 1] = {Child = second, Parent = first, Forward = true, Left = edge[3], Right = edge[4],
-                        LeftInv = edge[3]:Inverse(), RightInv = edge[4]:Inverse(), Name = edge[5], Motor = edge[6]}
+                        LeftInv = edge[3]:Inverse(), RightInv = edge[4]:Inverse(), Name = edge[5], Motor = edge[6], Joint = edge[7]}
                 elseif part == second and not visited[first] then
                     first.CFrame = second.CFrame * edge[4] * edge[3]:Inverse()
                     visited[first] = true
                     queue[#queue + 1] = first
                     steps[#steps + 1] = {Child = first, Parent = second, Forward = false, Left = edge[3], Right = edge[4],
-                        LeftInv = edge[3]:Inverse(), RightInv = edge[4]:Inverse(), Name = edge[5], Motor = edge[6]}
+                        LeftInv = edge[3]:Inverse(), RightInv = edge[4]:Inverse(), Name = edge[5], Motor = edge[6], Joint = edge[7]}
                 end
             end
         end
@@ -9846,7 +9858,8 @@ do
     function Preview:IsAppearanceChange(object)
         local current = object
         while current and current ~= self.Character do
-            if current:IsA("Tool") then return false end
+            if current:IsA("Tool") or current.Name:sub(1, 7) == "Waraku_"
+                or current.Name:sub(1, 7) == "Preview" then return false end
             current = current.Parent
         end
         -- Ignore executor visual artifacts: they can be recreated every frame,
@@ -9885,7 +9898,8 @@ do
         end
         local ready, problem = pcall(function()
             for _, object in ipairs(clone:GetDescendants()) do
-                if object:IsA("LuaSourceContainer") or object:IsA("Tool") or object:IsA("Sound")
+                if object.Name:sub(1, 7) == "Waraku_" or object.Name:sub(1, 7) == "Preview"
+                    or object:IsA("LuaSourceContainer") or object:IsA("Tool") or object:IsA("Sound")
                     or object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam")
                     or object:IsA("Highlight") or object:IsA("BillboardGui") or object:IsA("SurfaceGui") then
                     object:Destroy()
@@ -9897,17 +9911,17 @@ do
                     object.AssemblyAngularVelocity = Vector3.zero
                 end
             end
-            -- R15 only: the display rig needs the root and the upper torso.
+            -- Both standard R15 and R6 body layouts are supported.
             local root = clone:FindFirstChild("HumanoidRootPart")
-            if not root or not clone:FindFirstChild("UpperTorso") then error("R15 character required") end
+            if not root or not (clone:FindFirstChild("UpperTorso") or clone:FindFirstChild("Torso")) then
+                error("Character root and torso required")
+            end
             clone:PivotTo(root.CFrame:Inverse() * clone:GetPivot())
             -- Neutral pose from Motor6D C0/C1; the returned steps are replayed each
             -- frame with the idle transforms (see Preview:ApplyIdle).
             local steps = self:FreezePose(clone, root)
-            -- Keep the Motor6D joints and the Animator so real animations drive the
-            -- rig: only the root is anchored, the limbs follow the joints inside the
-            -- WorldModel.  Without an Animator the rig falls back to the procedural
-            -- idle (fully anchored, poses recomputed from the joint data).
+            -- Keep Motor6Ds for Animator output. ApplyIdle resolves their transforms
+            -- onto anchored parts; unavailable animations use the procedural idle.
             local humanoid = clone:FindFirstChildOfClass("Humanoid")
             local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
             if humanoid and not animator then
@@ -9931,18 +9945,38 @@ do
             end
             for _, part in ipairs(clone:GetDescendants()) do
                 if part:IsA("BasePart") then
-                    if animated and part ~= root then
-                        part.Anchored = false
-                        part.Massless = true
-                    else
-                        part.Anchored = true
-                    end
+                    -- WorldModel does not provide ordinary Workspace physics.
+                    -- Apply joint transforms explicitly for a stable preview rig.
+                    part.Anchored = true
+                    part.Massless = true
                     part.AssemblyLinearVelocity = Vector3.zero
                     part.AssemblyAngularVelocity = Vector3.zero
                 end
             end
             local bounds, size = clone:GetBoundingBox()
             clone:PivotTo(CFrame.new(-bounds.Position) * clone:GetPivot())
+            local staticPose, parts, corners = {}, {}, {}
+            for _, object in ipairs(clone:GetDescendants()) do
+                if object:IsA("BasePart") then
+                    staticPose[object] = object.CFrame
+                end
+            end
+            for _, object in ipairs(clone:GetDescendants()) do
+                if object:IsA("BasePart") then
+                    if object.Parent == clone then parts[object.Name] = object end
+                    if object.Name ~= "HumanoidRootPart" and object.Transparency < 1 then
+                        local entry = {Part = object, Body = object.Parent == clone, Points = {}}
+                        for x = -1, 1, 2 do
+                            for y = -1, 1, 2 do
+                                for z = -1, 1, 2 do
+                                    entry.Points[#entry.Points + 1] = object.Size * Vector3.new(x, y, z) * 0.5
+                                end
+                            end
+                        end
+                        corners[#corners + 1] = entry
+                    end
+                end
+            end
             self:ClearModel()
             self.Model = clone
             self.ModelSource = character
@@ -9953,34 +9987,15 @@ do
             self.AnimMode = animated and "animated" or "procedural"
             self.Animator = animated and animator or nil
             self.Tracks = {}
+            self.AnimLoaded = false
+            self.IdleAnimationId = clone:FindFirstChild("UpperTorso") and IDLE_FALLBACK or "rbxassetid://180435571"
             self.AnimBuiltAt, self.NextAnimSync = os.clock(), 0
             clone.Name = "ESPPreviewCharacter"
             clone.Parent = self.World
             self.ModelSize = size
             -- First frame is already posed (no neutral/T-pose flash on respawn).
-            if not animated then self:ApplyIdle(os.clock()) end
-            self.StaticPose = {}
-            for _, object in ipairs(clone:GetDescendants()) do
-                if object:IsA("BasePart") then
-                    self.StaticPose[object] = object.CFrame
-                end
-            end
-            for _, object in ipairs(clone:GetDescendants()) do
-                if object:IsA("BasePart") then
-                    if object.Parent == clone then self.Parts[object.Name] = object end
-                    if object.Name ~= "HumanoidRootPart" and object.Transparency < 1 then
-                        local entry = {Body = object.Parent == clone, Points = {}}
-                        for x = -1, 1, 2 do
-                            for y = -1, 1, 2 do
-                                for z = -1, 1, 2 do
-                                    entry.Points[#entry.Points + 1] = object.CFrame:PointToWorldSpace(object.Size * Vector3.new(x, y, z) * 0.5)
-                                end
-                            end
-                        end
-                        self.Corners[#self.Corners + 1] = entry
-                    end
-                end
-            end
+            self:ApplyIdle(os.clock())
+            self.StaticPose, self.Parts, self.Corners = staticPose, parts, corners
             self.Status.Visible = false
             self.Overlay.Visible = true
             self.CameraDirty = true
@@ -9999,7 +10014,7 @@ do
             self.RebuildAt = nil
             self:Rebuild()
         else
-            self.RebuildAt = os.clock() + 0.12
+            self.RebuildAt = self.RebuildAt or (os.clock() + 0.12)
         end
         return self
     end
@@ -10017,10 +10032,10 @@ do
         if not keepModel then self:ClearModel() end
         if character then
             self.CharacterMaid:Connect(character.DescendantAdded, function(object)
-                if not self.Model and self:IsAppearanceChange(object) then self:Refresh() end
+                if self:IsAppearanceChange(object) then self:Refresh() end
             end)
             self.CharacterMaid:Connect(character.DescendantRemoving, function(object)
-                if not self.Model and self:IsAppearanceChange(object) then self:Refresh() end
+                if self:IsAppearanceChange(object) then self:Refresh() end
             end)
             self.CharacterMaid:Connect(character.AncestryChanged, function(_, parent)
                 if parent then self:Refresh() end
@@ -10082,6 +10097,7 @@ do
                 if self:Rebuild() then
                     self.Failures, self.NextAttempt = 0, 0
                 else
+                    self.NeedsRebuild = true
                     self.Failures = (self.Failures or 0) + 1
                     self.NextAttempt = now + math.min(2, 0.3 * self.Failures)
                 end
@@ -10142,7 +10158,8 @@ do
             end
         end
         if not hasBase then
-            desired[animationKey(IDLE_FALLBACK)] = {Id = IDLE_FALLBACK, Priority = Enum.AnimationPriority.Idle,
+            local idleId = self.IdleAnimationId or IDLE_FALLBACK
+            desired[animationKey(idleId)] = {Id = idleId, Priority = Enum.AnimationPriority.Idle,
                 Looped = true, Speed = 1}
         end
         for key, entry in pairs(self.Tracks) do
@@ -10158,7 +10175,9 @@ do
                 local ok, track = pcall(function()
                     local animation = Instance.new("Animation")
                     animation.AnimationId = entry.Id
-                    local loaded = animator:LoadAnimation(animation)
+                    local success, loaded = pcall(animator.LoadAnimation, animator, animation)
+                    animation:Destroy()
+                    if not success then error(loaded) end
                     loaded.Priority = entry.Priority
                     loaded.Looped = entry.Looped
                     loaded:Play(0.2, 1, entry.Speed)
@@ -10187,7 +10206,14 @@ do
             local step = steps[index]
             local child, parent = step.Child, step.Parent
             if child.Parent and parent.Parent then
-                local transform = step.Motor and idleTransform(step.Name, t) or IDENTITY
+                local transform = IDENTITY
+                if step.Motor then
+                    if self.AnimMode == "animated" and self.AnimLoaded and step.Joint and step.Joint.Parent then
+                        transform = step.Joint.Transform
+                    else
+                        transform = idleTransform(step.Name, t)
+                    end
+                end
                 if step.Forward then
                     child.CFrame = parent.CFrame * step.Left * transform * step.RightInv
                 else
@@ -10200,7 +10226,8 @@ do
     function Preview:UpdateCamera()
         if not self.Model then return end
         local size = self:GetSize()
-        local radius = self.ModelSize.Magnitude * 0.5
+        if size.X <= 0 or size.Y <= 0 then return end
+        local radius = math.max(self.ModelSize.Magnitude * 0.5, 0.1)
         local vertical = math.rad(self.Camera.FieldOfView) * 0.5
         local horizontal = math.atan(math.tan(vertical) * size.X / size.Y)
         local distance = radius / math.sin(math.min(vertical, horizontal)) * 1.18 / self.Zoom
@@ -10215,6 +10242,8 @@ do
 
     function Preview:Project(position)
         if self.Destroyed or not self.Camera then return nil end
+        if self.CameraDirty then self:UpdateCamera() end
+        if not self.FocalLength then return nil end
         local point = self.Camera.CFrame:PointToObjectSpace(position)
         if point.Z >= -0.01 then return nil end
         local size = self:GetSize()
@@ -10230,9 +10259,9 @@ do
         if not cached then
             local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
             for _, entry in ipairs(self.Corners) do
-                if accessories or entry.Body then
+                if entry.Part and entry.Part.Parent and (accessories or entry.Body) then
                     for _, corner in ipairs(entry.Points) do
-                        local point = self:Project(corner)
+                        local point = self:Project(entry.Part.CFrame:PointToWorldSpace(corner))
                         if point then
                             x1, y1 = math.min(x1, point.X), math.min(y1, point.Y)
                             x2, y2 = math.max(x2, point.X), math.max(y2, point.Y)
@@ -10304,8 +10333,9 @@ do
         end
         -- Real animations when the rig has an Animator, otherwise the procedural idle.
         if self.Model then
-            if self.AnimMode == "animated" then self:SyncAnimations(os.clock())
-            elseif self.PoseSteps then self:ApplyIdle(os.clock()) end
+            if self.AnimMode == "animated" then self:SyncAnimations(now) end
+            if self.PoseSteps then self:ApplyIdle(now) end
+            self.BodyBounds, self.FullBounds = nil, nil
         end
         self.Elapsed = self.Elapsed + dt
         if not self.Drag and self.Elapsed < self.Interval then fadeGroup(self.Canvas, alpha); return end
@@ -10525,7 +10555,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "animated-r15-live-tabs"
+    Library.ESPPreviewRevision = "r17-live-joint-bounds"
 end
 
 
