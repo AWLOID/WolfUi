@@ -9638,7 +9638,9 @@ do
     end
 
     function Preview:ClearModel()
+        self:ClearTracks()
         if self.Model then self.Model:Destroy(); self.Model = nil end
+        self.Animator, self.AnimMode = nil, nil
         table.clear(self.Parts)
         table.clear(self.Corners)
         table.clear(self.StaticPose or {})
@@ -9651,6 +9653,21 @@ do
     end
 
     local IDENTITY = CFrame.new()
+
+    -- Default R15 animations (Roblox "Animate" script).  The preview mirrors the
+    -- local character's playing animations on the display rig, except movement
+    -- (walk/run); when nothing else plays it uses the default idle.
+    local IDLE_FALLBACK = "rbxassetid://507766388"
+    local MOVEMENT_IDS = {["507777826"] = true, ["507767714"] = true}
+    local function animationKey(id)
+        return tostring(id or ""):match("%d+") or tostring(id or "")
+    end
+    local function isMovementTrack(track)
+        local animation = track.Animation
+        local name = string.lower((animation and animation.Name) or track.Name or "")
+        if name:find("walk", 1, true) or name:find("run", 1, true) then return true end
+        return MOVEMENT_IDS[animationKey(animation and animation.AnimationId)] == true
+    end
 
     -- R15 idle, driven procedurally from Motor6D names.  The display rig is fully
     -- anchored (no physics, no Animator), so the pose is recomputed from the
@@ -9824,17 +9841,39 @@ do
             -- Neutral pose from Motor6D C0/C1; the returned steps are replayed each
             -- frame with the idle transforms (see Preview:ApplyIdle).
             local steps = self:FreezePose(clone, root)
-            -- A display rig has no live joints or animation/physics controllers.
+            -- Keep the Motor6D joints and the Animator so real animations drive the
+            -- rig: only the root is anchored, the limbs follow the joints inside the
+            -- WorldModel.  Without an Animator the rig falls back to the procedural
+            -- idle (fully anchored, poses recomputed from the joint data).
+            local humanoid = clone:FindFirstChildOfClass("Humanoid")
+            local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+            if humanoid and not animator then
+                local created, made = pcall(function()
+                    local instance = Instance.new("Animator")
+                    instance.Parent = humanoid
+                    return instance
+                end)
+                if created then animator = made end
+            end
+            local animated = animator ~= nil
             for _, object in ipairs(clone:GetDescendants()) do
-                if object:IsA("JointInstance") or object:IsA("Constraint") then
+                if object:IsA("Constraint") or (not animated and object:IsA("JointInstance")) then
                     object:Destroy()
                 elseif object:IsA("Humanoid") then
-                    pcall(function() object.EvaluateStateMachine = false end)
+                    pcall(function()
+                        object.EvaluateStateMachine = false
+                        object.BreakJointsOnDeath = false
+                    end)
                 end
             end
             for _, part in ipairs(clone:GetDescendants()) do
                 if part:IsA("BasePart") then
-                    part.Anchored = true
+                    if animated and part ~= root then
+                        part.Anchored = false
+                        part.Massless = true
+                    else
+                        part.Anchored = true
+                    end
                     part.AssemblyLinearVelocity = Vector3.zero
                     part.AssemblyAngularVelocity = Vector3.zero
                 end
@@ -9848,11 +9887,15 @@ do
             -- The idle clock is kept across rebuilds so a respawn continues the same
             -- motion instead of restarting it from the neutral pose.
             self.PoseSteps, self.PoseClock = steps, self.PoseClock or os.clock()
+            self.AnimMode = animated and "animated" or "procedural"
+            self.Animator = animated and animator or nil
+            self.Tracks = {}
+            self.AnimBuiltAt, self.NextAnimSync = os.clock(), 0
             clone.Name = "ESPPreviewCharacter"
             clone.Parent = self.World
             self.ModelSize = size
             -- First frame is already posed (no neutral/T-pose flash on respawn).
-            self:ApplyIdle(os.clock())
+            if not animated then self:ApplyIdle(os.clock()) end
             self.StaticPose = {}
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("BasePart") then
@@ -9985,6 +10028,94 @@ do
         end
     end
 
+    function Preview:ClearTracks()
+        if self.Tracks then
+            for _, entry in pairs(self.Tracks) do
+                pcall(function() entry.Track:Stop(0); entry.Track:Destroy() end)
+            end
+        end
+        self.Tracks = {}
+    end
+
+    -- Assets blocked or no Animator: pose the rig procedurally instead.
+    function Preview:UseProceduralIdle()
+        self:ClearTracks()
+        self.AnimMode, self.Animator = "procedural", nil
+        if self.Model then
+            for _, part in ipairs(self.Model:GetDescendants()) do
+                if part:IsA("BasePart") then part.Anchored = true end
+            end
+        end
+    end
+
+    function Preview:SyncAnimations(now)
+        local animator = self.Animator
+        if self.AnimMode ~= "animated" or not animator or not animator.Parent then return end
+        if now < (self.NextAnimSync or 0) then return end
+        self.NextAnimSync = now + 0.12
+        local desired, hasBase = {}, false
+        local live = self.Character
+        if live and self.ModelSource == live and live.Parent then
+            local humanoid = live:FindFirstChildOfClass("Humanoid")
+            local liveAnimator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+            if humanoid and humanoid.Health > 0 and liveAnimator then
+                local ok, playing = pcall(function() return liveAnimator:GetPlayingAnimationTracks() end)
+                if ok then
+                    for _, track in ipairs(playing) do
+                        local animation = track.Animation
+                        if animation and animation.AnimationId ~= "" and track.IsPlaying
+                            and track.WeightCurrent > 0.05 and not isMovementTrack(track) then
+                            local key = animationKey(animation.AnimationId)
+                            if not desired[key] then
+                                desired[key] = {Id = animation.AnimationId, Priority = track.Priority,
+                                    Looped = track.Looped, Speed = track.Speed}
+                            end
+                            if track.Priority == Enum.AnimationPriority.Core or track.Priority == Enum.AnimationPriority.Idle then
+                                hasBase = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if not hasBase then
+            desired[animationKey(IDLE_FALLBACK)] = {Id = IDLE_FALLBACK, Priority = Enum.AnimationPriority.Idle,
+                Looped = true, Speed = 1}
+        end
+        for key, entry in pairs(self.Tracks) do
+            if not desired[key] then
+                local track = entry.Track
+                pcall(function() track:Stop(0.2) end)
+                self.Tracks[key] = nil
+                task.delay(0.5, function() pcall(function() track:Destroy() end) end)
+            end
+        end
+        for key, entry in pairs(desired) do
+            if not self.Tracks[key] then
+                local ok, track = pcall(function()
+                    local animation = Instance.new("Animation")
+                    animation.AnimationId = entry.Id
+                    local loaded = animator:LoadAnimation(animation)
+                    loaded.Priority = entry.Priority
+                    loaded.Looped = entry.Looped
+                    loaded:Play(0.2, 1, entry.Speed)
+                    return loaded
+                end)
+                if ok and track then self.Tracks[key] = {Track = track} end
+            end
+        end
+        local loaded = false
+        for _, entry in pairs(self.Tracks) do
+            local okLength, length = pcall(function() return entry.Track.Length end)
+            if okLength and length and length > 0 then loaded = true; break end
+        end
+        if loaded then
+            self.AnimLoaded = true
+        elseif now - (self.AnimBuiltAt or now) > 3 then
+            self:UseProceduralIdle()
+        end
+    end
+
     function Preview:ApplyIdle(now)
         local steps = self.PoseSteps
         if not steps then return end
@@ -10108,8 +10239,11 @@ do
             self.Camera.FieldOfView = fov + 0.001
             self.Camera.FieldOfView = fov
         end
-        -- Idle pose: recomputed from the neutral joint data every frame.
-        if self.Model and self.PoseSteps then self:ApplyIdle(os.clock()) end
+        -- Real animations when the rig has an Animator, otherwise the procedural idle.
+        if self.Model then
+            if self.AnimMode == "animated" then self:SyncAnimations(os.clock())
+            elseif self.PoseSteps then self:ApplyIdle(os.clock()) end
+        end
         self.Elapsed = self.Elapsed + dt
         if not self.Drag and self.Elapsed < self.Interval then fadeGroup(self.Canvas, alpha); return end
         local elapsed = self.Elapsed
@@ -10328,7 +10462,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "idle-r15-persistent-r6"
+    Library.ESPPreviewRevision = "animated-r15-live-tabs"
 end
 
 
