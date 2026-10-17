@@ -9644,7 +9644,7 @@ do
         table.clear(self.StaticPose or {})
         self.StaticPose = {}
         self.BodyBounds, self.FullBounds = nil, nil
-        self.PoseSteps, self.ModelSource = nil, nil
+        self.PoseSteps, self.ModelSource, self.ModelQuality = nil, nil, nil
         self.Overlay.Visible = false
         self.Status.Text = "Waiting for character"
         self.Status.Visible = true
@@ -9701,15 +9701,15 @@ do
         return count
     end
 
-    -- R15 only.  A live character is usable for the preview when it is alive, has
-    -- the R15 body and every joint is in place (a dead character has none).
-    local function characterReady(character)
-        if not character or not character.Parent then return false end
+    -- R15 only.  0 = unusable (dead or no R15 body), 1 = body present but some
+    -- joints still missing (shown at once, upgraded later), 2 = every joint present.
+    local function characterQuality(character)
+        if not character or not character.Parent then return 0 end
         local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not humanoid or humanoid.Health <= 0 or humanoid.RigType ~= Enum.HumanoidRigType.R15 then return false end
-        if not (character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Head")
-            and character:FindFirstChild("UpperTorso") and character:FindFirstChild("LowerTorso")) then return false end
-        return countJoints(character) >= #R15_JOINTS
+        if not humanoid or humanoid.Health <= 0 then return 0 end
+        if not (character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("UpperTorso")
+            and character:FindFirstChild("Head")) then return 0 end
+        return countJoints(character) >= #R15_JOINTS and 2 or 1
     end
 
     function Preview:FreezePose(model, root)
@@ -9787,7 +9787,8 @@ do
             -- Never drop a working model because a rebuild attempt failed.
             if not self.Model then self.Status.Text = text; self.Status.Visible = true end
         end
-        if not character or (not source and not characterReady(character)) then
+        local quality = source and 2 or characterQuality(character)
+        if not character or quality == 0 then
             unavailable("Waiting for character")
             return false
         end
@@ -9823,13 +9824,6 @@ do
             -- Neutral pose from Motor6D C0/C1; the returned steps are replayed each
             -- frame with the idle transforms (see Preview:ApplyIdle).
             local steps = self:FreezePose(clone, root)
-            local motors = {}
-            for _, step in ipairs(steps) do
-                if step.Motor then motors[step.Name] = true end
-            end
-            for _, name in ipairs(R15_JOINTS) do
-                if not motors[name] then error("joint missing from pose graph: " .. name) end
-            end
             -- A display rig has no live joints or animation/physics controllers.
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("JointInstance") or object:IsA("Constraint") then
@@ -9850,6 +9844,7 @@ do
             self:ClearModel()
             self.Model = clone
             self.ModelSource = character
+            self.ModelQuality = quality
             self.PoseSteps, self.PoseClock = steps, os.clock()
             clone.Name = "ESPPreviewCharacter"
             clone.Parent = self.World
@@ -9960,7 +9955,7 @@ do
             self:SetCharacter(follow.Character, true)
         end
         if self.Model and (not self.Model.Parent or not self.World or not self.World.Parent) then
-            self.Model, self.PoseSteps, self.ModelSource = nil, nil, nil
+            self.Model, self.PoseSteps, self.ModelSource, self.ModelQuality = nil, nil, nil, nil
             self.Overlay.Visible = false
         end
         if self.RebuildAt and now >= self.RebuildAt then
@@ -9968,13 +9963,11 @@ do
             self.NeedsRebuild = true
         end
         local character = self.Character
-        local usable = characterReady(character)
-        if usable and follow and follow.Character == character and now - (self.CharacterSince or now) < 5 then
-            local ok, loaded = pcall(function() return follow:HasAppearanceLoaded() end)
-            if ok and loaded == false then usable = false end
-        end
-        if usable then
-            if (self.NeedsRebuild or not self.Model or self.ModelSource ~= character) and now >= (self.NextAttempt or 0) then
+        local quality = characterQuality(character)
+        if quality > 0 then
+            local stale = self.NeedsRebuild or not self.Model or self.ModelSource ~= character
+                or (self.ModelQuality or 0) < quality
+            if stale and now >= (self.NextAttempt or 0) then
                 self.NeedsRebuild = false
                 if self:Rebuild() then
                     self.Failures, self.NextAttempt = 0, 0
