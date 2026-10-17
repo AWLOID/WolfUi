@@ -5582,6 +5582,23 @@ function Tab:AddPlayerList(opts)
     local onWatch = type(opts.OnWatch) == "function" and opts.OnWatch or function() end
     local onTeleport = type(opts.OnTeleport) == "function" and opts.OnTeleport or function() end
     local onFling = type(opts.OnFling) == "function" and opts.OnFling or function() end
+    local onKill = type(opts.OnKill) == "function" and opts.OnKill or nil
+    local canKill = type(opts.CanKill) == "function" and opts.CanKill or function() return false end
+    -- Role label colors: murderer red, sheriff blue, hero yellow.  Other roles keep
+    -- the muted default; Dead is dimmed.  Override with opts.RoleColors.
+    local ROLE_COLORS = {
+        Murderer = Color3.fromRGB(255, 70, 70),
+        Sheriff = Color3.fromRGB(70, 150, 255),
+        Hero = Color3.fromRGB(255, 212, 60),
+        Dead = Color3.fromRGB(120, 120, 130),
+    }
+    if type(opts.RoleColors) == "table" then
+        for key, value in pairs(opts.RoleColors) do
+            if typeof(value) == "Color3" then ROLE_COLORS[key] = value end
+        end
+    end
+    local ROLE_ORDER = {Murderer = 1, Sheriff = 2, Hero = 3, Innocent = 4, Dead = 6}
+    local sortByRole = opts.SortByRole ~= false
 
     local card = self:_card(w, LIST_TOP + listH + LIST_BOTTOM, name)
     local api = baseApi(self, card, flag)
@@ -5696,7 +5713,12 @@ function Tab:AddPlayerList(opts)
             local value = roleText(player)
             if not owner.Destroyed and rows[player] == row and row.Parent then
                 local label = row:FindFirstChild("Role")
-                if label then label.Text = value end
+                if label then
+                    label.Text = value
+                    local color = ROLE_COLORS[value]
+                    label.TextColor3 = color or palette[3]
+                    row.BackgroundColor3 = color and palette[4]:Lerp(color, 0.10) or palette[4]
+                end
             end
             if rolePending[player] == row then rolePending[player] = nil end
         end)
@@ -5725,7 +5747,8 @@ function Tab:AddPlayerList(opts)
     end
 
     local ACTION_W, ACTION_H, ACTION_GAP = 27, 29, 4
-    local ACTIONS_W = ACTION_W * 3 + ACTION_GAP * 2
+    local ACTION_COUNT = onKill and 4 or 3
+    local ACTIONS_W = ACTION_W * ACTION_COUNT + ACTION_GAP * (ACTION_COUNT - 1)
 
     -- Shared geometry keeps avatars, text and actions aligned across rows.
     local layoutState = {
@@ -5745,7 +5768,7 @@ function Tab:AddPlayerList(opts)
         if self.Window and self.Window.Wake then self.Window:Wake() end
     end, listMaid)
 
-    local function actionButton(row, x, iconNames, fallback, tooltip, callback, player, rowMaid)
+    local function actionButton(row, x, iconNames, fallback, tooltip, callback, player, rowMaid, enabled)
         local y = math.floor((rowH - 4 - ACTION_H) * 0.5)
         local button = rect(row, x, y, ACTION_W, ACTION_H, palette[4], 5, "TextButton")
         button.BackgroundTransparency = 0.08
@@ -5763,10 +5786,24 @@ function Tab:AddPlayerList(opts)
         local hover = false
         connect(button.MouseEnter, function() hover = true end, rowMaid)
         connect(button.MouseLeave, function() hover = false end, rowMaid)
-        step(function()
+        local available, availableClock = true, 0
+        step(function(dt)
             if button.Parent then
+                if enabled then
+                    availableClock = availableClock - (tonumber(dt) or 0)
+                    if availableClock <= 0 then
+                        availableClock = 0.25
+                        local ok, value = pcall(enabled, player)
+                        available = ok and value == true
+                    end
+                end
                 button.BackgroundColor3 = palette[4]:Lerp(palette[5], hover and 0.8 or 0)
-                icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
+                button.BackgroundTransparency = available and 0.08 or 0.55
+                if available then
+                    icon:Color(palette[3]:Lerp(white, hover and 1 or 0))
+                else
+                    icon:Color(palette[3]:Lerp(palette[4], 0.55))
+                end
             end
         end, button)
         if tooltip and self.Window and type(self.Window.Tooltip) == "function" then
@@ -5824,6 +5861,10 @@ function Tab:AddPlayerList(opts)
         actionButton(row, actionStart, {"eye","view"}, "W", "Watch", onWatch, p, rowMaid)
         actionButton(row, actionStart+ACTION_W+ACTION_GAP, {"move","send","navigation"}, "T", "Teleport", onTeleport, p, rowMaid)
         actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*2, {"zap","flame"}, "F", "Fling", onFling, p, rowMaid)
+        if onKill then
+            actionButton(row, actionStart+(ACTION_W+ACTION_GAP)*3, {"sword","swords","skull","x"}, "K",
+                "Kill (murderer only)", onKill, p, rowMaid, canKill)
+        end
         rowMaid:Add(row)
         refreshRole(p, row)
         return row
@@ -5866,6 +5907,28 @@ function Tab:AddPlayerList(opts)
             or string.find(string.lower(p.DisplayName), needle, 1, true) ~= nil
     end
 
+    local function buildList(excluded)
+        local list, priority = {}, {}
+        local needle = string.lower(filterText)
+        for _, p in ipairs(Players:GetPlayers()) do
+            -- PlayerRemoving fires before GetPlayers() stops returning p.
+            if p ~= excluded and (includeSelf or p ~= Players.LocalPlayer) then
+                local role = roleText(p)
+                if matches(p, needle) or string.find(string.lower(role), needle, 1, true) ~= nil then
+                    list[#list+1] = p
+                    priority[p] = sortByRole and (ROLE_ORDER[role] or 5) or 0
+                end
+            end
+        end
+        table.sort(list, function(a,b)
+            if priority[a] ~= priority[b] then return priority[a] < priority[b] end
+            local ad, bd = string.lower(a.DisplayName), string.lower(b.DisplayName)
+            if ad == bd then return string.lower(a.Name) < string.lower(b.Name) end
+            return ad < bd
+        end)
+        return list
+    end
+
     local function rebuild(excluded, resetScroll)
         if api.Destroyed or listMaid.Destroyed or not holder.Parent then return end
         local oldScroll = holder.CanvasPosition.Y
@@ -5874,20 +5937,7 @@ function Tab:AddPlayerList(opts)
         local anchorIndex = math.floor(math.max(0, logicalScroll - LIST_PADDING) / rowH) + 1
         local anchor = rowOrder[anchorIndex]
         local anchorOffset = logicalScroll - (LIST_PADDING + (anchorIndex - 1) * rowH)
-        local list, indices = {}, {}
-        local needle = string.lower(filterText)
-        for _, p in ipairs(Players:GetPlayers()) do
-            -- PlayerRemoving fires before GetPlayers() stops returning p.
-            if p ~= excluded and (includeSelf or p ~= Players.LocalPlayer) and matches(p, needle) then
-                list[#list+1] = p
-            end
-        end
-        table.sort(list, function(a,b)
-            local ad, bd = string.lower(a.DisplayName), string.lower(b.DisplayName)
-            if ad == bd then return string.lower(a.Name) < string.lower(b.Name) end
-            return ad < bd
-        end)
-
+        local list, indices = buildList(excluded), {}
         for i, p in ipairs(list) do indices[p] = i end
         if anchor and not indices[anchor] then
             -- Keep the next surviving row at the old anchor's screen position.
@@ -5956,14 +6006,27 @@ function Tab:AddPlayerList(opts)
                     if distanceLabel and distanceLabel:IsA("TextLabel") then
                         local a = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                         local b = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                        local humanoid = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+                        local health = humanoid and ("  |  HP " .. tostring(math.floor(humanoid.Health + 0.5))) or ""
                         if a and b then
-                            distanceLabel.Text = "Distance: " .. tostring(math.floor((a.Position - b.Position).Magnitude + 0.5))
+                            distanceLabel.Text = "Distance: " .. tostring(math.floor((a.Position - b.Position).Magnitude + 0.5)) .. health
                         else
-                            distanceLabel.Text = "Distance: --"
+                            distanceLabel.Text = "Distance: --" .. health
                         end
                         distanceLabel.Visible = layoutState.ShowDistance
                     end
                 end
+            end
+            -- Roles change during a round: keep murderer / sheriff / hero on top.
+            if sortByRole then
+                local fresh = buildList(nil)
+                local changed = #fresh ~= #rowOrder
+                if not changed then
+                    for i = 1, #fresh do
+                        if fresh[i] ~= rowOrder[i] then changed = true; break end
+                    end
+                end
+                if changed then rebuild() end
             end
         end
     end, card)
