@@ -9845,10 +9845,14 @@ do
             self.Model = clone
             self.ModelSource = character
             self.ModelQuality = quality
-            self.PoseSteps, self.PoseClock = steps, os.clock()
+            -- The idle clock is kept across rebuilds so a respawn continues the same
+            -- motion instead of restarting it from the neutral pose.
+            self.PoseSteps, self.PoseClock = steps, self.PoseClock or os.clock()
             clone.Name = "ESPPreviewCharacter"
             clone.Parent = self.World
             self.ModelSize = size
+            -- First frame is already posed (no neutral/T-pose flash on respawn).
+            self:ApplyIdle(os.clock())
             self.StaticPose = {}
             for _, object in ipairs(clone:GetDescendants()) do
                 if object:IsA("BasePart") then
