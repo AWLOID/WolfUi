@@ -5709,7 +5709,7 @@ function Tab:AddPlayerList(opts)
         local owner = rowMaids[player]
         if not owner or owner.Destroyed then return end
         rolePending[player] = row
-        owner:Spawn(function()
+        local function update()
             local value = roleText(player)
             if not owner.Destroyed and rows[player] == row and row.Parent then
                 local label = row:FindFirstChild("Role")
@@ -5721,7 +5721,8 @@ function Tab:AddPlayerList(opts)
                 end
             end
             if rolePending[player] == row then rolePending[player] = nil end
-        end)
+        end
+        if opts.ImmediateRoles then update() else owner:Spawn(update) end
     end
 
     local thumbCache = {}
@@ -6008,7 +6009,7 @@ function Tab:AddPlayerList(opts)
     step(function(dt)
         holder.ScrollBarImageColor3 = palette[5]
         roleClock += dt
-        if roleClock >= 0.75 then
+        if roleClock >= (opts.ImmediateRoles and 0.1 or 0.75) then
             roleClock = 0
             for p,row in pairs(rows) do
                 if p.Parent and row.Parent then
@@ -6046,7 +6047,15 @@ function Tab:AddPlayerList(opts)
     function api:SetFilter(value)
         setFilter(value)
     end
-    function api:Refresh() rebuild() end
+    function api:Refresh()
+        rebuild()
+        for p, row in pairs(rows) do refreshRole(p, row) end
+    end
+    if self.Window and self.Window.TabChanged then
+        connect(self.Window.TabChanged.Event, function(name)
+            if name == self.Name then api:Refresh() end
+        end, listMaid)
+    end
     function api:GetPlayers()
         local result={}
         for i,p in ipairs(rowOrder) do result[i]=p end
