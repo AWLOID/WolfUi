@@ -9988,6 +9988,7 @@ do
             self.Animator = animated and animator or nil
             self.Tracks = {}
             self.AnimLoaded = false
+            self.AnimUnavailableSince = nil
             self.IdleAnimationId = clone:FindFirstChild("UpperTorso") and IDLE_FALLBACK or "rbxassetid://180435571"
             self.AnimBuiltAt, self.NextAnimSync = os.clock(), 0
             clone.Name = "ESPPreviewCharacter"
@@ -10119,7 +10120,7 @@ do
     -- Assets blocked or no Animator: pose the rig procedurally instead.
     function Preview:UseProceduralIdle()
         self:ClearTracks()
-        self.AnimMode, self.Animator = "procedural", nil
+        self.AnimMode, self.Animator, self.AnimLoaded = "procedural", nil, false
         if self.Model then
             for _, part in ipairs(self.Model:GetDescendants()) do
                 if part:IsA("BasePart") then part.Anchored = true end
@@ -10129,10 +10130,11 @@ do
 
     function Preview:SyncAnimations(now)
         local animator = self.Animator
-        if self.AnimMode ~= "animated" or not animator or not animator.Parent then return end
+        if self.AnimMode ~= "animated" then return end
+        if not animator or not animator.Parent then self:UseProceduralIdle(); return end
         if now < (self.NextAnimSync or 0) then return end
         self.NextAnimSync = now + 0.12
-        local desired, hasBase = {}, false
+        local desired = {}
         local live = self.Character
         if live and self.ModelSource == live and live.Parent then
             local humanoid = live:FindFirstChildOfClass("Humanoid")
@@ -10145,23 +10147,22 @@ do
                         if animation and animation.AnimationId ~= "" and track.IsPlaying
                             and track.WeightCurrent > 0.05 and not isMovementTrack(track) then
                             local key = animationKey(animation.AnimationId)
-                            if not desired[key] then
+                            if track.Priority == Enum.AnimationPriority.Core or track.Priority == Enum.AnimationPriority.Idle then
+                                -- Keep the last live idle as an independent looping base.
+                                -- Death/removal of the source must not change its asset or clock.
+                                self.IdleAnimationId = animation.AnimationId
+                            elseif not desired[key] then
                                 desired[key] = {Id = animation.AnimationId, Priority = track.Priority,
                                     Looped = track.Looped, Speed = track.Speed}
-                            end
-                            if track.Priority == Enum.AnimationPriority.Core or track.Priority == Enum.AnimationPriority.Idle then
-                                hasBase = true
                             end
                         end
                     end
                 end
             end
         end
-        if not hasBase then
-            local idleId = self.IdleAnimationId or IDLE_FALLBACK
-            desired[animationKey(idleId)] = {Id = idleId, Priority = Enum.AnimationPriority.Idle,
-                Looped = true, Speed = 1}
-        end
+        local idleId = self.IdleAnimationId or IDLE_FALLBACK
+        desired[animationKey(idleId)] = {Id = idleId, Priority = Enum.AnimationPriority.Idle,
+            Looped = true, Speed = 1}
         for key, entry in pairs(self.Tracks) do
             if not desired[key] then
                 local track = entry.Track
@@ -10171,6 +10172,19 @@ do
             end
         end
         for key, entry in pairs(desired) do
+            local existing = self.Tracks[key]
+            if existing then
+                local ok = pcall(function()
+                    existing.Track.Priority = entry.Priority
+                    existing.Track.Looped = entry.Looped
+                    if not existing.Track.IsPlaying then existing.Track:Play(0.2, 1, entry.Speed) end
+                    existing.Track:AdjustSpeed(entry.Speed)
+                end)
+                if not ok then
+                    pcall(function() existing.Track:Destroy() end)
+                    self.Tracks[key] = nil
+                end
+            end
             if not self.Tracks[key] then
                 local ok, track = pcall(function()
                     local animation = Instance.new("Animation")
@@ -10188,13 +10202,17 @@ do
         end
         local loaded = false
         for _, entry in pairs(self.Tracks) do
-            local okLength, length = pcall(function() return entry.Track.Length end)
-            if okLength and length and length > 0 then loaded = true; break end
+            local ok, active = pcall(function()
+                return entry.Track.IsPlaying and entry.Track.Length > 0 and entry.Track.Speed ~= 0
+            end)
+            if ok and active then loaded = true; break end
         end
+        self.AnimLoaded = loaded
         if loaded then
-            self.AnimLoaded = true
-        elseif now - (self.AnimBuiltAt or now) > 3 then
-            self:UseProceduralIdle()
+            self.AnimUnavailableSince = nil
+        else
+            self.AnimUnavailableSince = self.AnimUnavailableSince or now
+            if now - self.AnimUnavailableSince > 3 then self:UseProceduralIdle() end
         end
     end
 
@@ -10555,7 +10573,7 @@ do
         assert(self.Window, "CreateESPPreview requires a window")
         return self.Window:CreateESPPreview(options)
     end
-    Library.ESPPreviewRevision = "r17-live-joint-bounds"
+    Library.ESPPreviewRevision = "r19-persistent-idle"
 end
 
 
